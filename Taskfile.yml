@@ -7,14 +7,24 @@ tasks:
   setup:
     desc: One-time / per-worktree setup (toolchains, dependencies).
     cmds:
-      - echo "TODO(C1): android setup — gradle deps, SDK"
+      - 'echo "TODO(C1): android setup — gradle deps, SDK"'
 
   build:
     desc: Build the app.
     cmds:
-      - echo "TODO(C1): ./gradlew assembleDebug"
+      - 'echo "TODO(C1): ./gradlew assembleDebug"'
+
+  lint:
+    desc: Lint / static analysis.
+    cmds:
+      - 'echo "TODO(C1): ./gradlew lint ktlintCheck"'
 
   test:
     desc: Run tests. Mothership records evidence from this task (`mship test`).
     cmds:
-      - echo "TODO(C1): ./gradlew testDebugUnitTest"
+      - 'echo "TODO(C1): ./gradlew testDebugUnitTest"'
+
+  run:
+    desc: Launch the app (emulator / connected device).
+    cmds:
+      - 'echo "TODO(C1): ./gradlew installDebug && adb shell am start"'
