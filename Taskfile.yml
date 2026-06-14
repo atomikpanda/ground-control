@@ -1,0 +1,20 @@
+# Taskfile.yml — the contract Mothership calls into.
+# https://taskfile.dev  ·  Mothership = brain, Dagger = muscle, this file = contract.
+# Stubs for now; the C-series tasks fill these in with the real Android build.
+version: '3'
+
+tasks:
+  setup:
+    desc: One-time / per-worktree setup (toolchains, dependencies).
+    cmds:
+      - echo "TODO(C1): android setup — gradle deps, SDK"
+
+  build:
+    desc: Build the app.
+    cmds:
+      - echo "TODO(C1): ./gradlew assembleDebug"
+
+  test:
+    desc: Run tests. Mothership records evidence from this task (`mship test`).
+    cmds:
+      - echo "TODO(C1): ./gradlew testDebugUnitTest"
