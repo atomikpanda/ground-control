@@ -43,7 +43,7 @@ fun SettingsScreen(vm: SettingsViewModel) {
         Button(onClick = { vm.addOrUpdate(null, url, token); url = ""; token = "" }) { Text("Add / test") }
         testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         HorizontalDivider()
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             items(connections, key = { it.id }) { c: WorkspaceConnection ->
                 ListItem(
                     headlineContent = { Text(c.workspaceName.ifBlank { c.baseUrl }) },

@@ -55,7 +55,7 @@ fun SpecInboxScreen(vm: SpecInboxViewModel) {
                         onSuccess = { blocks ->
                             blocks.forEach { block ->
                                 item { Text(block.group.label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(16.dp, 4.dp)) }
-                                items(block.specs.size) { i ->
+                                items(block.specs.size, key = { block.specs[it].id }) { i ->
                                     val spec = block.specs[i]
                                     ListItem(
                                         headlineContent = { Text(spec.title) },
