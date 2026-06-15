@@ -9,7 +9,6 @@ import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.fullPath
 import io.ktor.http.headersOf
 import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
