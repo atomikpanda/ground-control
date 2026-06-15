@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Base launch theme for a pure-Compose app. The app draws its own Material3
+      surfaces via Compose; this only needs to be a no-title-bar window theme.
+      Uses a platform parent so no extra XML theme dependency is required.
+    -->
+    <style name="Theme.GroundControl" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+</resources>
