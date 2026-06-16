@@ -24,6 +24,16 @@ object ConnectionsCodec {
         else runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
 }
 
+/**
+ * Pure upsert helper: removes any existing entry whose [id] or [baseUrl] matches [conn],
+ * then appends [conn]. Re-pairing the same URL replaces the old entry (new token/name win).
+ */
+fun upsertConnection(
+    existing: List<WorkspaceConnection>,
+    conn: WorkspaceConnection,
+): List<WorkspaceConnection> =
+    existing.filterNot { it.id == conn.id || it.baseUrl == conn.baseUrl } + conn
+
 /** Trim, strip a trailing slash, and require an http(s) scheme. Returns null if invalid. */
 fun normalizedBaseUrl(input: String): String? {
     val t = input.trim().trimEnd('/')
