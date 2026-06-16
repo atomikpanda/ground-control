@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
@@ -35,6 +36,16 @@ class SettingsViewModel(
             repo.upsert(named)
             _testResult.value = named.workspaceName.ifBlank { "Saved (couldn't reach /health)" }
         }
+    }
+
+    /**
+     * Add a connection from a `groundcontrol://add?...` deep link (scanned QR or tapped URI).
+     * Returns false if the link is malformed so the caller can surface "invalid code".
+     */
+    fun addFromLink(raw: String): Boolean {
+        val c = PairLink.parse(raw) ?: return false
+        viewModelScope.launch { repo.upsert(c) }
+        return true
     }
 
     fun remove(id: String) { viewModelScope.launch { repo.remove(id) } }

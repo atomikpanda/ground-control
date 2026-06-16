@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
+import com.atomikpanda.groundcontrol.data.upsertConnection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -27,5 +28,38 @@ class ConnectionsCodecTest {
         assertEquals("https://h", normalizedBaseUrl("https://h"))
         assertNull(normalizedBaseUrl("notaurl"))        // no scheme
         assertNull(normalizedBaseUrl(""))
+    }
+
+    // ── upsertConnection tests ──────────────────────────────────────────────
+
+    @Test fun upsert_same_baseUrl_different_id_keeps_size_1_with_new_token() {
+        val existing = listOf(
+            WorkspaceConnection("old-id", "http://host:47100", "old-token", "ws-a")
+        )
+        val incoming = WorkspaceConnection("new-id", "http://host:47100", "new-token", "ws-a")
+        val result = upsertConnection(existing, incoming)
+        assertEquals(1, result.size)
+        assertEquals("new-token", result[0].token)
+        assertEquals("new-id", result[0].id)
+    }
+
+    @Test fun upsert_genuinely_new_baseUrl_grows_list() {
+        val existing = listOf(
+            WorkspaceConnection("id-1", "http://host-a:47100", "tok-a", "ws-a")
+        )
+        val incoming = WorkspaceConnection("id-2", "http://host-b:47100", "tok-b", "ws-b")
+        val result = upsertConnection(existing, incoming)
+        assertEquals(2, result.size)
+    }
+
+    @Test fun upsert_same_id_replaces_entry() {
+        val existing = listOf(
+            WorkspaceConnection("id-1", "http://host:47100", "old-token", "ws-old")
+        )
+        val incoming = WorkspaceConnection("id-1", "http://host:47100", "new-token", "ws-new")
+        val result = upsertConnection(existing, incoming)
+        assertEquals(1, result.size)
+        assertEquals("new-token", result[0].token)
+        assertEquals("ws-new", result[0].workspaceName)
     }
 }

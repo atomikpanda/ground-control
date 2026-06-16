@@ -23,7 +23,7 @@ class ConnectionsRepository(private val context: Context) {
     }
 
     suspend fun upsert(conn: WorkspaceConnection) =
-        save(snapshot().filterNot { it.id == conn.id } + conn)
+        save(upsertConnection(snapshot(), conn))
 
     suspend fun remove(id: String) = save(snapshot().filterNot { it.id == id })
 }
