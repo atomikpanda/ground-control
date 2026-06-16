@@ -48,6 +48,9 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.7.7")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // QR scanning: drop-in scanner activity (ScanContract / ScanOptions).
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("io.ktor:ktor-client-core:2.3.12")
     implementation("io.ktor:ktor-client-okhttp:2.3.12")
