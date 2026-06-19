@@ -32,3 +32,26 @@ tasks:
     cmds:
       - './gradlew installDebug'
       - 'adb shell am start -n com.atomikpanda.groundcontrol/.MainActivity'
+
+  capture:
+    desc: >
+      Capture UI artifacts into $MSHIP_CAPTURE_DIR. Honors MSHIP_CAPTURE_PLATFORM
+      (android|ios). Writes screen.png (image) and, on android, layout.xml (layout).
+      Assumes the app is already running (see `task run`); does not boot devices.
+    cmds:
+      - 'mkdir -p "$MSHIP_CAPTURE_DIR"'
+      - |
+        case "${MSHIP_CAPTURE_PLATFORM:-android}" in
+          android)
+            adb exec-out screencap -p > "$MSHIP_CAPTURE_DIR/screen.png"
+            adb shell uiautomator dump /sdcard/window_dump.xml >/dev/null \
+              && adb pull /sdcard/window_dump.xml "$MSHIP_CAPTURE_DIR/layout.xml" >/dev/null
+            ;;
+          ios)
+            xcrun simctl io booted screenshot "$MSHIP_CAPTURE_DIR/screen.png"
+            ;;
+          *)
+            echo "unsupported MSHIP_CAPTURE_PLATFORM: ${MSHIP_CAPTURE_PLATFORM}" >&2
+            exit 2
+            ;;
+        esac
