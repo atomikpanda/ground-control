@@ -39,13 +39,18 @@ tasks:
       (android|ios). Writes screen.png (image) and, on android, layout.xml (layout).
       Assumes the app is already running (see `task run`); does not boot devices.
     cmds:
+      - 'test -n "$MSHIP_CAPTURE_DIR" || (echo "MSHIP_CAPTURE_DIR unset — set by mship capture, or pass it for a direct run" >&2 && exit 1)'
       - 'mkdir -p "$MSHIP_CAPTURE_DIR"'
       - |
         case "${MSHIP_CAPTURE_PLATFORM:-android}" in
           android)
             adb exec-out screencap -p > "$MSHIP_CAPTURE_DIR/screen.png"
+            # layout is best-effort: a uiautomator failure (secure window,
+            # accessibility off, app crash) must NOT fail the task when the
+            # screenshot already succeeded — artifact discovery drives reporting.
             adb shell uiautomator dump /sdcard/window_dump.xml >/dev/null \
-              && adb pull /sdcard/window_dump.xml "$MSHIP_CAPTURE_DIR/layout.xml" >/dev/null
+              && adb pull /sdcard/window_dump.xml "$MSHIP_CAPTURE_DIR/layout.xml" >/dev/null \
+              || true
             ;;
           ios)
             xcrun simctl io booted screenshot "$MSHIP_CAPTURE_DIR/screen.png"
