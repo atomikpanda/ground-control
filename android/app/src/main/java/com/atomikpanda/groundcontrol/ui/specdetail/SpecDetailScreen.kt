@@ -57,10 +57,13 @@ fun SpecDetailScreen(vm: SpecDetailViewModel, title: String, onBack: () -> Unit)
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
 
+    // Show the loaded spec title once available; fall back to the spec id pre-load.
+    val displayTitle = (state as? SpecDetailUiState.Content)?.detail?.title ?: title
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(title, maxLines = 1) },
+                title = { Text(displayTitle, maxLines = 1) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
