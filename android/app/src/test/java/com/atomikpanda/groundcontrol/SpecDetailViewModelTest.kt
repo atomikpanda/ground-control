@@ -173,6 +173,27 @@ class SpecDetailViewModelTest {
         assertEquals("approved", (vm.state.value as SpecDetailUiState.Content).detail.status)
     }
 
+    @Test fun set_verdict_stale_409_refetches_and_shows_banner() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            when (call) {
+                1 -> respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                    "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[]}""",
+                    HttpStatusCode.OK, jsonHdr)
+                2 -> respond("""{"detail":"invalid transition needs_review -> approved"}""", HttpStatusCode.Conflict, jsonHdr)
+                else -> respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                    "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""",
+                    HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        vm.load()?.join()
+        vm.setVerdict("ac1", "approved")?.join()
+        val c = vm.state.value as SpecDetailUiState.Content
+        assertNotNull(c.banner)
+        assertEquals("approved", c.detail.criteria.first().verdict)
+    }
+
     @Test fun request_changes_transitions_to_needs_clarification() = runTest {
         var call = 0
         val vm = vm(this) {

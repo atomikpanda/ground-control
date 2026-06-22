@@ -106,6 +106,11 @@ class SpecDetailViewModel(
         )
     }
 
+    private suspend fun refetchWithBanner(banner: String) {
+        load()?.join()
+        content()?.let { _state.value = it.copy(banner = banner) }
+    }
+
     /** Run a write that returns a review; on success patch state, else surface a banner. */
     private fun write(ref: ActionRef, block: suspend () -> SpecReview): Job? {
         val c = content() ?: return null
@@ -113,20 +118,18 @@ class SpecDetailViewModel(
         return scope().launch {
             runCatching { block() }
                 .onSuccess { applyReview(it) }
-                .onFailure { failWrite(it) }
-        }
-    }
-
-    private fun failWrite(t: Throwable) {
-        val c = content() ?: return
-        when (t) {
-            is ApiConflictException ->
-                if (t.detail.contains("cannot approve"))
-                    _state.value = c.copy(inFlight = null, blockers = parseApproveBlockers(t.detail))
-                else { _state.value = c.copy(inFlight = null, banner = "Spec changed since you opened it."); load() }
-            is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
-            is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, t.message ?: "gone")
-            else -> _state.value = c.copy(inFlight = null, banner = "Couldn't reach workspace — retry.")
+                .onFailure { t ->
+                    val c2 = content() ?: return@onFailure
+                    when (t) {
+                        is ApiConflictException ->
+                            if (t.detail.contains("cannot approve"))
+                                _state.value = c2.copy(inFlight = null, blockers = parseApproveBlockers(t.detail))
+                            else { _state.value = c2.copy(inFlight = null); refetchWithBanner("Spec changed since you opened it.") }
+                        is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
+                        is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, t.message ?: "gone")
+                        else -> _state.value = c2.copy(inFlight = null, banner = "Couldn't reach workspace — retry.")
+                    }
+                }
         }
     }
 
@@ -155,9 +158,7 @@ class SpecDetailViewModel(
                         is ApiConflictException -> {
                             // stale 409 (not an approve gate): refetch and then set banner on the fresh content
                             _state.value = snapshot.copy(inFlight = null)
-                            load()?.join()
-                            val fresh = content()
-                            if (fresh != null) _state.value = fresh.copy(banner = "Spec changed since you opened it.")
+                            refetchWithBanner("Spec changed since you opened it.")
                         }
                         is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
                         is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, t.message ?: "gone")
