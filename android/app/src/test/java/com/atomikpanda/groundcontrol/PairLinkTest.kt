@@ -26,4 +26,13 @@ class PairLinkTest {
         assertEquals("tok en/+=", c.token)
         assertEquals("https://ws.example.com", c.baseUrl)
     }
+
+    @Test fun parses_http_lan_link() {
+        val c = PairLink.parse(
+            "groundcontrol://add?url=http%3A%2F%2F192.168.1.50%3A47100&token=secret&workspace=home"
+        )
+        assertEquals("http://192.168.1.50:47100", c!!.baseUrl)
+        assertEquals("secret", c.token)
+        assertEquals("home", c.workspaceName)
+    }
 }
