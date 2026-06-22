@@ -138,6 +138,10 @@ class SpecApiTest {
         assertTrue(url!!.endsWith("/specs"))
         assertTrue(body!!.contains("\"title\":\"My idea\""))
         assertTrue(body!!.contains("\"affected_repos\":[\"ground-control\"]"))
+        // encodeDefaults=false (kotlinx default, used by buildJson()) omits default/null
+        // fields, so the unset id/task_slug are NOT serialized (no `"id":null` noise).
+        assertTrue(!body!!.contains("\"id\""))
+        assertTrue(!body!!.contains("task_slug"))
     }
 
     @Test fun create_spec_409_maps_to_conflict() = runTest {
