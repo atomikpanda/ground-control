@@ -26,6 +26,8 @@ import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.defaultHttpClient
+import com.atomikpanda.groundcontrol.ui.capture.CaptureScreen
+import com.atomikpanda.groundcontrol.ui.capture.CaptureViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
 import com.atomikpanda.groundcontrol.ui.placeholder.PlaceholderScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
@@ -66,7 +68,12 @@ fun GroundControlApp(context: Context) {
                     nav.navigate("specDetail/$connId/$specId")
                 }
             }
-            composable(Section.CAPTURE.route) { PlaceholderScreen("Capture", "C3") }
+            composable(Section.CAPTURE.route) {
+                val vm = viewModel {
+                    CaptureViewModel(connectionsProvider = { runBlockingSnapshot(connRepo) }, api = api)
+                }
+                CaptureScreen(vm)
+            }
             composable(Section.DECISIONS.route) { PlaceholderScreen("Decisions", "C7") }
             composable(Section.TASKS.route) { PlaceholderScreen("Tasks", "C7") }
             composable(Section.SETTINGS.route) {
