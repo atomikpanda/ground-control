@@ -64,3 +64,11 @@ data class DispatchResult(
 @Serializable data class QuestionBody(val text: String)
 @Serializable data class ApproveBody(@SerialName("bypass_gate") val bypassGate: Boolean = false)
 @Serializable data class ReasonBody(val reason: String)
+
+@Serializable
+data class NewSpecBody(
+    val title: String,
+    val id: String? = null,
+    @SerialName("affected_repos") val affectedRepos: List<String> = emptyList(),
+    @SerialName("task_slug") val taskSlug: String? = null,
+)
