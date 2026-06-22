@@ -194,6 +194,22 @@ class SpecDetailViewModelTest {
         assertEquals("approved", c.detail.criteria.first().verdict)
     }
 
+    @Test fun dispatch_auto_spawn_unavailable_shows_actionable_banner() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            if (call == 1) respond("""{"id":"s1","title":"T","status":"approved","body":"b"}""", HttpStatusCode.OK, jsonHdr)
+            else respond("""{"detail":"auto-spawn unavailable: this server has no worktree manager; spawn a task named 's1' first, then dispatch."}""",
+                HttpStatusCode.Conflict, jsonHdr)
+        }
+        vm.load()?.join()
+        vm.dispatch()?.join()
+        val c = vm.state.value as SpecDetailUiState.Content
+        assertNotNull(c.banner)
+        assertTrue(c.banner!!.contains("Auto-spawn") || c.banner!!.contains("terminal"))
+        assertEquals("approved", c.detail.status)   // unchanged; no spurious refetch
+    }
+
     @Test fun request_changes_transitions_to_needs_clarification() = runTest {
         var call = 0
         val vm = vm(this) {

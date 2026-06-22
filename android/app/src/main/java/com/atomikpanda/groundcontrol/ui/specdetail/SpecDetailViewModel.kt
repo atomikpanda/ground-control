@@ -156,9 +156,17 @@ class SpecDetailViewModel(
                     val snapshot = content() ?: return@onFailure
                     when (t) {
                         is ApiConflictException -> {
-                            // stale 409 (not an approve gate): refetch and then set banner on the fresh content
-                            _state.value = snapshot.copy(inFlight = null)
-                            refetchWithBanner("Spec changed since you opened it.")
+                            if (t.detail.contains("auto-spawn", ignoreCase = true) || t.detail.contains("worktree", ignoreCase = true)) {
+                                // auto-spawn-unavailable: surface actionable message without refetching so status stays as-is
+                                _state.value = snapshot.copy(
+                                    inFlight = null,
+                                    banner = "Auto-spawn unavailable on this host. Spawn/bind the task from a terminal, then dispatch.",
+                                )
+                            } else {
+                                // stale 409 (not an approve gate): refetch and then set banner on the fresh content
+                                _state.value = snapshot.copy(inFlight = null)
+                                refetchWithBanner("Spec changed since you opened it.")
+                            }
                         }
                         is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
                         is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, t.message ?: "gone")
