@@ -37,6 +37,8 @@ import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailViewModel
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxScreen
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxViewModel
+import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailScreen
+import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailViewModel
 import com.atomikpanda.groundcontrol.ui.tasks.TasksScreen
 import com.atomikpanda.groundcontrol.ui.tasks.TasksViewModel
 import kotlinx.coroutines.runBlocking
@@ -109,6 +111,27 @@ fun GroundControlApp(context: Context) {
                         SpecDetailViewModel(detailRepo, conn, specId)
                     }
                     SpecDetailScreen(vm, title = title, onBack = { nav.popBackStack() })
+                }
+            }
+            composable(
+                route = "taskDetail/{connectionId}/{slug}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("slug") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val slug = entry.arguments?.getString("slug").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
+                } else {
+                    val vm = viewModel(key = "taskDetail-$connectionId-$slug") {
+                        TaskDetailViewModel(tasksRepo, conn, slug)
+                    }
+                    TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
                 }
             }
         }
