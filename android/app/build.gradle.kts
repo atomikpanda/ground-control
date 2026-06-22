@@ -51,6 +51,9 @@ dependencies {
     // QR scanning: drop-in scanner activity (ScanContract / ScanOptions).
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
+    // Compose-native markdown rendering for the full spec body.
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.26.0")
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("io.ktor:ktor-client-core:2.3.12")
     implementation("io.ktor:ktor-client-okhttp:2.3.12")
