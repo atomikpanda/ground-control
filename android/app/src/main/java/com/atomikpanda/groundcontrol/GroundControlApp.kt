@@ -1,10 +1,12 @@
 package com.atomikpanda.groundcontrol
 
 import android.content.Context
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -12,12 +14,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.defaultHttpClient
@@ -25,6 +30,8 @@ import com.atomikpanda.groundcontrol.ui.nav.Section
 import com.atomikpanda.groundcontrol.ui.placeholder.PlaceholderScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
+import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
+import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailViewModel
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxScreen
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxViewModel
 import kotlinx.coroutines.runBlocking
@@ -35,6 +42,7 @@ fun GroundControlApp(context: Context) {
     val connRepo = remember { ConnectionsRepository(context.applicationContext) }
     val api = remember { SpecApi(defaultHttpClient()) }
     val specRepo = remember { SpecRepository(api) }
+    val detailRepo = remember { SpecDetailRepository(api) }
 
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -54,7 +62,9 @@ fun GroundControlApp(context: Context) {
                 val vm = viewModel {
                     SpecInboxViewModel(specRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
                 }
-                SpecInboxScreen(vm)
+                SpecInboxScreen(vm) { connId, specId ->
+                    nav.navigate("specDetail/$connId/$specId")
+                }
             }
             composable(Section.CAPTURE.route) { PlaceholderScreen("Capture", "C3") }
             composable(Section.DECISIONS.route) { PlaceholderScreen("Decisions", "C7") }
@@ -62,6 +72,28 @@ fun GroundControlApp(context: Context) {
             composable(Section.SETTINGS.route) {
                 val vm = viewModel { SettingsViewModel(connRepo, api) }
                 SettingsScreen(vm)
+            }
+            composable(
+                route = "specDetail/{connectionId}/{specId}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("specId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val specId = entry.arguments?.getString("specId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
+                } else {
+                    val title = remember(specId) { specId }
+                    val vm = viewModel(key = "detail-$connectionId-$specId") {
+                        SpecDetailViewModel(detailRepo, conn, specId)
+                    }
+                    SpecDetailScreen(vm, title = title, onBack = { nav.popBackStack() })
+                }
             }
         }
     }

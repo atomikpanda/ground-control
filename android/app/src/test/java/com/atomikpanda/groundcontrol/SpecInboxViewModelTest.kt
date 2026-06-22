@@ -62,4 +62,13 @@ class SpecInboxViewModelTest {
         )
         assertEquals(listOf("b"), sec.groups.getOrThrow()[0].specs.map { it.id })
     }
+
+    @Test fun section_carries_connection_id_for_navigation() = runTest {
+        val vm = SpecInboxViewModel(repo(), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+        vm.refresh()?.join()
+        val content = vm.state.value as InboxUiState.Content
+        assertEquals("conn-7", content.sections[0].connectionId)
+    }
 }

@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.ui.specs
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -30,7 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SpecInboxScreen(vm: SpecInboxViewModel) {
+fun SpecInboxScreen(vm: SpecInboxViewModel, onSpecClick: (connectionId: String, specId: String) -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refresh() }
 
@@ -60,6 +61,7 @@ fun SpecInboxScreen(vm: SpecInboxViewModel) {
                                     ListItem(
                                         headlineContent = { Text(spec.title) },
                                         supportingContent = { Text("${spec.status} · ${spec.affectedRepos.joinToString().ifBlank { "—" }}") },
+                                        modifier = Modifier.clickable { onSpecClick(section.connectionId, spec.id) },
                                     )
                                 }
                             }
