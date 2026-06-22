@@ -24,6 +24,7 @@ data class CaptureUiState(
     val title: String = "",
     val repos: String = "",
     val inFlight: Boolean = false,
+    val isLoading: Boolean = true,
     val message: CaptureMessage? = null,
 )
 
@@ -52,6 +53,8 @@ class CaptureViewModel(
         _state.value = _state.value.copy(
             connections = conns,
             selectedConnectionId = conns.firstOrNull { it.id == _state.value.selectedConnectionId }?.id ?: defaultSelection(conns),
+            isLoading = false,
+            message = null,
         )
     }
 

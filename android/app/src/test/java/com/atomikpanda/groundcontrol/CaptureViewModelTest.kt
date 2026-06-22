@@ -113,4 +113,20 @@ class CaptureViewModelTest {
         val m = vm.state.value.message as CaptureMessage.Error
         assertTrue(m.text.contains("Settings"))
     }
+
+    @Test fun initial_state_is_loading_then_cleared_on_load() = runTest {
+        val vm = vm(this, listOf(conn("1")))
+        assertTrue(vm.state.value.isLoading)
+        vm.load()
+        assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test fun load_clears_previous_message() = runTest {
+        val vm = vm(this, listOf(conn("1")),
+            { respond("""{"detail":"already exists"}""", HttpStatusCode.Conflict, jsonHdr) })
+        vm.load(); vm.onTitleChange("t"); vm.create()?.join()
+        assertTrue(vm.state.value.message is CaptureMessage.Error)
+        vm.load()
+        assertNull(vm.state.value.message)
+    }
 }

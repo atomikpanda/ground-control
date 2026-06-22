@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -29,6 +30,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 fun CaptureScreen(vm: CaptureViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
+
+    if (state.isLoading) {
+        Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+        return
+    }
 
     if (state.connections.isEmpty()) {
         Box(Modifier.fillMaxSize(), Alignment.Center) {
@@ -65,7 +71,7 @@ fun CaptureScreen(vm: CaptureViewModel) {
             enabled = canCreate(state),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            if (state.inFlight) CircularProgressIndicator(Modifier.padding(end = 8.dp))
+            if (state.inFlight) CircularProgressIndicator(Modifier.size(18.dp))
             Text("Create")
         }
 
