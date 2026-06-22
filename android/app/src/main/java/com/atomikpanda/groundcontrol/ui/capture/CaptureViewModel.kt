@@ -51,7 +51,7 @@ class CaptureViewModel(
         val conns = connectionsProvider()
         _state.value = _state.value.copy(
             connections = conns,
-            selectedConnectionId = _state.value.selectedConnectionId ?: defaultSelection(conns),
+            selectedConnectionId = conns.firstOrNull { it.id == _state.value.selectedConnectionId }?.id ?: defaultSelection(conns),
         )
     }
 

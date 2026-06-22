@@ -90,4 +90,27 @@ class CaptureViewModelTest {
         val m = vm.state.value.message as CaptureMessage.Error
         assertTrue(m.text.contains("already exists"))
     }
+
+    @Test fun stale_selection_is_scrubbed_on_reload() = runTest {
+        var conns = listOf(conn("1"), conn("2"), conn("3"))
+        val vm = CaptureViewModel(
+            { conns },
+            SpecApi(HttpClient(MockEngine { respond("{}", HttpStatusCode.OK, jsonHdr) }) { mshipDefaults() }),
+            this,
+        )
+        vm.load(); vm.onSelectConnection("1")
+        assertEquals("1", vm.state.value.selectedConnectionId)
+        conns = listOf(conn("2"), conn("3"))   // connection "1" removed
+        vm.load()
+        assertNull(vm.state.value.selectedConnectionId)   // stale selection dropped; >1 remain → no auto-default
+    }
+
+    @Test fun create_401_surfaces_settings_hint() = runTest {
+        val vm = vm(this, listOf(conn("1")),
+            { respond("""{"detail":"unauthorized"}""", HttpStatusCode.Unauthorized, jsonHdr) })
+        vm.load(); vm.onTitleChange("My idea")
+        vm.create()?.join()
+        val m = vm.state.value.message as CaptureMessage.Error
+        assertTrue(m.text.contains("Settings"))
+    }
 }
