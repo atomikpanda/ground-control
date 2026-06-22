@@ -4,12 +4,14 @@ import com.atomikpanda.groundcontrol.data.dto.AnswerBody
 import com.atomikpanda.groundcontrol.data.dto.ApproveBody
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
+import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
 import com.atomikpanda.groundcontrol.data.dto.QuestionBody
 import com.atomikpanda.groundcontrol.data.dto.ReasonBody
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
+import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.VerdictBody
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
@@ -101,6 +103,15 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun dispatch(conn: WorkspaceConnection, id: String): DispatchResult =
         client.post("${conn.baseUrl}/specs/$id/dispatch") { auth(conn) }.body()
+
+    suspend fun listTasks(conn: WorkspaceConnection): List<TaskSummary> =
+        client.get("${conn.baseUrl}/tasks") { auth(conn) }.body()
+
+    suspend fun getTask(conn: WorkspaceConnection, slug: String): TaskSummary =
+        client.get("${conn.baseUrl}/tasks/$slug") { auth(conn) }.body()
+
+    suspend fun getJournal(conn: WorkspaceConnection, slug: String): List<JournalEntry> =
+        client.get("${conn.baseUrl}/journal/$slug") { auth(conn) }.body()
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {
         conn.token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }

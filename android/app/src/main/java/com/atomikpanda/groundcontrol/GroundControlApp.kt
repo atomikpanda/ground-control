@@ -24,6 +24,7 @@ import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.SpecRepository
+import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.defaultHttpClient
 import com.atomikpanda.groundcontrol.ui.capture.CaptureScreen
@@ -36,6 +37,10 @@ import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailViewModel
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxScreen
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxViewModel
+import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailScreen
+import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailViewModel
+import com.atomikpanda.groundcontrol.ui.tasks.TasksScreen
+import com.atomikpanda.groundcontrol.ui.tasks.TasksViewModel
 import kotlinx.coroutines.runBlocking
 
 @Composable
@@ -45,6 +50,7 @@ fun GroundControlApp(context: Context) {
     val api = remember { SpecApi(defaultHttpClient()) }
     val specRepo = remember { SpecRepository(api) }
     val detailRepo = remember { SpecDetailRepository(api) }
+    val tasksRepo = remember { TasksRepository(api) }
 
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -75,7 +81,12 @@ fun GroundControlApp(context: Context) {
                 CaptureScreen(vm)
             }
             composable(Section.DECISIONS.route) { PlaceholderScreen("Decisions", "C7") }
-            composable(Section.TASKS.route) { PlaceholderScreen("Tasks", "C7") }
+            composable(Section.TASKS.route) {
+                val vm = viewModel {
+                    TasksViewModel(tasksRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                }
+                TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
+            }
             composable(Section.SETTINGS.route) {
                 val vm = viewModel { SettingsViewModel(connRepo, api) }
                 SettingsScreen(vm)
@@ -100,6 +111,27 @@ fun GroundControlApp(context: Context) {
                         SpecDetailViewModel(detailRepo, conn, specId)
                     }
                     SpecDetailScreen(vm, title = title, onBack = { nav.popBackStack() })
+                }
+            }
+            composable(
+                route = "taskDetail/{connectionId}/{slug}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("slug") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val slug = entry.arguments?.getString("slug").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
+                } else {
+                    val vm = viewModel(key = "taskDetail-$connectionId-$slug") {
+                        TaskDetailViewModel(tasksRepo, conn, slug)
+                    }
+                    TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
                 }
             }
         }
