@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.dto.AnswerBody
 import com.atomikpanda.groundcontrol.data.dto.ApproveBody
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
+import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
 import com.atomikpanda.groundcontrol.data.dto.QuestionBody
 import com.atomikpanda.groundcontrol.data.dto.ReasonBody
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
@@ -94,6 +95,9 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun requestChanges(conn: WorkspaceConnection, id: String, reason: String): SpecReview =
         client.post("${conn.baseUrl}/specs/$id/request-changes") { auth(conn); jsonBody(ReasonBody(reason)) }.body()
+
+    suspend fun createSpec(conn: WorkspaceConnection, title: String, affectedRepos: List<String>): SpecRecord =
+        client.post("${conn.baseUrl}/specs") { auth(conn); jsonBody(NewSpecBody(title = title, affectedRepos = affectedRepos)) }.body()
 
     suspend fun dispatch(conn: WorkspaceConnection, id: String): DispatchResult =
         client.post("${conn.baseUrl}/specs/$id/dispatch") { auth(conn) }.body()

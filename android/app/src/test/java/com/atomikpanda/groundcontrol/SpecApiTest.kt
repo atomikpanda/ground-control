@@ -121,4 +121,37 @@ class SpecApiTest {
             assertTrue(e.detail.contains("cannot approve"))
         }
     }
+
+    @Test fun create_spec_posts_to_specs_and_returns_record() = runTest {
+        var url: String? = null
+        var method: String? = null
+        var body: String? = null
+        val api = SpecApi(client { req ->
+            url = req.url.toString(); method = req.method.value
+            body = (req.body as io.ktor.http.content.TextContent).text
+            respond("""{"id":"my-idea","title":"My idea","status":"drafting","body":""}""",
+                HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        })
+        val rec = api.createSpec(conn, "My idea", listOf("ground-control"))
+        assertEquals("my-idea", rec.id)
+        assertEquals("POST", method)
+        assertTrue(url!!.endsWith("/specs"))
+        assertTrue(body!!.contains("\"title\":\"My idea\""))
+        assertTrue(body!!.contains("\"affected_repos\":[\"ground-control\"]"))
+        // encodeDefaults=false (kotlinx default, used by buildJson()) omits default/null
+        // fields, so the unset id/task_slug are NOT serialized (no `"id":null` noise).
+        assertTrue(!body!!.contains("\"id\""))
+        assertTrue(!body!!.contains("task_slug"))
+    }
+
+    @Test fun create_spec_409_maps_to_conflict() = runTest {
+        val api = SpecApi(client { respond("""{"detail":"spec 'my-idea' already exists"}""",
+            HttpStatusCode.Conflict, headersOf(HttpHeaders.ContentType, "application/json")) })
+        try {
+            api.createSpec(conn, "My idea", emptyList())
+            throw AssertionError("expected ApiConflictException")
+        } catch (e: com.atomikpanda.groundcontrol.data.ApiConflictException) {
+            assertTrue(e.detail.contains("already exists"))
+        }
+    }
 }
