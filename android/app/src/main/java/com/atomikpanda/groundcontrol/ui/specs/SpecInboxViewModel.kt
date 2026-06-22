@@ -19,6 +19,7 @@ data class GroupBlock(val group: SpecGroup, val specs: List<SpecSummary>)
 
 data class WorkspaceSection(
     val workspaceName: String,
+    val connectionId: String,
     val groups: Result<List<GroupBlock>>,   // failure → show error chip
 )
 
@@ -49,6 +50,7 @@ class SpecInboxViewModel(
                 results.map { ws ->
                     WorkspaceSection(
                         workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
+                        connectionId = ws.connection.id,
                         groups = ws.specs.map { specs -> toGroupBlocks(specs) },
                     )
                 }
