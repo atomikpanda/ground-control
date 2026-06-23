@@ -5,13 +5,18 @@ import com.atomikpanda.groundcontrol.data.dto.ApproveBody
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
+import com.atomikpanda.groundcontrol.data.dto.Message
+import com.atomikpanda.groundcontrol.data.dto.NewMessageBody
 import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
+import com.atomikpanda.groundcontrol.data.dto.NewThreadBody
 import com.atomikpanda.groundcontrol.data.dto.QuestionBody
 import com.atomikpanda.groundcontrol.data.dto.ReasonBody
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
+import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.VerdictBody
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
@@ -112,6 +117,18 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun getJournal(conn: WorkspaceConnection, slug: String): List<JournalEntry> =
         client.get("${conn.baseUrl}/journal/$slug") { auth(conn) }.body()
+
+    suspend fun listThreads(conn: WorkspaceConnection): List<ThreadSummary> =
+        client.get("${conn.baseUrl}/threads") { auth(conn) }.body()
+
+    suspend fun getThread(conn: WorkspaceConnection, id: String): Thread =
+        client.get("${conn.baseUrl}/threads/$id") { auth(conn) }.body()
+
+    suspend fun createThread(conn: WorkspaceConnection, text: String, subject: String?): Thread =
+        client.post("${conn.baseUrl}/threads") { auth(conn); jsonBody(NewThreadBody(text, subject)) }.body()
+
+    suspend fun postMessage(conn: WorkspaceConnection, id: String, text: String): Thread =
+        client.post("${conn.baseUrl}/threads/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.body()
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {
         conn.token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }

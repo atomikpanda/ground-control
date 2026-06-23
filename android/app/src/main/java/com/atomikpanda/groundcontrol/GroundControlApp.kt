@@ -25,10 +25,15 @@ import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.TasksRepository
+import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.defaultHttpClient
-import com.atomikpanda.groundcontrol.ui.capture.CaptureScreen
-import com.atomikpanda.groundcontrol.ui.capture.CaptureViewModel
+import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
+import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
+import com.atomikpanda.groundcontrol.ui.messages.MessagesScreen
+import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
+import com.atomikpanda.groundcontrol.ui.messages.NewThreadScreen
+import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
 import com.atomikpanda.groundcontrol.ui.placeholder.PlaceholderScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
@@ -51,6 +56,7 @@ fun GroundControlApp(context: Context) {
     val specRepo = remember { SpecRepository(api) }
     val detailRepo = remember { SpecDetailRepository(api) }
     val tasksRepo = remember { TasksRepository(api) }
+    val threadsRepo = remember { ThreadsRepository(api) }
 
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -74,11 +80,15 @@ fun GroundControlApp(context: Context) {
                     nav.navigate("specDetail/$connId/$specId")
                 }
             }
-            composable(Section.CAPTURE.route) {
+            composable(Section.MESSAGES.route) {
                 val vm = viewModel {
-                    CaptureViewModel(connectionsProvider = { runBlockingSnapshot(connRepo) }, api = api)
+                    MessagesViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
                 }
-                CaptureScreen(vm)
+                MessagesScreen(
+                    vm,
+                    onThreadClick = { connId, id -> nav.navigate("thread/$connId/$id") },
+                    onNewThread = { nav.navigate("newThread") },
+                )
             }
             composable(Section.DECISIONS.route) { PlaceholderScreen("Decisions", "C7") }
             composable(Section.TASKS.route) {
@@ -132,6 +142,41 @@ fun GroundControlApp(context: Context) {
                         TaskDetailViewModel(tasksRepo, conn, slug)
                     }
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
+                }
+            }
+            composable("newThread") {
+                val vm = viewModel {
+                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                }
+                NewThreadScreen(
+                    vm,
+                    onCreated = { connId, id ->
+                        nav.navigate("thread/$connId/$id") {
+                            popUpTo("newThread") { inclusive = true }
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                route = "thread/{connectionId}/{threadId}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("threadId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val threadId = entry.arguments?.getString("threadId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
+                } else {
+                    val vm = viewModel(key = "thread-$connectionId-$threadId") {
+                        ConversationViewModel(threadsRepo, conn, threadId)
+                    }
+                    ConversationScreen(vm, title = threadId, onBack = { nav.popBackStack() })
                 }
             }
         }
