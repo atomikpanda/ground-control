@@ -28,6 +28,8 @@ import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.defaultHttpClient
+import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
+import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
 import com.atomikpanda.groundcontrol.ui.messages.MessagesScreen
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
@@ -138,6 +140,27 @@ fun GroundControlApp(context: Context) {
                         TaskDetailViewModel(tasksRepo, conn, slug)
                     }
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
+                }
+            }
+            composable(
+                route = "thread/{connectionId}/{threadId}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("threadId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val threadId = entry.arguments?.getString("threadId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
+                } else {
+                    val vm = viewModel(key = "thread-$connectionId-$threadId") {
+                        ConversationViewModel(threadsRepo, conn, threadId)
+                    }
+                    ConversationScreen(vm, title = threadId, onBack = { nav.popBackStack() })
                 }
             }
         }
