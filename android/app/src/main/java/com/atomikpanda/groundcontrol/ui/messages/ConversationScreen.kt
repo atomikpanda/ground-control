@@ -103,14 +103,23 @@ private fun ConversationContentView(s: ConversationUiState.Content, vm: Conversa
     if (pull.isRefreshing) LaunchedEffect(true) { vm.load()?.join(); pull.endRefresh() }
     val listState = rememberLazyListState()
 
-    // Auto-scroll to bottom when messages change
-    LaunchedEffect(thread.messages.size) {
-        if (thread.messages.isNotEmpty()) listState.animateScrollToItem(thread.messages.size - 1)
+    // Auto-scroll to the bottom-most item when the list changes. The optional
+    // "Awaiting reply…" indicator is the last item, so the target is the total
+    // item count minus one (covers both messages growing and the indicator
+    // appearing/disappearing).
+    val itemCount = thread.messages.size + if (thread.awaitingReply) 1 else 0
+    LaunchedEffect(itemCount) {
+        if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f).nestedScroll(pull.nestedScrollConnection)) {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
+                items(thread.messages, key = { it.id }) { message ->
+                    MessageRow(message)
+                }
+                // Bottom-anchored: chat flows downward, so the hint belongs after
+                // the last message, where the eye lands after the auto-scroll.
                 if (thread.awaitingReply) {
                     item {
                         Text(
@@ -121,13 +130,10 @@ private fun ConversationContentView(s: ConversationUiState.Content, vm: Conversa
                         )
                     }
                 }
-                items(thread.messages, key = { it.id }) { message ->
-                    MessageRow(message)
-                }
             }
             PullToRefreshContainer(state = pull, modifier = Modifier.align(Alignment.TopCenter))
         }
-        ComposeBar(s.inFlight, vm)
+        ComposeBar(s, vm)
     }
 }
 
@@ -154,35 +160,57 @@ private fun MessageRow(message: Message) {
 }
 
 @Composable
-private fun ComposeBar(inFlight: Boolean, vm: ConversationViewModel) {
+private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewModel) {
     var draft by remember { mutableStateOf("") }
+    // Text of the in-flight send, buffered so it can be restored if the send fails.
+    var pending by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state.inFlight, state.sendError) {
+        if (!state.inFlight) {
+            // Send settled: restore the user's text on failure, then drop the buffer.
+            if (state.sendError != null) pending?.let { draft = it }
+            pending = null
+        }
+    }
     Surface(tonalElevation = 3.dp) {
-        Row(
-            Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Message…") },
-                singleLine = true,
-                enabled = !inFlight,
-            )
-            if (inFlight) {
-                CircularProgressIndicator(Modifier.padding(8.dp))
-            } else {
-                IconButton(
-                    onClick = {
-                        if (draft.isNotBlank()) {
-                            vm.send(draft)
-                            draft = ""
-                        }
-                    },
-                    enabled = draft.isNotBlank(),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+        Column {
+            state.sendError?.let { err ->
+                Text(
+                    err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Message…") },
+                    singleLine = true,
+                    enabled = !state.inFlight,
+                )
+                if (state.inFlight) {
+                    CircularProgressIndicator(Modifier.padding(8.dp))
+                } else {
+                    IconButton(
+                        onClick = {
+                            if (draft.isNotBlank()) {
+                                // Clear optimistically; the LaunchedEffect above restores
+                                // the text if the send fails.
+                                pending = draft
+                                vm.send(draft)
+                                draft = ""
+                            }
+                        },
+                        enabled = draft.isNotBlank(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                    }
                 }
             }
         }

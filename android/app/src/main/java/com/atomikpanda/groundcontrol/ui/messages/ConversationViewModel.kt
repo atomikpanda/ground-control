@@ -18,7 +18,13 @@ import kotlinx.coroutines.launch
 sealed interface ConversationUiState {
     data object Loading : ConversationUiState
     data class Error(val kind: ErrorKind, val message: String) : ConversationUiState
-    data class Content(val thread: Thread, val inFlight: Boolean = false) : ConversationUiState
+    data class Content(
+        val thread: Thread,
+        val inFlight: Boolean = false,
+        /** Non-null when the last send failed; the compose bar surfaces it and
+         *  restores the user's typed text so it isn't silently lost. */
+        val sendError: String? = null,
+    ) : ConversationUiState
 }
 
 class ConversationViewModel(
@@ -47,15 +53,18 @@ class ConversationViewModel(
         if (text.isBlank()) return null
         val current = _state.value as? ConversationUiState.Content ?: return null
         if (current.inFlight) return null
-        _state.value = current.copy(inFlight = true)
+        // Clear any prior send error when a new attempt starts.
+        _state.value = current.copy(inFlight = true, sendError = null)
         return scope().launch {
             runCatching { repo.postMessage(conn, threadId, text) }
                 .onSuccess { updatedThread ->
                     _state.value = ConversationUiState.Content(updatedThread, inFlight = false)
                 }
                 .onFailure { t ->
-                    // On send failure, restore content without inFlight (keep existing thread)
-                    _state.value = current.copy(inFlight = false)
+                    // Keep the existing thread, drop inFlight, and surface the failure so
+                    // the UI can show it and restore the user's text (instead of silently
+                    // re-enabling an empty compose bar).
+                    _state.value = current.copy(inFlight = false, sendError = t.toSendError())
                 }
         }
     }
@@ -64,5 +73,11 @@ class ConversationViewModel(
         is AuthException -> ErrorKind.AUTH
         is NotFoundException -> ErrorKind.NOT_FOUND
         else -> ErrorKind.NETWORK
+    }
+
+    private fun Throwable.toSendError(): String = when (this) {
+        is AuthException -> "Token rejected — fix this connection in Settings."
+        is NotFoundException -> "This conversation is no longer available."
+        else -> "Couldn't send. Check your connection and try again."
     }
 }

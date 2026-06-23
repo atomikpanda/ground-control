@@ -25,6 +25,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Before
 import org.junit.Test
 
@@ -105,6 +106,45 @@ class ConversationViewModelTest {
         assertEquals(3, c.thread.messages.size)
         assertEquals("I need help", c.thread.messages[2].text)
         assertFalse(c.inFlight)
+    }
+
+    @Test fun send_failure_surfaces_error_keeps_thread_and_clears_inflight() = runTest {
+        val vm = vm(this) { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        vm.send("I need help")?.join()
+        val c = vm.state.value as ConversationUiState.Content
+        assertNotNull(c.sendError)               // failure is surfaced, not silent
+        assertFalse(c.inFlight)                  // compose bar re-enabled
+        assertEquals(2, c.thread.messages.size)  // optimistic message not appended
+    }
+
+    @Test fun send_clears_prior_error_on_next_successful_attempt() = runTest {
+        var firstPost = true
+        val vm = vm(this) { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                    if (firstPost) { firstPost = false; respondError(HttpStatusCode.InternalServerError) }
+                    else respond(afterSendJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        vm.send("I need help")?.join()
+        assertNotNull((vm.state.value as ConversationUiState.Content).sendError)
+        vm.send("I need help")?.join()
+        val c = vm.state.value as ConversationUiState.Content
+        assertEquals(null, c.sendError)          // prior error cleared on success
+        assertEquals(3, c.thread.messages.size)
     }
 
     @Test fun send_is_noop_when_text_is_blank() = runTest {
