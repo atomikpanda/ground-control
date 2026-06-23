@@ -32,6 +32,8 @@ import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
 import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
 import com.atomikpanda.groundcontrol.ui.messages.MessagesScreen
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
+import com.atomikpanda.groundcontrol.ui.messages.NewThreadScreen
+import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
 import com.atomikpanda.groundcontrol.ui.placeholder.PlaceholderScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
@@ -141,6 +143,20 @@ fun GroundControlApp(context: Context) {
                     }
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
                 }
+            }
+            composable("newThread") {
+                val vm = viewModel {
+                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                }
+                NewThreadScreen(
+                    vm,
+                    onCreated = { connId, id ->
+                        nav.navigate("thread/$connId/$id") {
+                            popUpTo("newThread") { inclusive = true }
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
             }
             composable(
                 route = "thread/{connectionId}/{threadId}",
