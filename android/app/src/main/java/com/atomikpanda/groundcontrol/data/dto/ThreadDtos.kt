@@ -29,6 +29,7 @@ data class Thread(
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("task_slug") val taskSlug: String? = null,
+    @SerialName("spec_id") val specId: String? = null,
     val messages: List<Message> = emptyList(),
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
 )
