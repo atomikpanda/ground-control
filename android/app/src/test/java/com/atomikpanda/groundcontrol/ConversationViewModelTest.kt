@@ -178,4 +178,40 @@ class ConversationViewModelTest {
         val s = vm.state.value as ConversationUiState.Error
         assertEquals(ErrorKind.NETWORK, s.kind)
     }
+
+    @Test fun request_spec_posts_canonical_message() = runTest {
+        val postedTexts = mutableListOf<String>()
+        val afterRequestJson = """
+            {
+              "id": "t1",
+              "subject": "Hello world",
+              "awaiting_reply": true,
+              "messages": [
+                {"id":"m1","thread_id":"t1","role":"human","text":"Hey there","created_at":"2026-06-22T10:00:00Z"},
+                {"id":"m2","thread_id":"t1","role":"agent","text":"Hi! How can I help?","created_at":"2026-06-22T10:01:00Z"},
+                {"id":"m3","thread_id":"t1","role":"human","text":"Please turn this thread into a spec.","created_at":"2026-06-22T10:02:00Z"}
+              ]
+            }
+        """.trimIndent()
+        val vm = vm(this) { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post -> {
+                    val body = (req.body as io.ktor.http.content.TextContent).text
+                    postedTexts.add(body)
+                    respond(afterRequestJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        vm.requestSpec()?.join()
+        val c = vm.state.value as ConversationUiState.Content
+        assertEquals(3, c.thread.messages.size)
+        assertEquals(1, postedTexts.size)
+        assert(postedTexts[0].contains("Please turn this thread into a spec.")) {
+            "Expected canonical spec request text in POST body, got: ${postedTexts[0]}"
+        }
+    }
 }

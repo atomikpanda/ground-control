@@ -30,4 +30,16 @@ class ThreadDtosTest {
         assertEquals("agent", t.messages[1].role)
         assertEquals(false, t.awaitingReply)
     }
+
+    @Test fun parses_thread_with_spec_id() {
+        val raw = """{"id":"t1","subject":"Idea","spec_id":"s1","messages":[]}"""
+        val t = json.decodeFromString(Thread.serializer(), raw)
+        assertEquals("s1", t.specId)
+    }
+
+    @Test fun parses_thread_without_spec_id_gives_null() {
+        val raw = """{"id":"t1","subject":"Idea","messages":[]}"""
+        val t = json.decodeFromString(Thread.serializer(), raw)
+        assertEquals(null, t.specId)
+    }
 }

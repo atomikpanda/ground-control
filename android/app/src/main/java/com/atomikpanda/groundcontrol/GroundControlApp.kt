@@ -176,7 +176,12 @@ fun GroundControlApp(context: Context) {
                     val vm = viewModel(key = "thread-$connectionId-$threadId") {
                         ConversationViewModel(threadsRepo, conn, threadId)
                     }
-                    ConversationScreen(vm, title = threadId, onBack = { nav.popBackStack() })
+                    ConversationScreen(
+                        vm,
+                        title = threadId,
+                        onBack = { nav.popBackStack() },
+                        onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
+                    )
                 }
             }
         }

@@ -48,6 +48,9 @@ class ConversationViewModel(
         }
     }
 
+    /** Ask the host agent (via the mailbox) to turn this thread into a spec. */
+    fun requestSpec(): Job? = send("Please turn this thread into a spec.")
+
     /** Post a message; no-op if blank or a send is already in flight. Returns null if skipped. */
     fun send(text: String): Job? {
         if (text.isBlank()) return null

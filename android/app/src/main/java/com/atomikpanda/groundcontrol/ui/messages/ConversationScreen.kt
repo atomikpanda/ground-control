@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,7 +48,12 @@ import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConversationScreen(vm: ConversationViewModel, title: String, onBack: () -> Unit) {
+fun ConversationScreen(
+    vm: ConversationViewModel,
+    title: String,
+    onBack: () -> Unit,
+    onViewSpec: (specId: String) -> Unit = {},
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
 
@@ -60,6 +66,11 @@ fun ConversationScreen(vm: ConversationViewModel, title: String, onBack: () -> U
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
+                actions = {
+                    IconButton(onClick = { vm.requestSpec() }) {
+                        Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "Make this a spec")
+                    }
+                },
             )
         },
     ) { padding ->
@@ -68,7 +79,7 @@ fun ConversationScreen(vm: ConversationViewModel, title: String, onBack: () -> U
                 ConversationUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 is ConversationUiState.Error -> ConversationErrorView(s, vm, onBack)
-                is ConversationUiState.Content -> ConversationContentView(s, vm)
+                is ConversationUiState.Content -> ConversationContentView(s, vm, onViewSpec)
             }
         }
     }
@@ -97,7 +108,11 @@ private fun ConversationErrorView(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConversationContentView(s: ConversationUiState.Content, vm: ConversationViewModel) {
+private fun ConversationContentView(
+    s: ConversationUiState.Content,
+    vm: ConversationViewModel,
+    onViewSpec: (specId: String) -> Unit = {},
+) {
     val thread = s.thread
     val pull = rememberPullToRefreshState()
     if (pull.isRefreshing) LaunchedEffect(true) { vm.load()?.join(); pull.endRefresh() }
@@ -113,6 +128,17 @@ private fun ConversationContentView(s: ConversationUiState.Content, vm: Conversa
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        // "View spec ->" affordance — only shown when this thread has been linked to a spec.
+        thread.specId?.let { specId ->
+            OutlinedButton(
+                onClick = { onViewSpec(specId) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                Text("View spec →")
+            }
+        }
         Box(Modifier.weight(1f).nestedScroll(pull.nestedScrollConnection)) {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
                 items(thread.messages, key = { it.id }) { message ->
