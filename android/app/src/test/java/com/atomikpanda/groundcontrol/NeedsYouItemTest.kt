@@ -1,4 +1,3 @@
-// android/app/src/test/java/com/atomikpanda/groundcontrol/NeedsYouItemTest.kt
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -9,6 +8,7 @@ import com.atomikpanda.groundcontrol.ui.home.NeedsYouItem
 import com.atomikpanda.groundcontrol.ui.home.UrgencyTier
 import com.atomikpanda.groundcontrol.ui.home.approvalsFrom
 import com.atomikpanda.groundcontrol.ui.home.blockersFrom
+import com.atomikpanda.groundcontrol.ui.home.displayName
 import com.atomikpanda.groundcontrol.ui.home.questionsFrom
 import com.atomikpanda.groundcontrol.ui.home.sortNeedsYou
 import org.junit.Assert.assertEquals
@@ -60,5 +60,24 @@ class NeedsYouItemTest {
         val older = NeedsYouItem.Question("c1", "ws", "old", "Q", "m", "2026-06-24T08:00:00Z")
         val newer = NeedsYouItem.Question("c1", "ws", "new", "Q", "m", "2026-06-24T12:00:00Z")
         assertEquals(listOf(newer, older), sortNeedsYou(listOf(older, newer)))
+    }
+
+    @Test fun displayName_falls_back_to_baseUrl_when_name_blank() {
+        val blank = WorkspaceConnection("c", "http://host:47100", null, "")
+        assertEquals("http://host:47100", blank.displayName())
+    }
+
+    @Test fun sort_merges_two_connections_and_preserves_connectionId() {
+        // Two workspaces, items across all three tiers. Expected order is tier-first
+        // (blocker, question, approval), newest-first within a tier; identity must survive.
+        val blockerA = NeedsYouItem.Blocker("connA", "wsA", "k1", "r", "2026-06-24T09:00:00Z")
+        val questionB = NeedsYouItem.Question("connB", "wsB", "t1", "Q", "m", "2026-06-24T12:00:00Z")
+        val questionA = NeedsYouItem.Question("connA", "wsA", "t2", "Q", "m", "2026-06-24T08:00:00Z")
+        val approvalB = NeedsYouItem.Approval("connB", "wsB", "s1", "Title")
+
+        val sorted = sortNeedsYou(listOf(approvalB, questionA, blockerA, questionB))
+
+        assertEquals(listOf(blockerA, questionB, questionA, approvalB), sorted)
+        assertEquals(listOf("connA", "connB", "connA", "connB"), sorted.map { it.connectionId })
     }
 }

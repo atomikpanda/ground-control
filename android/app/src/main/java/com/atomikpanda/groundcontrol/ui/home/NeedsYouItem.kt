@@ -1,4 +1,3 @@
-// android/app/src/main/java/com/atomikpanda/groundcontrol/ui/home/NeedsYouItem.kt
 package com.atomikpanda.groundcontrol.ui.home
 
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -26,7 +25,7 @@ sealed interface NeedsYouItem {
         val title: String,
     ) : NeedsYouItem {
         override val tier get() = UrgencyTier.APPROVAL
-        override val sortKey get() = title.lowercase()   // /specs carries no timestamp
+        override val sortKey get() = ""   // /specs carries no timestamp; preserve API insertion order within the tier
         override val key get() = "approval:$connectionId:$specId"
     }
 
@@ -72,7 +71,7 @@ fun blockersFrom(conn: WorkspaceConnection, tasks: List<TaskSummary>): List<Need
         .map { NeedsYouItem.Blocker(conn.id, conn.displayName(), it.slug, it.blockedReason ?: "", it.createdAt ?: "") }
 
 /** Urgency order: tier asc (blocker first), then newest-first within tier. */
-val needsYouComparator: Comparator<NeedsYouItem> =
+internal val needsYouComparator: Comparator<NeedsYouItem> =
     compareBy<NeedsYouItem> { it.tier.ordinal }.thenByDescending { it.sortKey }
 
 fun sortNeedsYou(items: List<NeedsYouItem>): List<NeedsYouItem> = items.sortedWith(needsYouComparator)
