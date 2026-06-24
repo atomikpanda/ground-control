@@ -34,5 +34,13 @@ class SemanticColorsTest {
         assertTrue(SemanticDark.chipHues.contains(chipHue("conn-a", SemanticDark)))
         // distinct ids generally land on different hues (not guaranteed, but the set is used)
         assertTrue(SemanticDark.chipHues.size >= 4)
+        // conn-a → idx 0, conn-b → idx 1: distinct ids land on distinct hues
+        assertNotEquals(chipHue("conn-a", SemanticDark), chipHue("conn-b", SemanticDark))
+    }
+
+    @Test fun dark_accents_are_mutually_distinct() {
+        assertNotEquals(SemanticDark.approval, SemanticDark.question)
+        assertNotEquals(SemanticDark.question, SemanticDark.blocker)
+        assertNotEquals(SemanticDark.approval, SemanticDark.blocker)
     }
 }
