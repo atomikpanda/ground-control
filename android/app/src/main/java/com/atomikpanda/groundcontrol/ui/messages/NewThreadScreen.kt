@@ -39,9 +39,16 @@ fun NewThreadScreen(
     vm: NewThreadViewModel,
     onCreated: (connectionId: String, threadId: String) -> Unit,
     onBack: () -> Unit,
+    initialConnectionId: String? = null,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
+    // Preselect the scoped workspace once connections are available.
+    LaunchedEffect(state.connections, initialConnectionId) {
+        if (initialConnectionId != null && state.connections.any { it.id == initialConnectionId }) {
+            vm.onSelectConnection(initialConnectionId)
+        }
+    }
 
     // Navigate when creation succeeds
     LaunchedEffect(state.message) {

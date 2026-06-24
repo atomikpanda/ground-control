@@ -43,6 +43,8 @@ import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailScreen
 import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailViewModel
 import com.atomikpanda.groundcontrol.ui.tasks.TasksScreen
 import com.atomikpanda.groundcontrol.ui.tasks.TasksViewModel
+import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceScreen
+import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 import kotlinx.coroutines.runBlocking
 
 @Composable
@@ -78,7 +80,7 @@ fun GroundControlApp(context: Context) {
                     onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
-                    onBrowseWorkspace = { /* wired in Task 7 */ },
+                    onBrowseWorkspace = { connId -> nav.navigate("workspace/$connId") },
                 )
             }
             composable(Section.TASKS.route) {
@@ -134,15 +136,47 @@ fun GroundControlApp(context: Context) {
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
                 }
             }
-            composable("newThread") {
+            composable(
+                route = "workspace/{connectionId}",
+                arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
+                } else {
+                    val vm = viewModel(key = "workspace-$connectionId") {
+                        WorkspaceViewModel(api, conn)
+                    }
+                    WorkspaceScreen(
+                        vm,
+                        workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
+                        onThread = { id -> nav.navigate("thread/$connectionId/$id") },
+                        onSpec = { id -> nav.navigate("specDetail/$connectionId/$id") },
+                        onTask = { slug -> nav.navigate("taskDetail/$connectionId/$slug") },
+                        onNewConversation = { nav.navigate("newThread?connectionId=$connectionId") },
+                        onBack = { nav.popBackStack() },
+                    )
+                }
+            }
+            composable(
+                route = "newThread?connectionId={connectionId}",
+                arguments = listOf(navArgument("connectionId") {
+                    type = NavType.StringType; nullable = true; defaultValue = null
+                }),
+            ) { entry ->
+                val preselect = entry.arguments?.getString("connectionId")
                 val vm = viewModel {
                     NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
                 }
                 NewThreadScreen(
                     vm,
+                    initialConnectionId = preselect,
                     onCreated = { connId, id ->
                         nav.navigate("thread/$connId/$id") {
-                            popUpTo("newThread") { inclusive = true }
+                            popUpTo("newThread?connectionId={connectionId}") { inclusive = true }
                         }
                     },
                     onBack = { nav.popBackStack() },
