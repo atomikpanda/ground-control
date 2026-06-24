@@ -161,6 +161,24 @@ fun GroundControlApp(context: Context) {
                     )
                 }
             }
+            composable("capture") {
+                val vm = viewModel {
+                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                }
+                NewThreadScreen(
+                    vm,
+                    title = "Capture",
+                    showSubject = false,
+                    bodyLabel = "What's up?",
+                    submitLabel = "Send",
+                    onCreated = { connId, id ->
+                        nav.navigate("thread/$connId/$id") {
+                            popUpTo("capture") { inclusive = true }
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
             composable(
                 route = "newThread?connectionId={connectionId}",
                 arguments = listOf(navArgument("connectionId") {
