@@ -81,6 +81,7 @@ fun GroundControlApp(context: Context) {
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
                     onBrowseWorkspace = { connId -> nav.navigate("workspace/$connId") },
+                    onCapture = { nav.navigate("capture") },
                 )
             }
             composable(Section.TASKS.route) {
@@ -160,6 +161,24 @@ fun GroundControlApp(context: Context) {
                         onBack = { nav.popBackStack() },
                     )
                 }
+            }
+            composable("capture") {
+                val vm = viewModel {
+                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                }
+                NewThreadScreen(
+                    vm,
+                    title = "Capture",
+                    showSubject = false,
+                    bodyLabel = "What's up?",
+                    submitLabel = "Send",
+                    onCreated = { connId, id ->
+                        nav.navigate("thread/$connId/$id") {
+                            popUpTo("capture") { inclusive = true }
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
             }
             composable(
                 route = "newThread?connectionId={connectionId}",

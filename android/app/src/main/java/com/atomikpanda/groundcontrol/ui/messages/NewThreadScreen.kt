@@ -40,6 +40,10 @@ fun NewThreadScreen(
     onCreated: (connectionId: String, threadId: String) -> Unit,
     onBack: () -> Unit,
     initialConnectionId: String? = null,
+    title: String = "New thread",
+    showSubject: Boolean = true,
+    bodyLabel: String = "Message",
+    submitLabel: String = "Create",
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
@@ -61,7 +65,7 @@ fun NewThreadScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("New thread") },
+                title = { Text(title) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -101,18 +105,20 @@ fun NewThreadScreen(
                 )
             }
 
-            OutlinedTextField(
-                value = state.subject,
-                onValueChange = vm::onSubjectChange,
-                label = { Text("Subject (optional)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (showSubject) {
+                OutlinedTextField(
+                    value = state.subject,
+                    onValueChange = vm::onSubjectChange,
+                    label = { Text("Subject (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             OutlinedTextField(
                 value = state.text,
                 onValueChange = vm::onTextChange,
-                label = { Text("Message") },
+                label = { Text(bodyLabel) },
                 minLines = 4,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -125,7 +131,7 @@ fun NewThreadScreen(
                 if (state.inFlight) {
                     CircularProgressIndicator(Modifier.size(18.dp))
                 } else {
-                    Text("Create")
+                    Text(submitLabel)
                 }
             }
 
