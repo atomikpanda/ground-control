@@ -21,27 +21,24 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
-import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.defaultHttpClient
+import com.atomikpanda.groundcontrol.ui.home.HomeScreen
+import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
 import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
-import com.atomikpanda.groundcontrol.ui.messages.MessagesScreen
-import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadScreen
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
-import com.atomikpanda.groundcontrol.ui.placeholder.PlaceholderScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailViewModel
-import com.atomikpanda.groundcontrol.ui.specs.SpecInboxScreen
-import com.atomikpanda.groundcontrol.ui.specs.SpecInboxViewModel
 import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailScreen
 import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailViewModel
 import com.atomikpanda.groundcontrol.ui.tasks.TasksScreen
@@ -53,7 +50,7 @@ fun GroundControlApp(context: Context) {
     val nav = rememberNavController()
     val connRepo = remember { ConnectionsRepository(context.applicationContext) }
     val api = remember { SpecApi(defaultHttpClient()) }
-    val specRepo = remember { SpecRepository(api) }
+    val homeRepo = remember { HomeFeedRepository(api) }
     val detailRepo = remember { SpecDetailRepository(api) }
     val tasksRepo = remember { TasksRepository(api) }
     val threadsRepo = remember { ThreadsRepository(api) }
@@ -71,26 +68,19 @@ fun GroundControlApp(context: Context) {
             }
         }
     }) { padding ->
-        NavHost(nav, startDestination = Section.SPECS.route, modifier = Modifier.padding(padding)) {
-            composable(Section.SPECS.route) {
+        NavHost(nav, startDestination = Section.HOME.route, modifier = Modifier.padding(padding)) {
+            composable(Section.HOME.route) {
                 val vm = viewModel {
-                    SpecInboxViewModel(specRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    HomeViewModel(homeRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
                 }
-                SpecInboxScreen(vm) { connId, specId ->
-                    nav.navigate("specDetail/$connId/$specId")
-                }
-            }
-            composable(Section.MESSAGES.route) {
-                val vm = viewModel {
-                    MessagesViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
-                }
-                MessagesScreen(
+                HomeScreen(
                     vm,
-                    onThreadClick = { connId, id -> nav.navigate("thread/$connId/$id") },
-                    onNewThread = { nav.navigate("newThread") },
+                    onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
+                    onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
+                    onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
+                    onBrowseWorkspace = { /* wired in Task 7 */ },
                 )
             }
-            composable(Section.DECISIONS.route) { PlaceholderScreen("Decisions", "C7") }
             composable(Section.TASKS.route) {
                 val vm = viewModel {
                     TasksViewModel(tasksRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
