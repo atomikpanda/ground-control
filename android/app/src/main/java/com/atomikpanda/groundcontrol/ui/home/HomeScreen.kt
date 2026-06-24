@@ -9,11 +9,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -32,16 +37,26 @@ fun HomeScreen(
     onQuestion: (connectionId: String, threadId: String) -> Unit,
     onBlocker: (connectionId: String, slug: String) -> Unit,
     onBrowseWorkspace: (connectionId: String) -> Unit,
+    onCapture: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refresh() }
 
-    when (val s = state) {
-        is HomeUiState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
-        is HomeUiState.EmptyConfig -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-            Text("Add a workspace in Settings to get started.")
-        }
-        is HomeUiState.Content -> LazyColumn(Modifier.fillMaxSize()) {
+    Scaffold(
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = onCapture,
+                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                text = { Text("Capture") },
+            )
+        },
+    ) { innerPadding ->
+        when (val s = state) {
+            is HomeUiState.Loading -> Box(Modifier.fillMaxSize().padding(innerPadding), Alignment.Center) { CircularProgressIndicator() }
+            is HomeUiState.EmptyConfig -> Box(Modifier.fillMaxSize().padding(innerPadding), Alignment.Center) {
+                Text("Add a workspace in Settings to get started.")
+            }
+            is HomeUiState.Content -> LazyColumn(Modifier.fillMaxSize().padding(innerPadding)) {
             // Workspace chip rail
             item {
                 LazyRow(
@@ -97,6 +112,7 @@ fun HomeScreen(
                 NeedsYouRow(item, onApproval, onQuestion, onBlocker)
             }
         }
+    }
     }
 }
 

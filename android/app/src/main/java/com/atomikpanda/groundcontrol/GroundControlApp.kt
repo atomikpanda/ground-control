@@ -81,6 +81,7 @@ fun GroundControlApp(context: Context) {
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
                     onBrowseWorkspace = { connId -> nav.navigate("workspace/$connId") },
+                    onCapture = { nav.navigate("capture") },
                 )
             }
             composable(Section.TASKS.route) {
