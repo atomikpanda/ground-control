@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -45,11 +46,11 @@ fun HomeScreen(
             item {
                 LazyRow(
                     Modifier
-                        .fillMaxSize()
+                        .fillMaxWidth()
                         .padding(12.dp, 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(s.rail) { chip ->
+                    items(s.rail, key = { it.connectionId ?: "all" }) { chip ->
                         FilterChip(
                             selected = chip.connectionId == s.selectedConnectionId,
                             onClick = { vm.select(chip.connectionId) },
@@ -67,10 +68,11 @@ fun HomeScreen(
                 )
             }
             // "Browse this workspace" when scoped to one
-            if (s.selectedConnectionId != null) {
+            val sel = s.selectedConnectionId
+            if (sel != null) {
                 item {
                     TextButton(
-                        onClick = { onBrowseWorkspace(s.selectedConnectionId!!) },
+                        onClick = { onBrowseWorkspace(sel) },
                         modifier = Modifier.padding(8.dp, 0.dp),
                     ) {
                         Text("Browse all in this workspace →")
