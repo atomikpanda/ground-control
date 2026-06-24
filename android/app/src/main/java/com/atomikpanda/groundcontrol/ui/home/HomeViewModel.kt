@@ -37,22 +37,24 @@ class HomeViewModel(
 
     private var feed: HomeFeed = HomeFeed(emptyList(), emptyList())
     private var selected: String? = null
+    private var lastConnections: List<WorkspaceConnection> = emptyList()
 
     fun refresh(): Job? {
         val connections = connectionsProvider()
         if (connections.isEmpty()) { _state.value = HomeUiState.EmptyConfig; return null }
         _state.value = HomeUiState.Loading
+        lastConnections = connections
         return (testScope ?: viewModelScope).launch {
             feed = repo.load(connections)
             render(connections)
         }
     }
 
-    /** Select a workspace chip to scope the queue; null == All. */
+    /** Select a workspace chip to scope the queue; null == All. Renders from the snapshot [refresh] loaded. */
     fun select(connectionId: String?) {
+        if (_state.value !is HomeUiState.Content) return
         selected = connectionId
-        val connections = connectionsProvider()
-        if (connections.isNotEmpty()) render(connections)
+        render(lastConnections)
     }
 
     private fun render(connections: List<WorkspaceConnection>) {

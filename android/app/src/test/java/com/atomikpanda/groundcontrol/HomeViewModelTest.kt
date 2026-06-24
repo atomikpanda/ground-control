@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -37,6 +38,16 @@ class HomeViewModelTest {
             p.endsWith("/specs") -> respond(
                 if (req.url.host == "a") """[{"id":"s1","title":"Dark","status":"needs_review"}]""" else "[]",
                 HttpStatusCode.OK, jsonHdr)
+            else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+        }
+    }) { mshipDefaults() }))
+
+    /** ws-a (host a) serves 1 needs_review spec; every call to host "bad" 500s. */
+    private fun repoWithFailingHost() = HomeFeedRepository(SpecApi(HttpClient(MockEngine { req ->
+        if (req.url.host == "bad") return@MockEngine respond("boom", HttpStatusCode.InternalServerError, jsonHdr)
+        when {
+            req.url.encodedPath.endsWith("/specs") -> respond(
+                """[{"id":"s1","title":"Dark","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
             else -> respond("[]", HttpStatusCode.OK, jsonHdr)
         }
     }) { mshipDefaults() }))
@@ -68,5 +79,18 @@ class HomeViewModelTest {
         val c = vm.state.value as HomeUiState.Content
         assertEquals("b", c.selectedConnectionId)
         assertEquals(0, c.items.size)                                         // ws-b has nothing
+    }
+
+    @Test fun all_count_reflects_only_successful_items_when_error_present() = runTest {
+        val vm = HomeViewModel(repoWithFailingHost(), {
+            listOf(
+                WorkspaceConnection("a", "http://a:47100", null, "ws-a"),
+                WorkspaceConnection("bad", "http://bad:47100", null, "ws-bad"),
+            )
+        }, this)
+        vm.refresh()?.join()
+        val c = vm.state.value as HomeUiState.Content
+        assertEquals(1, c.rail.first().count)                                 // "All" count excludes errored ws-bad
+        assertEquals(listOf("ws-bad"), c.errors.map { it.workspaceName })     // failed workspace surfaced as error
     }
 }
