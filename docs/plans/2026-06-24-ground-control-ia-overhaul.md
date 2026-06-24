@@ -10,7 +10,7 @@
 
 **Tech Stack:** Kotlin, Jetpack Compose, Material3, Navigation-Compose, Ktor client, kotlinx.serialization, kotlinx-coroutines; JUnit4 + kotlinx-coroutines-test + Ktor `MockEngine` for tests (no emulator).
 
-**Urgency rule (spec q1):** `BLOCKER > QUESTION > APPROVAL`; within a tier, newest-first. *Note:* `SpecSummary` carries no timestamp over `/specs`, so APPROVAL items sort by title within their tier (documented simplification; revisit if a spec timestamp is exposed later).
+**Urgency rule (spec q1):** `BLOCKER > QUESTION > APPROVAL`; within a tier, newest-first. *Note:* `SpecSummary` carries no timestamp over `/specs`, so APPROVAL items have an empty sort key and keep their API insertion order within their tier (documented simplification; revisit if a spec timestamp is exposed later).
 
 **Rail rule (spec q4):** `"All"` chip pinned first, then connections ordered by needs-you count (desc) then name. *Note:* pure "recent activity" ordering for zero-item workspaces is deferred — no cheap global last-activity signal exists yet; zero-item workspaces sort by name.
 
@@ -1227,7 +1227,7 @@ Expected: transitions (tests have passing evidence from Step 1).
 - AC9 (empty state) → Task 4 (HomeScreen empty branch).
 - AC10 (JVM unit tests for merge/sort + per-connection isolation) → Tasks 1, 2, 3, 6.
 
-**Known simplifications (documented, not silent):** APPROVAL items sort by title (no spec timestamp over `/specs`); zero-item workspaces sort by name (no global last-activity signal). Both noted in the plan header; revisit if mothership later exposes timestamps. AC6 has no unit test (server-state dependent) — covered by manual smoke.
+**Known simplifications (documented, not silent):** APPROVAL items keep API insertion order within their tier (no spec timestamp over `/specs`); zero-item workspaces sort by name (no global last-activity signal). Both noted in the plan header; revisit if mothership later exposes timestamps. AC6 has no unit test (server-state dependent) — covered by manual smoke.
 
 **Placeholder scan:** none — every step has concrete code or an exact command.
 

@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -64,6 +65,15 @@ fun WorkspaceScreen(
             is WorkspaceUiState.Loading ->
                 Box(Modifier.fillMaxSize().padding(padding), Alignment.Center) { CircularProgressIndicator() }
             is WorkspaceUiState.Content -> LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+                if (s.errored) {
+                    item {
+                        AssistChip(
+                            onClick = {},
+                            label = { Text("Couldn't load everything — pull to refresh.") },
+                            modifier = Modifier.padding(12.dp, 4.dp),
+                        )
+                    }
+                }
                 item { Header("Conversations") }
                 items(s.threads.size, key = { "t:${s.threads[it].id}" }) { i ->
                     val t = s.threads[i]
