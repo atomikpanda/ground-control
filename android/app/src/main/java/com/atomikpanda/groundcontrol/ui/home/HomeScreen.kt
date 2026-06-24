@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.ui.home
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -56,63 +57,66 @@ fun HomeScreen(
             is HomeUiState.EmptyConfig -> Box(Modifier.fillMaxSize().padding(innerPadding), Alignment.Center) {
                 Text("Add a workspace in Settings to get started.")
             }
-            is HomeUiState.Content -> LazyColumn(Modifier.fillMaxSize().padding(innerPadding)) {
-            // Workspace chip rail
-            item {
-                LazyRow(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp, 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(s.rail, key = { it.connectionId ?: "all" }) { chip ->
-                        FilterChip(
-                            selected = chip.connectionId == s.selectedConnectionId,
-                            onClick = { vm.select(chip.connectionId) },
-                            label = { Text(if (chip.count > 0) "${chip.label} · ${chip.count}" else chip.label) },
-                        )
-                    }
-                }
-            }
-            // Per-connection error indicators
-            items(s.errors, key = { "err:${it.connectionId}" }) { err ->
-                AssistChip(
-                    onClick = {},
-                    label = { Text("${err.workspaceName} unreachable") },
-                    modifier = Modifier.padding(12.dp, 4.dp),
-                )
-            }
-            // "Browse this workspace" when scoped to one
-            val sel = s.selectedConnectionId
-            if (sel != null) {
+            is HomeUiState.Content -> LazyColumn(
+                Modifier.fillMaxSize().padding(innerPadding),
+                contentPadding = PaddingValues(bottom = 88.dp),
+            ) {
+                // Workspace chip rail
                 item {
-                    TextButton(
-                        onClick = { onBrowseWorkspace(sel) },
-                        modifier = Modifier.padding(8.dp, 0.dp),
-                    ) {
-                        Text("Browse all in this workspace →")
-                    }
-                }
-            }
-            // Empty state
-            if (s.items.isEmpty() && s.errors.isEmpty()) {
-                item {
-                    Box(
+                    LazyRow(
                         Modifier
-                            .fillMaxSize()
-                            .padding(32.dp),
-                        Alignment.Center,
+                            .fillMaxWidth()
+                            .padding(12.dp, 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text("Nothing needs you right now.", style = MaterialTheme.typography.bodyMedium)
+                        items(s.rail, key = { it.connectionId ?: "all" }) { chip ->
+                            FilterChip(
+                                selected = chip.connectionId == s.selectedConnectionId,
+                                onClick = { vm.select(chip.connectionId) },
+                                label = { Text(if (chip.count > 0) "${chip.label} · ${chip.count}" else chip.label) },
+                            )
+                        }
                     }
                 }
-            }
-            // The "Needs you" queue
-            items(s.items, key = { it.key }) { item ->
-                NeedsYouRow(item, onApproval, onQuestion, onBlocker)
+                // Per-connection error indicators
+                items(s.errors, key = { "err:${it.connectionId}" }) { err ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("${err.workspaceName} unreachable") },
+                        modifier = Modifier.padding(12.dp, 4.dp),
+                    )
+                }
+                // "Browse this workspace" when scoped to one
+                val sel = s.selectedConnectionId
+                if (sel != null) {
+                    item {
+                        TextButton(
+                            onClick = { onBrowseWorkspace(sel) },
+                            modifier = Modifier.padding(8.dp, 0.dp),
+                        ) {
+                            Text("Browse all in this workspace →")
+                        }
+                    }
+                }
+                // Empty state
+                if (s.items.isEmpty() && s.errors.isEmpty()) {
+                    item {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .padding(32.dp),
+                            Alignment.Center,
+                        ) {
+                            Text("Nothing needs you right now.", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+                // The "Needs you" queue
+                items(s.items, key = { it.key }) { item ->
+                    NeedsYouRow(item, onApproval, onQuestion, onBlocker)
+                }
             }
         }
-    }
     }
 }
 
