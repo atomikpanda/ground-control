@@ -6,6 +6,7 @@ import com.atomikpanda.groundcontrol.ui.home.blockersFrom
 import com.atomikpanda.groundcontrol.ui.home.displayName
 import com.atomikpanda.groundcontrol.ui.home.questionsFrom
 import com.atomikpanda.groundcontrol.ui.home.sortNeedsYou
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -36,11 +37,17 @@ class HomeFeedRepository(private val api: SpecApi) {
 
     private data class ConnResult(val items: List<NeedsYouItem>, val error: WorkspaceError?)
 
+    /** Like [runCatching], but never swallows structured-concurrency cancellation. */
+    private inline fun <T> catchingApi(block: () -> T): Result<T> =
+        runCatching(block).onFailure { if (it is CancellationException) throw it }
+
     private suspend fun loadOne(conn: WorkspaceConnection): ConnResult = coroutineScope {
-        val specs = async { runCatching { api.listSpecs(conn) } }
-        val threads = async { runCatching { api.listThreads(conn) } }
-        val tasks = async { runCatching { api.listTasks(conn) } }
-        val s = specs.await(); val t = threads.await(); val k = tasks.await()
+        val specs = async { catchingApi { api.listSpecs(conn) } }
+        val threads = async { catchingApi { api.listThreads(conn) } }
+        val tasks = async { catchingApi { api.listTasks(conn) } }
+        val s = specs.await()
+        val t = threads.await()
+        val k = tasks.await()
         val items = buildList {
             s.getOrNull()?.let { addAll(approvalsFrom(conn, it)) }
             t.getOrNull()?.let { addAll(questionsFrom(conn, it)) }

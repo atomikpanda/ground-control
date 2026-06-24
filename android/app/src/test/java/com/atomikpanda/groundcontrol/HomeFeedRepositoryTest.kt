@@ -26,10 +26,13 @@ class HomeFeedRepositoryTest {
     private val tasksJson = """[{"slug":"k1","phase":"dev","branch":"b","blocked_reason":"needs key","created_at":"2026-06-24T09:00:00Z"},
                                 {"slug":"k2","phase":"dev","branch":"b"}]"""
 
-    /** Route by path; fail every call to host "bad". */
+    /** Route by path; fail every call to host "bad"; fail only /tasks for host "partial". */
     private fun api() = SpecApi(HttpClient(MockEngine { req ->
         if (req.url.host == "bad") return@MockEngine respond("boom", HttpStatusCode.InternalServerError, jsonHdr)
         val p = req.url.encodedPath
+        if (req.url.host == "partial" && p.endsWith("/tasks")) {
+            return@MockEngine respond("boom", HttpStatusCode.InternalServerError, jsonHdr)
+        }
         when {
             p.endsWith("/specs") -> respond(specsJson, HttpStatusCode.OK, jsonHdr)
             p.endsWith("/threads") -> respond(threadsJson, HttpStatusCode.OK, jsonHdr)
@@ -58,5 +61,17 @@ class HomeFeedRepositoryTest {
         assertEquals(3, feed.items.size)                    // ok workspace's items present
         assertTrue(feed.items.all { it.connectionId == "ok" })
         assertEquals(listOf("ws-bad"), feed.errors.map { it.workspaceName })
+    }
+
+    @Test fun partial_source_failure_keeps_good_sources_and_records_error() = runTest {
+        val repo = HomeFeedRepository(api())
+        val feed = repo.load(listOf(WorkspaceConnection("p1", "http://partial:47100", null, "ws-partial")))
+        // /specs + /threads succeed, /tasks 500s: approval + question survive, no blocker
+        assertEquals(2, feed.items.size)
+        assertTrue(feed.items.any { it is NeedsYouItem.Approval })
+        assertTrue(feed.items.any { it is NeedsYouItem.Question })
+        assertTrue(feed.items.none { it is NeedsYouItem.Blocker })
+        // the failed /tasks source still flags the workspace as errored
+        assertEquals(listOf("ws-partial"), feed.errors.map { it.workspaceName })
     }
 }
