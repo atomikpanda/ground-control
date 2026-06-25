@@ -22,6 +22,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 
 /**
  * Pull-to-refresh uses the material3 1.2.1 API (`PullToRefreshContainer` +
@@ -69,7 +70,7 @@ fun TasksScreen(vm: TasksViewModel, onTaskClick: (connectionId: String, slug: St
                                     }
                                     ListItem(
                                         headlineContent = { Text(task.description.ifBlank { task.slug }) },
-                                        supportingContent = { Text(supporting) },
+                                        supportingContent = { Text(supporting, style = MonoStyle) },
                                         modifier = Modifier.clickable { onTaskClick(section.connectionId, task.slug) },
                                     )
                                 }

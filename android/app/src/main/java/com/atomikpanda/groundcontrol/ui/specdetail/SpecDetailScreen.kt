@@ -50,6 +50,7 @@ import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewQuestion
 import com.atomikpanda.groundcontrol.data.isReviewInteractive
 import com.atomikpanda.groundcontrol.data.statusBanner
+import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -117,7 +118,7 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                     } ?: Text("● ${d.status}", style = MaterialTheme.typography.labelLarge)
                     Text(
                         "repos: ${d.affectedRepos.joinToString().ifBlank { "—" }}",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MonoStyle,
                     )
                     Text(
                         "${sum.approved}/${sum.criteriaTotal} approved · ${sum.flagged} flagged · ${sum.unansweredQuestions} unanswered Q",
@@ -360,7 +361,7 @@ private fun DispatchResultDialog(info: DispatchInfo, vm: SpecDetailViewModel) {
         title = { Text(if (info.spawned) "Dispatched (spawned task)" else "Dispatched") },
         text = {
             Column {
-                Text("task: ${info.taskSlug}")
+                Text("task: ${info.taskSlug}", style = MonoStyle)
                 if (info.handoff.isNotBlank()) Text(info.handoff.take(280), style = MaterialTheme.typography.bodySmall)
             }
         },

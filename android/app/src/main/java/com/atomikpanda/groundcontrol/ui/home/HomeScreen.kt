@@ -11,7 +11,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -27,9 +30,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
+import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
+import com.atomikpanda.groundcontrol.ui.theme.chipHue
 
 @Composable
 fun HomeScreen(
@@ -77,16 +85,28 @@ fun HomeScreen(
                             FilterChip(
                                 selected = chip.connectionId == s.selectedConnectionId,
                                 onClick = { vm.select(chip.connectionId) },
-                                label = { Text(if (chip.count > 0) "${chip.label} · ${chip.count}" else chip.label) },
+                                label = {
+                                    if (chip.count > 0) {
+                                        Text(buildAnnotatedString {
+                                            append("${chip.label} · ")
+                                            withStyle(SpanStyle(fontFamily = MonoStyle.fontFamily)) {
+                                                append("${chip.count}")
+                                            }
+                                        })
+                                    } else {
+                                        Text(chip.label)
+                                    }
+                                },
                             )
                         }
                     }
                 }
                 // Per-connection error indicators
                 items(s.errors, key = { "err:${it.connectionId}" }) { err ->
+                    val colors = LocalSemanticColors.current
                     AssistChip(
                         onClick = {},
-                        label = { Text("${err.workspaceName} unreachable") },
+                        label = { Text("${err.workspaceName} unreachable", color = colors.error) },
                         modifier = Modifier.padding(12.dp, 4.dp),
                     )
                 }
@@ -131,20 +151,22 @@ private fun NeedsYouRow(
     onQuestion: (String, String) -> Unit,
     onBlocker: (String, String) -> Unit,
 ) {
-    val (leading, title, supporting, onClick) = when (item) {
-        is NeedsYouItem.Blocker -> Quad("⛔", "Blocked: ${item.taskSlug}", item.reason) {
+    val colors = LocalSemanticColors.current
+    val accent = accentFor(item.tier, colors)
+    val (icon, title, supporting, onClick) = when (item) {
+        is NeedsYouItem.Blocker -> RowSpec(Icons.Filled.Block, "Blocked: ${item.taskSlug}", item.reason) {
             onBlocker(item.connectionId, item.taskSlug)
         }
-        is NeedsYouItem.Question -> Quad("💬", item.subject, item.lastMessage) {
+        is NeedsYouItem.Question -> RowSpec(Icons.AutoMirrored.Filled.Chat, item.subject, item.lastMessage) {
             onQuestion(item.connectionId, item.threadId)
         }
-        is NeedsYouItem.Approval -> Quad("✅", item.title, "ready to review") {
+        is NeedsYouItem.Approval -> RowSpec(Icons.Filled.CheckCircle, item.title, "ready to review") {
             onApproval(item.connectionId, item.specId)
         }
     }
     ListItem(
-        leadingContent = { Text(leading) },
-        overlineContent = { Text(item.workspaceName, fontWeight = FontWeight.SemiBold) },
+        leadingContent = { Icon(icon, contentDescription = null, tint = accent) },
+        overlineContent = { Text(item.workspaceName, style = MonoStyle, color = chipHue(item.connectionId, colors)) },
         headlineContent = { Text(title) },
         supportingContent = { Text(supporting) },
         modifier = Modifier.clickable { onClick() },
@@ -152,4 +174,4 @@ private fun NeedsYouRow(
 }
 
 /** Tiny holder so the when-expression can destructure. */
-private data class Quad(val a: String, val b: String, val c: String, val d: () -> Unit)
+private data class RowSpec(val a: androidx.compose.ui.graphics.vector.ImageVector, val b: String, val c: String, val d: () -> Unit)
