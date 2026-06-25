@@ -3,7 +3,7 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.ui.home.UrgencyTier
 import com.atomikpanda.groundcontrol.ui.theme.SemanticDark
 import com.atomikpanda.groundcontrol.ui.theme.SemanticLight
-import com.atomikpanda.groundcontrol.ui.theme.accentFor
+import com.atomikpanda.groundcontrol.ui.home.accentFor
 import com.atomikpanda.groundcontrol.ui.theme.chipHue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals

@@ -1,7 +1,6 @@
 package com.atomikpanda.groundcontrol.ui.theme
 
 import androidx.compose.ui.graphics.Color
-import com.atomikpanda.groundcontrol.ui.home.UrgencyTier
 
 /** Dracula accents on near-black (dark) + contrast-tuned (light). Single source of truth. */
 object Palette {
@@ -51,13 +50,6 @@ val SemanticLight = SemanticColors(
     blocker = Palette.lightBlocker, error = Palette.lightError,
     muted = Palette.lightMuted, chipHues = Palette.lightChips,
 )
-
-/** Pure: an item's urgency tier → its semantic accent. */
-fun accentFor(tier: UrgencyTier, colors: SemanticColors): Color = when (tier) {
-    UrgencyTier.BLOCKER -> colors.blocker
-    UrgencyTier.QUESTION -> colors.question
-    UrgencyTier.APPROVAL -> colors.approval
-}
 
 /** Stable per-workspace chip hue: same connection id → same hue across sessions. */
 fun chipHue(connectionId: String, colors: SemanticColors): Color =

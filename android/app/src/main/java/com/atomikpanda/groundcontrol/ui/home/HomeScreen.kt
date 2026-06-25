@@ -30,11 +30,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
-import com.atomikpanda.groundcontrol.ui.theme.accentFor
 import com.atomikpanda.groundcontrol.ui.theme.chipHue
 
 @Composable
@@ -85,8 +87,12 @@ fun HomeScreen(
                                 onClick = { vm.select(chip.connectionId) },
                                 label = {
                                     if (chip.count > 0) {
-                                        Text("${chip.label} · ")
-                                        Text("${chip.count}", style = MonoStyle)
+                                        Text(buildAnnotatedString {
+                                            append("${chip.label} · ")
+                                            withStyle(SpanStyle(fontFamily = MonoStyle.fontFamily)) {
+                                                append("${chip.count}")
+                                            }
+                                        })
                                     } else {
                                         Text(chip.label)
                                     }
