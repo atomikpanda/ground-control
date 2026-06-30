@@ -37,6 +37,12 @@ class ConversationViewModel(
     private val _state = MutableStateFlow<ConversationUiState>(ConversationUiState.Loading)
     val state: StateFlow<ConversationUiState> = _state.asStateFlow()
 
+    private val _draft = MutableStateFlow("")
+    val draft: StateFlow<String> = _draft.asStateFlow()
+
+    fun onDraftChange(text: String) { _draft.value = text }
+    fun clearDraft() { _draft.value = "" }
+
     private fun scope() = testScope ?: viewModelScope
 
     fun load(): Job? {
@@ -61,6 +67,7 @@ class ConversationViewModel(
         return scope().launch {
             runCatching { repo.postMessage(conn, threadId, text) }
                 .onSuccess { updatedThread ->
+                    _draft.value = ""
                     _state.value = ConversationUiState.Content(updatedThread, inFlight = false)
                 }
                 .onFailure { t ->

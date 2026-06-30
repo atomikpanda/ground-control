@@ -34,9 +34,6 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -187,16 +184,7 @@ private fun MessageRow(message: Message) {
 
 @Composable
 private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewModel) {
-    var draft by remember { mutableStateOf("") }
-    // Text of the in-flight send, buffered so it can be restored if the send fails.
-    var pending by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(state.inFlight, state.sendError) {
-        if (!state.inFlight) {
-            // Send settled: restore the user's text on failure, then drop the buffer.
-            if (state.sendError != null) pending?.let { draft = it }
-            pending = null
-        }
-    }
+    val draft by vm.draft.collectAsStateWithLifecycle()
     Surface(tonalElevation = 3.dp) {
         Column {
             state.sendError?.let { err ->
@@ -214,7 +202,7 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
             ) {
                 OutlinedTextField(
                     value = draft,
-                    onValueChange = { draft = it },
+                    onValueChange = vm::onDraftChange,
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Message…") },
                     singleLine = true,
@@ -224,15 +212,7 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
                     CircularProgressIndicator(Modifier.padding(8.dp))
                 } else {
                     IconButton(
-                        onClick = {
-                            if (draft.isNotBlank()) {
-                                // Clear optimistically; the LaunchedEffect above restores
-                                // the text if the send fails.
-                                pending = draft
-                                vm.send(draft)
-                                draft = ""
-                            }
-                        },
+                        onClick = { if (draft.isNotBlank()) vm.send(draft) },
                         enabled = draft.isNotBlank(),
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
