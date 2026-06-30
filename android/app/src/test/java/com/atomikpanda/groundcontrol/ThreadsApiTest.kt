@@ -56,4 +56,26 @@ class ThreadsApiTest {
         val api = SpecApi(client { respond("""{"detail":"no thread"}""", HttpStatusCode.NotFound, jsonHdr) })
         api.getThread(conn, "missing")
     }
+
+    @Test
+    fun listThreadsWait_hits_wait_endpoint_and_parses() = runTest {
+        var capturedUrl = ""
+        val handler: io.ktor.client.engine.mock.MockRequestHandler = { req ->
+            capturedUrl = req.url.toString()
+            respond(
+                """{"threads":[{"id":"t1","subject":"s","updated_at":"2026-06-22T10:05:00Z"}],"cursor":"2026-06-22T10:05:00Z","timed_out":false}""",
+                HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val api = SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() })
+        val conn = WorkspaceConnection("1", "http://h:47100", "secret", "ws")
+        val resp = api.listThreadsWait(conn, since = "2026-06-22T10:00:00Z", timeoutSeconds = 25)
+        assertTrue(capturedUrl.contains("/threads"))
+        assertTrue(capturedUrl.contains("wait=1"))
+        assertTrue(capturedUrl.contains("since=2026-06-22T10%3A00%3A00Z") || capturedUrl.contains("since="))
+        assertTrue(capturedUrl.contains("timeout=25"))
+        assertEquals(false, resp.timedOut)
+        assertEquals("2026-06-22T10:05:00Z", resp.cursor)
+        assertEquals("t1", resp.threads.single().id)
+    }
 }

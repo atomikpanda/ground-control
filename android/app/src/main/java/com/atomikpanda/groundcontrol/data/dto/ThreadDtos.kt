@@ -34,5 +34,12 @@ data class Thread(
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
 )
 
+@Serializable
+data class ThreadsWaitResponse(
+    val threads: List<ThreadSummary> = emptyList(),
+    val cursor: String = "",
+    @SerialName("timed_out") val timedOut: Boolean = false,
+)
+
 @Serializable data class NewThreadBody(val text: String, val subject: String? = null)
 @Serializable data class NewMessageBody(val text: String)

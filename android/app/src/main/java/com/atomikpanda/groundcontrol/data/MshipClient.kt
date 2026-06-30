@@ -17,16 +17,20 @@ import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
+import com.atomikpanda.groundcontrol.data.dto.ThreadsWaitResponse
 import com.atomikpanda.groundcontrol.data.dto.VerdictBody
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpResponseValidator
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -56,6 +60,9 @@ private fun errorDetail(body: String): String =
 /** Shared client config: JSON negotiation + typed error mapping. Used by prod and tests. */
 fun HttpClientConfig<*>.mshipDefaults() {
     install(ContentNegotiation) { json(buildJson()) }
+    // Enables the per-request `timeout { }` block used by long-poll calls.
+    // OkHttp's ~10s default read timeout would otherwise abort a 25s wait.
+    install(HttpTimeout)
     HttpResponseValidator {
         validateResponse { resp: HttpResponse ->
             if (resp.status.isSuccess()) return@validateResponse
@@ -120,6 +127,19 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun listThreads(conn: WorkspaceConnection): List<ThreadSummary> =
         client.get("${conn.baseUrl}/threads") { auth(conn) }.body()
+
+    suspend fun listThreadsWait(conn: WorkspaceConnection, since: String, timeoutSeconds: Int): ThreadsWaitResponse =
+        client.get("${conn.baseUrl}/threads") {
+            auth(conn)
+            parameter("wait", "1")
+            parameter("since", since)
+            parameter("timeout", timeoutSeconds)
+            timeout {
+                // Exceed the server wait so Ktor/OkHttp don't abort mid-poll.
+                requestTimeoutMillis = (timeoutSeconds + 10) * 1000L
+                socketTimeoutMillis = (timeoutSeconds + 10) * 1000L
+            }
+        }.body()
 
     suspend fun getThread(conn: WorkspaceConnection, id: String): Thread =
         client.get("${conn.baseUrl}/threads/$id") { auth(conn) }.body()
