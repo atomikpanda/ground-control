@@ -29,14 +29,16 @@ class NeedsYouItemTest {
         assertEquals(UrgencyTier.APPROVAL, items[0].tier)
     }
 
-    @Test fun questions_only_include_threads_awaiting_reply() {
+    @Test fun questions_only_include_threads_that_need_you() {
+        val conn = WorkspaceConnection("c1", "http://h", "tok", "ws")
         val threads = listOf(
-            ThreadSummary("t1", subject = "Q", awaitingReply = true),
-            ThreadSummary("t2", subject = "Done", awaitingReply = false),
+            ThreadSummary(id = "t1", subject = "needs you", needsYou = true),
+            ThreadSummary(id = "t2", subject = "awaiting agent", awaitingReply = true),  // not surfaced
+            ThreadSummary(id = "t3", subject = "plain unread", unseen = true),            // not an action card
         )
         val items = questionsFrom(conn, threads)
-        assertEquals(listOf("t1"), items.map { (it as NeedsYouItem.Question).threadId })
-        assertEquals(UrgencyTier.QUESTION, items[0].tier)
+        assertEquals(1, items.size)
+        assertEquals("t1", (items[0] as NeedsYouItem.Question).threadId)
     }
 
     @Test fun blockers_only_include_blocked_tasks() {

@@ -123,7 +123,7 @@ fun HomeScreen(
                     }
                 }
                 // Empty state
-                if (s.items.isEmpty() && s.errors.isEmpty()) {
+                if (s.items.isEmpty() && s.notes.isEmpty() && s.errors.isEmpty()) {
                     item {
                         Box(
                             Modifier
@@ -138,6 +138,19 @@ fun HomeScreen(
                 // The "Needs you" queue
                 items(s.items, key = { it.key }) { item ->
                     NeedsYouRow(item, onApproval, onQuestion, onBlocker)
+                }
+                // Quiet "New messages" section for unseen plain notes
+                if (s.notes.isNotEmpty()) {
+                    item {
+                        Text(
+                            "New messages",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+                        )
+                    }
+                    items(s.notes, key = { "note:${it.connectionId}:${it.threadId}" }) { note ->
+                        NewMessageRow(note, onQuestion)
+                    }
                 }
             }
         }
@@ -170,6 +183,17 @@ private fun NeedsYouRow(
         headlineContent = { Text(title) },
         supportingContent = { Text(supporting) },
         modifier = Modifier.clickable { onClick() },
+    )
+}
+
+@Composable
+private fun NewMessageRow(note: NewMessageNote, onQuestion: (String, String) -> Unit) {
+    ListItem(
+        leadingContent = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+        overlineContent = { Text(note.workspaceName, style = MonoStyle) },
+        headlineContent = { Text(note.subject) },
+        supportingContent = { Text(note.lastMessage) },
+        modifier = Modifier.clickable { onQuestion(note.connectionId, note.threadId) },
     )
 }
 

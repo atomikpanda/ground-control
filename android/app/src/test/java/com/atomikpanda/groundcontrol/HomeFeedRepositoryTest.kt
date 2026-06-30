@@ -8,6 +8,7 @@ import com.atomikpanda.groundcontrol.ui.home.NeedsYouItem
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
@@ -21,8 +22,8 @@ class HomeFeedRepositoryTest {
 
     private val specsJson = """[{"id":"s1","title":"Dark mode","status":"needs_review"},
                                 {"id":"s2","title":"Done","status":"approved"}]"""
-    private val threadsJson = """[{"id":"t1","subject":"Notifs","awaiting_reply":true,"updated_at":"2026-06-24T10:00:00Z"},
-                                  {"id":"t2","subject":"Idle","awaiting_reply":false}]"""
+    private val threadsJson = """[{"id":"t1","subject":"Notifs","needs_you":true,"updated_at":"2026-06-24T10:00:00Z"},
+                                  {"id":"t2","subject":"Idle","needs_you":false}]"""
     private val tasksJson = """[{"slug":"k1","phase":"dev","branch":"b","blocked_reason":"needs key","created_at":"2026-06-24T09:00:00Z"},
                                 {"slug":"k2","phase":"dev","branch":"b"}]"""
 
@@ -73,5 +74,22 @@ class HomeFeedRepositoryTest {
         assertTrue(feed.items.none { it is NeedsYouItem.Blocker })
         // the failed /tasks source still flags the workspace as errored
         assertEquals(listOf("ws-partial"), feed.errors.map { it.workspaceName })
+    }
+
+    private val conn = WorkspaceConnection("c1", "http://h:47100", null, "ws")
+
+    @Test fun feed_carries_unseen_notes() = runTest {
+        val noteApi = SpecApi(HttpClient(MockEngine { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads") ->
+                    respond("""[{"id":"t1","subject":"hi","unseen":true}]""", HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/specs") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }) { mshipDefaults() })
+        val feed = HomeFeedRepository(noteApi).load(listOf(conn))
+        assertEquals(1, feed.notes.size)
+        assertEquals("t1", feed.notes[0].threadId)
     }
 }

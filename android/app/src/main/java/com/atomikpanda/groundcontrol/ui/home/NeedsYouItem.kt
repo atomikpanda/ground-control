@@ -63,7 +63,7 @@ fun approvalsFrom(conn: WorkspaceConnection, specs: List<SpecSummary>): List<Nee
         .map { NeedsYouItem.Approval(conn.id, conn.displayName(), it.id, it.title) }
 
 fun questionsFrom(conn: WorkspaceConnection, threads: List<ThreadSummary>): List<NeedsYouItem> =
-    threads.filter { it.awaitingReply }
+    threads.filter { it.needsYou }
         .map { NeedsYouItem.Question(conn.id, conn.displayName(), it.id, it.subject, it.lastMessage, it.updatedAt ?: "") }
 
 fun blockersFrom(conn: WorkspaceConnection, tasks: List<TaskSummary>): List<NeedsYouItem> =

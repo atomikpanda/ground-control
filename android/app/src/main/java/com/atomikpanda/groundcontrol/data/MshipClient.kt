@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.dto.HealthResponse
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.NewMessageBody
+import com.atomikpanda.groundcontrol.data.dto.SeenBody
 import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
 import com.atomikpanda.groundcontrol.data.dto.NewThreadBody
 import com.atomikpanda.groundcontrol.data.dto.QuestionBody
@@ -149,6 +150,10 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun postMessage(conn: WorkspaceConnection, id: String, text: String): Thread =
         client.post("${conn.baseUrl}/threads/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.body()
+
+    suspend fun markThreadSeen(conn: WorkspaceConnection, id: String, seenAt: String?) {
+        client.post("${conn.baseUrl}/threads/$id/seen") { auth(conn); jsonBody(SeenBody(seenAt)) }
+    }
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {
         conn.token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }

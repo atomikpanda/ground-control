@@ -52,9 +52,18 @@ class ConversationViewModel(
         _state.value = ConversationUiState.Loading
         return scope().launch {
             runCatching { repo.getThread(conn, threadId) }
-                .onSuccess { thread -> _state.value = ConversationUiState.Content(thread) }
+                .onSuccess { thread ->
+                    _state.value = ConversationUiState.Content(thread)
+                    markSeen(thread)
+                }
                 .onFailure { t -> _state.value = ConversationUiState.Error(t.toKind(), t.message ?: "error") }
         }
+    }
+
+    /** Best-effort: mark this thread seen up to its loaded high-water timestamp.
+     *  Never mutates UI state — a failed mark must not disturb the conversation. */
+    private fun markSeen(thread: Thread) {
+        scope().launch { runCatching { repo.markSeen(conn, threadId, thread.updatedAt) } }
     }
 
     /** One long-poll iteration: wait for a change since `cursor`; if THIS thread

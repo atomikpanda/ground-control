@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.buildJson
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,5 +42,18 @@ class ThreadDtosTest {
         val raw = """{"id":"t1","subject":"Idea","messages":[]}"""
         val t = json.decodeFromString(Thread.serializer(), raw)
         assertEquals(null, t.specId)
+    }
+
+    @Test fun parses_needs_you_and_unseen() {
+        val json = """{"id":"t1","subject":"s","needs_you":true,"unseen":true}"""
+        val s = buildJson().decodeFromString<ThreadSummary>(json)
+        assertTrue(s.needsYou)
+        assertTrue(s.unseen)
+    }
+
+    @Test fun needs_you_and_unseen_default_false_when_omitted() {
+        val s = buildJson().decodeFromString<ThreadSummary>("""{"id":"t1","subject":"s"}""")
+        assertFalse(s.needsYou)
+        assertFalse(s.unseen)
     }
 }

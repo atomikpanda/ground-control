@@ -57,6 +57,18 @@ class ThreadsApiTest {
         api.getThread(conn, "missing")
     }
 
+    @Test fun mark_thread_seen_posts_to_seen_path_with_auth() = runTest {
+        var url: String? = null; var method: String? = null; var auth: String? = null
+        val api = SpecApi(client { req ->
+            url = req.url.toString(); method = req.method.value; auth = req.headers[HttpHeaders.Authorization]
+            respond("""{"id":"t1","subject":"s","messages":[]}""", HttpStatusCode.OK, jsonHdr)
+        })
+        api.markThreadSeen(conn, "t1", "2026-06-30T12:00:00Z")
+        assertTrue(url!!.endsWith("/threads/t1/seen"))
+        assertEquals("POST", method)
+        assertEquals("Bearer secret", auth)
+    }
+
     @Test
     fun listThreadsWait_hits_wait_endpoint_and_parses() = runTest {
         var capturedUrl = ""
