@@ -21,6 +21,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.DataStoreNotificationsSetting
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
@@ -56,6 +57,8 @@ fun GroundControlApp(context: Context) {
     val detailRepo = remember { SpecDetailRepository(api) }
     val tasksRepo = remember { TasksRepository(api) }
     val threadsRepo = remember { ThreadsRepository(api) }
+    val appScope = remember { kotlinx.coroutines.MainScope() }
+    val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
 
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -91,7 +94,7 @@ fun GroundControlApp(context: Context) {
                 TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
             }
             composable(Section.SETTINGS.route) {
-                val vm = viewModel { SettingsViewModel(connRepo, api) }
+                val vm = viewModel { SettingsViewModel(connRepo, api, notificationsSetting) }
                 SettingsScreen(vm)
             }
             composable(

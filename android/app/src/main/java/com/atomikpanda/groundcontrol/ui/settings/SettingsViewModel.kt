@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.NotificationsSetting
 import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -16,6 +17,7 @@ import java.util.UUID
 class SettingsViewModel(
     private val repo: ConnectionsRepository,
     private val api: SpecApi,
+    private val notifications: NotificationsSetting,
 ) : ViewModel() {
     val connections: StateFlow<List<WorkspaceConnection>> get() = _connections
     private val _connections = MutableStateFlow<List<WorkspaceConnection>>(emptyList())
@@ -23,6 +25,11 @@ class SettingsViewModel(
     val testResult: StateFlow<String?> = _testResult.asStateFlow()
 
     init { viewModelScope.launch { repo.connections.collect { _connections.value = it } } }
+
+    val notificationsEnabled: StateFlow<Boolean> get() = notifications.enabled
+    fun setNotificationsEnabled(value: Boolean) {
+        viewModelScope.launch { notifications.set(value) }
+    }
 
     /** Validate URL, probe /health, persist with the discovered workspace name. */
     fun addOrUpdate(id: String?, baseUrlInput: String, token: String?) {
