@@ -45,3 +45,4 @@ data class ThreadsWaitResponse(
 
 @Serializable data class NewThreadBody(val text: String, val subject: String? = null)
 @Serializable data class NewMessageBody(val text: String)
+@Serializable data class SeenBody(@SerialName("seen_at") val seenAt: String? = null)

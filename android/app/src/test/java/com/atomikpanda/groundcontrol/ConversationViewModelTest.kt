@@ -19,6 +19,7 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -88,6 +89,24 @@ class ConversationViewModelTest {
         assertEquals("human", c.thread.messages[0].role)
         assertEquals("Hey there", c.thread.messages[0].text)
         assertFalse(c.inFlight)
+    }
+
+    @Test fun load_marks_thread_seen() = runTest {
+        val seenPosts = mutableListOf<String>()
+        val vm = vm(this) { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t1/seen") && req.method == HttpMethod.Post -> {
+                    seenPosts += req.url.encodedPath
+                    respond("""{"id":"t1","subject":"s","messages":[]}""", HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        advanceUntilIdle()
+        assertEquals(1, seenPosts.size)
     }
 
     @Test fun send_posts_and_updates_thread_from_returned_thread() = runTest {
