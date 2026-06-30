@@ -59,6 +59,9 @@ class HomeViewModel(
     }
 
     private fun render(connections: List<WorkspaceConnection>) {
+        // Chip counts reflect the action queue (needsYou items) only. Quiet "new message" notes
+        // deliberately don't bump the workspace rail — the unread *count* surface is the deferred
+        // Messages-tab badge. Notes still render in Home's "New messages" section.
         val counts = feed.items.groupingBy { it.connectionId }.eachCount()
         val chips = buildList {
             add(WorkspaceChip(null, "All", feed.items.size))

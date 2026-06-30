@@ -13,7 +13,8 @@ data class NewMessageNote(
     val updatedAt: String,
 )
 
+// Not sorted here: HomeFeedRepository re-sorts the merged cross-workspace list by updatedAt,
+// so a per-connection sort would just be a wasted pass.
 fun notesFrom(conn: WorkspaceConnection, threads: List<ThreadSummary>): List<NewMessageNote> =
     threads.filter { it.unseen && !it.needsYou }
         .map { NewMessageNote(conn.id, conn.displayName(), it.id, it.subject, it.lastMessage, it.updatedAt ?: "") }
-        .sortedByDescending { it.updatedAt }
