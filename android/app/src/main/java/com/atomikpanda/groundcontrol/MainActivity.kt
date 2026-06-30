@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
@@ -36,7 +37,13 @@ class MainActivity : ComponentActivity() {
             when (val out = com.atomikpanda.groundcontrol.notify.DeepLinkResolver.resolve(raw, conns)) {
                 is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.OpenThread ->
                     pendingThread.value = out.connectionId to out.threadId
-                else -> {}
+                is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.AddConnection ->
+                    Toast.makeText(
+                        this@MainActivity,
+                        "That workspace isn't connected on this device.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.Ignore -> {}
             }
         }
     }

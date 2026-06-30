@@ -21,12 +21,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.Instant
 
 class WatchService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var watchJob: Job? = null
     private lateinit var reconciler: NeedsYouReconciler
     private lateinit var repo: ThreadsRepository
     private lateinit var connections: ConnectionsRepository
@@ -53,11 +55,16 @@ class WatchService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
         )
-        scope.launch {
-            // Re-spread watchers whenever the connection set changes.
-            connections.connections.collectLatest { conns ->
-                coroutineScope {
-                    conns.forEach { conn -> launch { watchOne(conn) } }
+        // Keep exactly one watch loop: START_STICKY redelivery + an explicit start (e.g.
+        // BootReceiver) can both call onStartCommand; without this guard each appends another
+        // collectLatest loop, doubling the long-poll traffic per connection.
+        if (watchJob?.isActive != true) {
+            watchJob = scope.launch {
+                // Re-spread watchers whenever the connection set changes.
+                connections.connections.collectLatest { conns ->
+                    coroutineScope {
+                        conns.forEach { conn -> launch { watchOne(conn) } }
+                    }
                 }
             }
         }

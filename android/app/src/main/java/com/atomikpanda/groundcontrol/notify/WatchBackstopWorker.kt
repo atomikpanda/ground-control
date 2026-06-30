@@ -22,9 +22,11 @@ class WatchBackstopWorker(appContext: Context, params: WorkerParameters) :
         )
         val repo = ThreadsRepository(SpecApi(defaultHttpClient()))
         val conns = ConnectionsRepository(applicationContext).snapshot()
-        return runCatching {
-            conns.forEach { reconciler.fetchAndReconcile(it, repo) }
-        }.fold(onSuccess = { Result.success() }, onFailure = { Result.retry() })
+        if (conns.isEmpty()) return Result.success()
+        // Isolate failures per connection: one failing/auth-erroring workspace must not skip the
+        // others. Retry the whole job only if EVERY connection failed (a wide transient issue).
+        val results = conns.map { conn -> runCatching { reconciler.fetchAndReconcile(conn, repo) } }
+        return if (results.all { it.isFailure }) Result.retry() else Result.success()
     }
 
     companion object {

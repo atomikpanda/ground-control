@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Modifier
@@ -63,7 +64,9 @@ fun GroundControlApp(
     val detailRepo = remember { SpecDetailRepository(api) }
     val tasksRepo = remember { TasksRepository(api) }
     val threadsRepo = remember { ThreadsRepository(api) }
-    val appScope = remember { kotlinx.coroutines.MainScope() }
+    // Composition-scoped (cancelled on disposal) — not MainScope(), which would leak its
+    // stateIn collector across Activity recreations.
+    val appScope = rememberCoroutineScope()
     val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
 
     Scaffold(bottomBar = {
