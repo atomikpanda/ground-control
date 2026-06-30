@@ -21,8 +21,8 @@ class HomeFeedRepositoryTest {
 
     private val specsJson = """[{"id":"s1","title":"Dark mode","status":"needs_review"},
                                 {"id":"s2","title":"Done","status":"approved"}]"""
-    private val threadsJson = """[{"id":"t1","subject":"Notifs","awaiting_reply":true,"updated_at":"2026-06-24T10:00:00Z"},
-                                  {"id":"t2","subject":"Idle","awaiting_reply":false}]"""
+    private val threadsJson = """[{"id":"t1","subject":"Notifs","needs_you":true,"updated_at":"2026-06-24T10:00:00Z"},
+                                  {"id":"t2","subject":"Idle","needs_you":false}]"""
     private val tasksJson = """[{"slug":"k1","phase":"dev","branch":"b","blocked_reason":"needs key","created_at":"2026-06-24T09:00:00Z"},
                                 {"slug":"k2","phase":"dev","branch":"b"}]"""
 
