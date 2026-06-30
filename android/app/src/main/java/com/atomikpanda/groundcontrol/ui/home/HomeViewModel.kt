@@ -23,6 +23,7 @@ sealed interface HomeUiState {
         val rail: List<WorkspaceChip>,
         val selectedConnectionId: String?,   // null == All
         val items: List<NeedsYouItem>,        // already filtered by selection
+        val notes: List<NewMessageNote>,      // already filtered by selection
         val errors: List<WorkspaceError>,
     ) : HomeUiState
 }
@@ -35,7 +36,7 @@ class HomeViewModel(
     private val _state = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
 
-    private var feed: HomeFeed = HomeFeed(emptyList(), emptyList())
+    private var feed: HomeFeed = HomeFeed(emptyList(), emptyList(), emptyList())
     private var selected: String? = null
     private var lastConnections: List<WorkspaceConnection> = emptyList()
 
@@ -69,6 +70,7 @@ class HomeViewModel(
                 .forEach { add(WorkspaceChip(it.id, it.displayName(), counts[it.id] ?: 0)) }
         }
         val visible = if (selected == null) feed.items else feed.items.filter { it.connectionId == selected }
-        _state.value = HomeUiState.Content(chips, selected, visible, feed.errors)
+        val visibleNotes = if (selected == null) feed.notes else feed.notes.filter { it.connectionId == selected }
+        _state.value = HomeUiState.Content(chips, selected, visible, visibleNotes, feed.errors)
     }
 }
