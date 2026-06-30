@@ -9,6 +9,8 @@ data class ThreadSummary(
     val subject: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
+    @SerialName("needs_you") val needsYou: Boolean = false,
+    @SerialName("unseen") val unseen: Boolean = false,
     @SerialName("last_message") val lastMessage: String = "",
     @SerialName("message_count") val messageCount: Int = 0,
 )
