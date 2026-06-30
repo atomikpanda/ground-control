@@ -15,8 +15,11 @@ interface NotificationsSetting {
     suspend fun set(value: Boolean)
 }
 
-private val Context.settingsStore by preferencesDataStore(name = "ground_control_settings")
-private val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+// Single shared DataStore delegate for app settings. A second delegate for the same file name
+// anywhere in the process crashes ("multiple DataStores active for the same file"), so
+// BootReceiver imports these rather than re-declaring them.
+internal val Context.settingsStore by preferencesDataStore(name = "ground_control_settings")
+internal val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
 
 class DataStoreNotificationsSetting(
     private val context: Context,

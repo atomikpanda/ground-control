@@ -3,8 +3,11 @@ package com.atomikpanda.groundcontrol.notify
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
@@ -44,7 +47,12 @@ class WatchService : Service() {
             .setContentTitle("Watching for messages")
             .setOngoing(true)
             .build()
-        startForeground(WATCH_NOTIFICATION_ID, watching)
+        // 3-arg (typed) startForeground so API 34 never throws MissingForegroundServiceTypeException.
+        ServiceCompat.startForeground(
+            this, WATCH_NOTIFICATION_ID, watching,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
+        )
         scope.launch {
             // Re-spread watchers whenever the connection set changes.
             connections.connections.collectLatest { conns ->
