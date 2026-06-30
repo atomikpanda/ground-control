@@ -42,9 +42,9 @@
 fun draft_persists_across_a_reload() = runTest {
     val handler: MockRequestHandler = { respond(threadJson, HttpStatusCode.OK, jsonHdr) }
     val v = vm(this, handler)
-    v.load(); advanceUntilIdle()
+    v.load()?.join()
     v.onDraftChange("half-typed steering note")
-    v.load(); advanceUntilIdle()                    // a reload flips state to Loading→Content
+    v.load()?.join()                    // a reload flips state to Loading→Content
     assertEquals("half-typed steering note", v.draft.value)   // draft survives
 }
 
@@ -56,7 +56,7 @@ fun send_clears_draft_on_success() = runTest {
         else respond(threadJson, HttpStatusCode.OK, jsonHdr)
     }
     val v = vm(this, handler)
-    v.load(); advanceUntilIdle()
+    v.load()?.join()
     v.onDraftChange("ship it")
     v.send("ship it")?.join(); advanceUntilIdle()
     assertEquals("", v.draft.value)                 // cleared on success
@@ -69,7 +69,7 @@ fun send_keeps_draft_on_failure() = runTest {
         else respond(threadJson, HttpStatusCode.OK, jsonHdr)
     }
     val v = vm(this, handler)
-    v.load(); advanceUntilIdle()
+    v.load()?.join()
     v.onDraftChange("don't lose me")
     v.send("don't lose me")?.join(); advanceUntilIdle()
     assertEquals("don't lose me", v.draft.value)     // kept on failure
@@ -291,7 +291,7 @@ fun pollOnce_refreshes_open_thread_and_advances_cursor() = runTest {
         else respond(refreshedThreadJson, HttpStatusCode.OK, jsonHdr)   // GET /threads/t1
     }
     val v = vm(this, handler)
-    v.load(); advanceUntilIdle()
+    v.load()?.join()
     val next = v.pollOnce("2026-06-22T10:00:00Z")                       // one iteration, terminates
     val content = v.state.value as ConversationUiState.Content
     assertEquals("LIVE REPLY", content.thread.messages.last().text)     // refreshed live, no manual load
@@ -305,7 +305,7 @@ fun pollOnce_does_not_refresh_when_this_thread_unchanged() = runTest {
         else respond(threadJson, HttpStatusCode.OK, jsonHdr)
     }
     val v = vm(this, handler)
-    v.load(); advanceUntilIdle()
+    v.load()?.join()
     val before = (v.state.value as ConversationUiState.Content).thread.messages.size
     v.pollOnce("2026-06-22T10:00:00Z")
     assertEquals(before, (v.state.value as ConversationUiState.Content).thread.messages.size)  // unchanged
@@ -318,7 +318,7 @@ fun pollOnce_returns_same_cursor_on_network_error() = runTest {
         else respond(threadJson, HttpStatusCode.OK, jsonHdr)
     }
     val v = vm(this, handler)
-    v.load(); advanceUntilIdle()
+    v.load()?.join()
     val next = v.pollOnce("2026-06-22T10:00:00Z")
     assertEquals("2026-06-22T10:00:00Z", next)                          // no crash; cursor unchanged
     assertNotNull(v.state.value as? ConversationUiState.Content)        // conversation intact
