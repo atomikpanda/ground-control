@@ -21,4 +21,6 @@ class ThreadsRepository(private val api: SpecApi) {
     suspend fun getThread(conn: WorkspaceConnection, id: String) = api.getThread(conn, id)
     suspend fun createThread(conn: WorkspaceConnection, text: String, subject: String?) = api.createThread(conn, text, subject)
     suspend fun postMessage(conn: WorkspaceConnection, id: String, text: String) = api.postMessage(conn, id, text)
+    suspend fun waitForChange(conn: WorkspaceConnection, since: String, timeoutSeconds: Int) =
+        api.listThreadsWait(conn, since, timeoutSeconds)
 }

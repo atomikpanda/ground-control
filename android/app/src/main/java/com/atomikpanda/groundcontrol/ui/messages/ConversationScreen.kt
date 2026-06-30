@@ -5,8 +5,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -34,12 +36,10 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.Message
@@ -55,7 +55,7 @@ fun ConversationScreen(
     onViewSpec: (specId: String) -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { vm.load() }
+    LaunchedEffect(Unit) { vm.load()?.join(); vm.startPolling() }
 
     val displayTitle = (state as? ConversationUiState.Content)?.thread?.subject?.takeIf { it.isNotBlank() } ?: title
 
@@ -127,6 +127,13 @@ private fun ConversationContentView(
         if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
+    // Keep the latest message visible when the keyboard opens — the existing
+    // effect only scrolls on message-count changes, not on IME show.
+    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    LaunchedEffect(imeBottom) {
+        if (imeBottom > 0 && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
+    }
+
     Column(Modifier.fillMaxSize().imePadding()) {
         // "View spec ->" affordance — only shown when this thread has been linked to a spec.
         thread.specId?.let { specId ->
@@ -187,16 +194,7 @@ private fun MessageRow(message: Message) {
 
 @Composable
 private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewModel) {
-    var draft by remember { mutableStateOf("") }
-    // Text of the in-flight send, buffered so it can be restored if the send fails.
-    var pending by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(state.inFlight, state.sendError) {
-        if (!state.inFlight) {
-            // Send settled: restore the user's text on failure, then drop the buffer.
-            if (state.sendError != null) pending?.let { draft = it }
-            pending = null
-        }
-    }
+    val draft by vm.draft.collectAsStateWithLifecycle()
     Surface(tonalElevation = 3.dp) {
         Column {
             state.sendError?.let { err ->
@@ -214,7 +212,7 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
             ) {
                 OutlinedTextField(
                     value = draft,
-                    onValueChange = { draft = it },
+                    onValueChange = vm::onDraftChange,
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Message…") },
                     singleLine = true,
@@ -224,15 +222,7 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
                     CircularProgressIndicator(Modifier.padding(8.dp))
                 } else {
                     IconButton(
-                        onClick = {
-                            if (draft.isNotBlank()) {
-                                // Clear optimistically; the LaunchedEffect above restores
-                                // the text if the send fails.
-                                pending = draft
-                                vm.send(draft)
-                                draft = ""
-                            }
-                        },
+                        onClick = { if (draft.isNotBlank()) vm.send(draft) },
                         enabled = draft.isNotBlank(),
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
