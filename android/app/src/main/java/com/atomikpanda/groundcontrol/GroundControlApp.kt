@@ -10,8 +10,11 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -49,7 +52,10 @@ import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 import kotlinx.coroutines.runBlocking
 
 @Composable
-fun GroundControlApp(context: Context) {
+fun GroundControlApp(
+    context: Context,
+    pendingThread: MutableStateFlow<Pair<String, String>?>? = null,
+) {
     val nav = rememberNavController()
     val connRepo = remember { ConnectionsRepository(context.applicationContext) }
     val api = remember { SpecApi(defaultHttpClient()) }
@@ -229,6 +235,16 @@ fun GroundControlApp(context: Context) {
                         onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
                     )
                 }
+            }
+        }
+    }
+
+    if (pendingThread != null) {
+        val pending by pendingThread.collectAsStateWithLifecycle()
+        LaunchedEffect(pending) {
+            pending?.let { (connId, threadId) ->
+                nav.navigate("thread/$connId/$threadId")
+                pendingThread.value = null
             }
         }
     }

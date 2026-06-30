@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.notify.WatchController
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
@@ -45,7 +46,10 @@ fun SettingsScreen(vm: SettingsViewModel) {
 
     val notificationsOn by vm.notificationsEnabled.collectAsStateWithLifecycle()
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) vm.setNotificationsEnabled(true)
+        if (granted) {
+            vm.setNotificationsEnabled(true)
+            WatchController.enable(context)
+        }
     }
 
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
@@ -93,6 +97,7 @@ fun SettingsScreen(vm: SettingsViewModel) {
                         permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     } else {
                         vm.setNotificationsEnabled(want)
+                        if (want) WatchController.enable(context) else WatchController.disable(context)
                     }
                 })
             },

@@ -29,6 +29,24 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="groundcontrol" android:host="add" />
             </intent-filter>
+            <!-- Deep link: a notification tap groundcontrol://thread?... opens a conversation. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="groundcontrol" android:host="thread" />
+            </intent-filter>
         </activity>
+        <service
+            android:name=".notify.WatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name=".notify.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
