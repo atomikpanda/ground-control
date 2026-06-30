@@ -43,7 +43,6 @@ class ConversationViewModel(
     val draft: StateFlow<String> = _draft.asStateFlow()
 
     fun onDraftChange(text: String) { _draft.value = text }
-    fun clearDraft() { _draft.value = "" }
 
     private fun scope() = testScope ?: viewModelScope
 
@@ -85,8 +84,8 @@ class ConversationViewModel(
             var cursor = seed
             while (isActive) {
                 val next = pollOnce(cursor)
-                if (next == cursor) delay(2000)   // no progress (error/no-change): back off
-                cursor = next
+                if (next == cursor || next.isEmpty()) delay(2000)   // no progress / bad cursor: back off
+                if (next.isNotEmpty()) cursor = next                // never advance `since` to ""
             }
         }
     }
