@@ -52,7 +52,7 @@ fun ConversationScreen(
     onViewSpec: (specId: String) -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { vm.load() }
+    LaunchedEffect(Unit) { vm.load()?.join(); vm.startPolling() }
 
     val displayTitle = (state as? ConversationUiState.Content)?.thread?.subject?.takeIf { it.isNotBlank() } ?: title
 

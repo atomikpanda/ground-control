@@ -250,4 +250,54 @@ class ConversationViewModelTest {
         v.send("don't lose me")?.join()
         assertEquals("don't lose me", v.draft.value)     // kept on failure
     }
+
+    private val waitHitJson = """{"threads":[{"id":"t1","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}"""
+    private val waitMissJson = """{"threads":[{"id":"other","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}"""
+    private val refreshedThreadJson = """
+        {"id":"t1","subject":"Hello world","awaiting_reply":false,
+         "messages":[
+           {"id":"m1","thread_id":"t1","role":"human","text":"Hey there","created_at":"2026-06-22T10:00:00Z"},
+           {"id":"m3","thread_id":"t1","role":"agent","text":"LIVE REPLY","created_at":"2026-06-22T10:10:00Z"}
+         ]}
+    """.trimIndent()
+
+    @Test
+    fun pollOnce_refreshes_open_thread_and_advances_cursor() = runTest {
+        val handler: MockRequestHandler = { req ->
+            if (req.url.parameters["wait"] == "1") respond(waitHitJson, HttpStatusCode.OK, jsonHdr)
+            else respond(refreshedThreadJson, HttpStatusCode.OK, jsonHdr)   // GET /threads/t1
+        }
+        val v = vm(this, handler)
+        v.load()?.join()
+        val next = v.pollOnce("2026-06-22T10:00:00Z")                       // one iteration, terminates
+        val content = v.state.value as ConversationUiState.Content
+        assertEquals("LIVE REPLY", content.thread.messages.last().text)     // refreshed live, no manual load
+        assertEquals("2026-06-22T10:10:00Z", next)                          // cursor advanced
+    }
+
+    @Test
+    fun pollOnce_does_not_refresh_when_this_thread_unchanged() = runTest {
+        val handler: MockRequestHandler = { req ->
+            if (req.url.parameters["wait"] == "1") respond(waitMissJson, HttpStatusCode.OK, jsonHdr)
+            else respond(threadJson, HttpStatusCode.OK, jsonHdr)
+        }
+        val v = vm(this, handler)
+        v.load()?.join()
+        val before = (v.state.value as ConversationUiState.Content).thread.messages.size
+        v.pollOnce("2026-06-22T10:00:00Z")
+        assertEquals(before, (v.state.value as ConversationUiState.Content).thread.messages.size)  // unchanged
+    }
+
+    @Test
+    fun pollOnce_returns_same_cursor_on_network_error() = runTest {
+        val handler: MockRequestHandler = { req ->
+            if (req.url.parameters["wait"] == "1") respondError(HttpStatusCode.InternalServerError)
+            else respond(threadJson, HttpStatusCode.OK, jsonHdr)
+        }
+        val v = vm(this, handler)
+        v.load()?.join()
+        val next = v.pollOnce("2026-06-22T10:00:00Z")
+        assertEquals("2026-06-22T10:00:00Z", next)                          // no crash; cursor unchanged
+        assertNotNull(v.state.value as? ConversationUiState.Content)        // conversation intact
+    }
 }

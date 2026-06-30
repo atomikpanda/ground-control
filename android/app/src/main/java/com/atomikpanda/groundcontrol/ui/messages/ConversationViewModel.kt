@@ -10,9 +10,11 @@ import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 sealed interface ConversationUiState {
@@ -45,12 +47,47 @@ class ConversationViewModel(
 
     private fun scope() = testScope ?: viewModelScope
 
+    private var pollJob: Job? = null
+
     fun load(): Job? {
         _state.value = ConversationUiState.Loading
         return scope().launch {
             runCatching { repo.getThread(conn, threadId) }
                 .onSuccess { thread -> _state.value = ConversationUiState.Content(thread) }
                 .onFailure { t -> _state.value = ConversationUiState.Error(t.toKind(), t.message ?: "error") }
+        }
+    }
+
+    /** One long-poll iteration: wait for a change since `cursor`; if THIS thread
+     *  changed (and no send is in flight), re-fetch it. Returns the next cursor
+     *  (unchanged on a network error so the caller can back off). Terminating —
+     *  unit-tested directly; the loop below is a thin wrapper. */
+    internal suspend fun pollOnce(cursor: String): String {
+        val resp = runCatching { repo.waitForChange(conn, cursor, 25) }.getOrNull() ?: return cursor
+        if (resp.threads.any { it.id == threadId }) {
+            val cur = _state.value
+            if (cur is ConversationUiState.Content && !cur.inFlight) {
+                runCatching { repo.getThread(conn, threadId) }
+                    .onSuccess { _state.value = ConversationUiState.Content(it) }
+            }
+        }
+        return resp.cursor
+    }
+
+    /** Start the live-reply loop (idempotent). Seeds from the loaded thread's
+     *  high-water `updatedAt`; returns early until a thread is loaded, so the
+     *  `since` is always a valid ISO timestamp (never "" the server would 422 on).
+     *  Cancelled when the VM's scope is cleared. */
+    fun startPolling() {
+        if (pollJob?.isActive == true) return
+        val seed = (_state.value as? ConversationUiState.Content)?.thread?.updatedAt ?: return
+        pollJob = scope().launch {
+            var cursor = seed
+            while (isActive) {
+                val next = pollOnce(cursor)
+                if (next == cursor) delay(2000)   // no progress (error/no-change): back off
+                cursor = next
+            }
         }
     }
 
