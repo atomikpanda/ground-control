@@ -25,4 +25,5 @@ class ThreadsRepository(private val api: SpecApi) {
         api.markThreadSeen(conn, id, seenAt)
     suspend fun waitForChange(conn: WorkspaceConnection, since: String, timeoutSeconds: Int) =
         api.listThreadsWait(conn, since, timeoutSeconds)
+    suspend fun listThreadsFor(conn: WorkspaceConnection) = api.listThreads(conn)
 }
