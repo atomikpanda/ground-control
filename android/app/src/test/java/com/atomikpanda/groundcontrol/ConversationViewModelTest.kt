@@ -300,4 +300,25 @@ class ConversationViewModelTest {
         assertEquals("2026-06-22T10:00:00Z", next)                          // no crash; cursor unchanged
         assertNotNull(v.state.value as? ConversationUiState.Content)        // conversation intact
     }
+
+    @Test
+    fun pollOnce_preserves_sendError_banner_on_refresh() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                    respondError(HttpStatusCode.InternalServerError)         // send fails -> sendError set
+                req.url.parameters["wait"] == "1" ->
+                    respond(waitHitJson, HttpStatusCode.OK, jsonHdr)         // agent reply arrives
+                else -> respond(refreshedThreadJson, HttpStatusCode.OK, jsonHdr)  // GET /threads/t1 refresh
+            }
+        }
+        val v = vm(this, handler)
+        v.load()?.join()
+        v.send("oops")?.join()                                              // fails -> Content(sendError != null)
+        assertNotNull((v.state.value as ConversationUiState.Content).sendError)
+        v.pollOnce("2026-06-22T10:00:00Z")                                  // refresh while the banner is up
+        val content = v.state.value as ConversationUiState.Content
+        assertEquals("LIVE REPLY", content.thread.messages.last().text)     // refreshed to the new reply
+        assertNotNull(content.sendError)                                    // banner preserved across refresh
+    }
 }

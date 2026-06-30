@@ -67,7 +67,9 @@ class ConversationViewModel(
             val cur = _state.value
             if (cur is ConversationUiState.Content && !cur.inFlight) {
                 runCatching { repo.getThread(conn, threadId) }
-                    .onSuccess { _state.value = ConversationUiState.Content(it) }
+                    // Preserve a visible send-error banner across a live refresh — an
+                    // agent reply arriving must not silently erase "couldn't send".
+                    .onSuccess { _state.value = ConversationUiState.Content(it, sendError = cur.sendError) }
             }
         }
         return resp.cursor
@@ -79,7 +81,10 @@ class ConversationViewModel(
      *  Cancelled when the VM's scope is cleared. */
     fun startPolling() {
         if (pollJob?.isActive == true) return
-        val seed = (_state.value as? ConversationUiState.Content)?.thread?.updatedAt ?: return
+        // Only poll a loaded conversation; if the server omitted updated_at, fall
+        // back to "now" so live-reply still starts (never a silent no-op).
+        val content = _state.value as? ConversationUiState.Content ?: return
+        val seed = content.thread.updatedAt ?: java.time.Instant.now().toString()
         pollJob = scope().launch {
             var cursor = seed
             while (isActive) {
