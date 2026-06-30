@@ -18,6 +18,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -106,6 +107,12 @@ class ConversationViewModelTest {
         }
         vm.load()?.join()
         advanceUntilIdle()
+        // mark-seen is a fire-and-forget launch whose POST settles on the MockEngine's IO
+        // dispatcher (off the virtual clock); wait for the side effect in real time.
+        withContext(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + 2_000
+            while (seenPosts.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        }
         assertEquals(1, seenPosts.size)
     }
 
