@@ -20,6 +20,7 @@ import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.ThreadsWaitResponse
 import com.atomikpanda.groundcontrol.data.dto.VerdictBody
+import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.call.body
@@ -119,6 +120,9 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun listTasks(conn: WorkspaceConnection): List<TaskSummary> =
         client.get("${conn.baseUrl}/tasks") { auth(conn) }.body()
+
+    suspend fun listItems(conn: WorkspaceConnection): List<WorkItemSummary> =
+        client.get("${conn.baseUrl}/items") { auth(conn) }.body()
 
     suspend fun getTask(conn: WorkspaceConnection, slug: String): TaskSummary =
         client.get("${conn.baseUrl}/tasks/$slug") { auth(conn) }.body()
