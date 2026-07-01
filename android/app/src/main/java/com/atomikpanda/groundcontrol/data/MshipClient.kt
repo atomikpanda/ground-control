@@ -124,6 +124,12 @@ class SpecApi(private val client: HttpClient) {
     suspend fun listItems(conn: WorkspaceConnection): List<WorkItemSummary> =
         client.get("${conn.baseUrl}/items") { auth(conn) }.body()
 
+    suspend fun getItem(conn: WorkspaceConnection, id: String): WorkItemSummary =
+        client.get("${conn.baseUrl}/items/$id") { auth(conn) }.body()
+
+    suspend fun getSpecReview(conn: WorkspaceConnection, specId: String): SpecReview =
+        client.get("${conn.baseUrl}/specs/$specId/review") { auth(conn) }.body()
+
     suspend fun getTask(conn: WorkspaceConnection, slug: String): TaskSummary =
         client.get("${conn.baseUrl}/tasks/$slug") { auth(conn) }.body()
 
