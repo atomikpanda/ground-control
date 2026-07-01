@@ -10,8 +10,12 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -21,6 +25,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.DataStoreNotificationsSetting
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
@@ -48,7 +53,10 @@ import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 import kotlinx.coroutines.runBlocking
 
 @Composable
-fun GroundControlApp(context: Context) {
+fun GroundControlApp(
+    context: Context,
+    pendingThread: MutableStateFlow<Pair<String, String>?>? = null,
+) {
     val nav = rememberNavController()
     val connRepo = remember { ConnectionsRepository(context.applicationContext) }
     val api = remember { SpecApi(defaultHttpClient()) }
@@ -56,6 +64,10 @@ fun GroundControlApp(context: Context) {
     val detailRepo = remember { SpecDetailRepository(api) }
     val tasksRepo = remember { TasksRepository(api) }
     val threadsRepo = remember { ThreadsRepository(api) }
+    // Composition-scoped (cancelled on disposal) — not MainScope(), which would leak its
+    // stateIn collector across Activity recreations.
+    val appScope = rememberCoroutineScope()
+    val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
 
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -91,7 +103,7 @@ fun GroundControlApp(context: Context) {
                 TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
             }
             composable(Section.SETTINGS.route) {
-                val vm = viewModel { SettingsViewModel(connRepo, api) }
+                val vm = viewModel { SettingsViewModel(connRepo, api, notificationsSetting) }
                 SettingsScreen(vm)
             }
             composable(
@@ -226,6 +238,16 @@ fun GroundControlApp(context: Context) {
                         onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
                     )
                 }
+            }
+        }
+    }
+
+    if (pendingThread != null) {
+        val pending by pendingThread.collectAsStateWithLifecycle()
+        LaunchedEffect(pending) {
+            pending?.let { (connId, threadId) ->
+                nav.navigate("thread/$connId/$threadId")
+                pendingThread.value = null
             }
         }
     }
