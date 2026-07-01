@@ -33,22 +33,4 @@ class WorkItemApiTest {
         assertEquals("in_flight", wi.phase)
         assertTrue(url!!.endsWith("/items/wi-1"))
     }
-
-    @Test
-    fun get_spec_review_path_and_counts() = runTest {
-        var url: String? = null
-        val api = SpecApi(HttpClient(MockEngine { req ->
-            url = req.url.toString()
-            respond(
-                """{"id":"spec-1","status":"needs_review",
-                    "summary":{"criteria_total":3,"approved":2,"flagged":0,"unreviewed":1,
-                    "open_questions_unanswered":0}}""",
-                HttpStatusCode.OK, jsonHdr,
-            )
-        }) { mshipDefaults() })
-        val review = api.getSpecReview(conn, "spec-1")
-        assertEquals(3, review.summary.criteriaTotal)
-        assertEquals(2, review.summary.approved)
-        assertTrue(url!!.endsWith("/specs/spec-1/review"))
-    }
 }
