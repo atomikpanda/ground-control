@@ -98,12 +98,16 @@ fun FarmScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FarmCard(item: WorkItemSummary, onClick: () -> Unit) {
+    // Only present a tap affordance when there's somewhere to go. A brand-new inbox item can
+    // legally have no spec/task/thread yet; making such a card non-clickable avoids a silent
+    // dead-tap (until the per-phase cockpits give every item its own destination).
+    val routable = item.specId != null || item.taskSlugs.isNotEmpty() || item.threadIds.isNotEmpty()
     ListItem(
         leadingContent = { Icon(kindIcon(item.kind), contentDescription = item.kind) },
         headlineContent = { Text(item.title) },
         supportingContent = { Text(subLine(item), style = MonoStyle) },
         trailingContent = { AttentionBadges(item.attention) },
-        modifier = Modifier.clickable { onClick() },
+        modifier = if (routable) Modifier.clickable { onClick() } else Modifier,
     )
 }
 
