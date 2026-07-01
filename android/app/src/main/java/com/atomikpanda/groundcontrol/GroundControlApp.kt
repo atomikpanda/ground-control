@@ -40,6 +40,8 @@ import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadScreen
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
+import com.atomikpanda.groundcontrol.ui.farm.FarmScreen
+import com.atomikpanda.groundcontrol.ui.farm.FarmViewModel
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
@@ -92,7 +94,7 @@ fun GroundControlApp(
                     onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
-                    onBrowseWorkspace = { connId -> nav.navigate("workspace/$connId") },
+                    onBrowseWorkspace = { connId -> nav.navigate("farm/$connId") },
                     onCapture = { nav.navigate("capture") },
                 )
             }
@@ -170,6 +172,32 @@ fun GroundControlApp(
                         onSpec = { id -> nav.navigate("specDetail/$connectionId/$id") },
                         onTask = { slug -> nav.navigate("taskDetail/$connectionId/$slug") },
                         onNewConversation = { nav.navigate("newThread?connectionId=$connectionId") },
+                        onBack = { nav.popBackStack() },
+                    )
+                }
+            }
+            composable(
+                route = "farm/{connectionId}",
+                arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
+                } else {
+                    val vm = viewModel(key = "farm-$connectionId") { FarmViewModel(api, conn) }
+                    FarmScreen(
+                        vm = vm,
+                        workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
+                        onOpen = { item ->
+                            when {
+                                item.specId != null -> nav.navigate("specDetail/$connectionId/${item.specId}")
+                                item.taskSlugs.isNotEmpty() -> nav.navigate("taskDetail/$connectionId/${item.taskSlugs.first()}")
+                                item.threadIds.isNotEmpty() -> nav.navigate("thread/$connectionId/${item.threadIds.first()}")
+                            }
+                        },
                         onBack = { nav.popBackStack() },
                     )
                 }
