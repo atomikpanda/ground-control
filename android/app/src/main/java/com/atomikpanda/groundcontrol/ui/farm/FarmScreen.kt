@@ -10,14 +10,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,7 +48,18 @@ fun FarmScreen(
     val state by vm.state.collectAsState()
     LaunchedEffect(Unit) { vm.refresh() }
 
-    Scaffold(topBar = { TopAppBar(title = { Text(workspaceName) }) }) { pad ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(workspaceName) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
+    ) { pad ->
         when (val s = state) {
             is FarmUiState.Loading -> Box(Modifier.fillMaxSize().padding(pad)) {
                 Text("Loading…", Modifier.padding(24.dp))
