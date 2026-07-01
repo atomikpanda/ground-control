@@ -20,10 +20,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,11 +42,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
-import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -237,67 +233,6 @@ private fun MessageRow(
                 color = if (isHuman) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
-        }
-    }
-}
-
-/** An agent decision rendered as the question text plus one tappable button per
- *  option — the recommended option (if any) is accented with the theme's
- *  "question" semantic color. Tapping an option reuses the same send path as
- *  the free-text compose bar ([onOption] is wired to `vm.send` by the caller).
- *
- *  [resolved] marks a decision that a human has already answered (a human
- *  message exists later in the thread) — its options are disabled and it's
- *  visually muted so it reads as history rather than a live prompt. */
-@Composable
-private fun DecisionCard(
-    text: String,
-    decision: Decision,
-    enabled: Boolean,
-    resolved: Boolean = false,
-    onOption: (String) -> Unit,
-) {
-    val colors = LocalSemanticColors.current
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.Start) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.padding(4.dp),
-        ) {
-            Column(
-                Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (resolved) {
-                    Text(
-                        "Answered",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                decision.options.forEachIndexed { index, option ->
-                    val isRecommended = index == decision.recommended
-                    if (isRecommended) {
-                        Button(
-                            onClick = { onOption(option) },
-                            enabled = enabled,
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.question),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(option) }
-                    } else {
-                        FilledTonalButton(
-                            onClick = { onOption(option) },
-                            enabled = enabled,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(option) }
-                    }
-                }
-            }
         }
     }
 }
