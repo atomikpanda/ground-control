@@ -13,6 +13,14 @@ data class ThreadSummary(
     @SerialName("unseen") val unseen: Boolean = false,
     @SerialName("last_message") val lastMessage: String = "",
     @SerialName("message_count") val messageCount: Int = 0,
+    @SerialName("needs_decision") val needsDecision: Boolean = false,
+)
+
+@Serializable
+data class Decision(
+    val options: List<String> = emptyList(),
+    val recommended: Int? = null,
+    @SerialName("allow_free_text") val allowFreeText: Boolean = true,
 )
 
 @Serializable
@@ -22,6 +30,8 @@ data class Message(
     val role: String,
     val text: String,
     @SerialName("created_at") val createdAt: String? = null,
+    val kind: String = "note",
+    val decision: Decision? = null,
 )
 
 @Serializable
