@@ -40,6 +40,19 @@ class NeedsYouReconcilerTest {
     private fun summary(id: String, needsYou: Boolean) =
         ThreadSummary(id = id, subject = "S-$id", needsYou = needsYou, lastMessage = "msg-$id", updatedAt = "2026-06-30T12:00:00Z")
 
+    private fun decisionSummary(id: String, needsDecision: Boolean) =
+        ThreadSummary(id = id, subject = "S-$id", needsDecision = needsDecision, lastMessage = "msg-$id", updatedAt = "2026-06-30T12:00:00Z")
+
+    @Test fun notifies_once_for_a_new_needs_decision() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        val r = NeedsYouReconciler(store, notifier)
+        r.reconcile(conn, listOf(decisionSummary("t1", true)))
+        assertEquals(1, notifier.events.size)
+        assertEquals("t1", notifier.events[0].threadId)
+        r.reconcile(conn, listOf(decisionSummary("t1", true)))
+        assertEquals(1, notifier.events.size)
+    }
+
     @Test fun notifies_once_for_a_new_needs_you() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
         val r = NeedsYouReconciler(store, notifier)

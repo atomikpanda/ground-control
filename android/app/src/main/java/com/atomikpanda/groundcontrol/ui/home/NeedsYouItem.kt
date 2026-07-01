@@ -66,6 +66,17 @@ fun questionsFrom(conn: WorkspaceConnection, threads: List<ThreadSummary>): List
     threads.filter { it.needsYou }
         .map { NeedsYouItem.Question(conn.id, conn.displayName(), it.id, it.subject, it.lastMessage, it.updatedAt ?: "") }
 
+/**
+ * Unanswered decisions (typed agent prompts with option buttons) surfaced as the
+ * same [NeedsYouItem.Question] card — tapping it opens the thread where the
+ * decision's options are rendered. A thread that is *both* [ThreadSummary.needsYou]
+ * and [ThreadSummary.needsDecision] is already covered by [questionsFrom]; excluded
+ * here so it surfaces once, not twice.
+ */
+fun decisionsFrom(conn: WorkspaceConnection, threads: List<ThreadSummary>): List<NeedsYouItem> =
+    threads.filter { it.needsDecision && !it.needsYou }
+        .map { NeedsYouItem.Question(conn.id, conn.displayName(), it.id, it.subject, it.lastMessage, it.updatedAt ?: "") }
+
 fun blockersFrom(conn: WorkspaceConnection, tasks: List<TaskSummary>): List<NeedsYouItem> =
     tasks.filter { it.blockedReason != null }
         .map { NeedsYouItem.Blocker(conn.id, conn.displayName(), it.slug, it.blockedReason ?: "", it.createdAt ?: "") }

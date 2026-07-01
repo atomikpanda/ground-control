@@ -31,12 +31,13 @@ class NeedsYouReconciler(
     suspend fun reconcile(conn: WorkspaceConnection, threads: List<ThreadSummary>) {
         for (t in threads) {
             val notified = store.isNotified(conn.id, t.id)
-            if (t.needsYou && !notified) {
+            val needsAttention = t.needsYou || t.needsDecision
+            if (needsAttention && !notified) {
                 notifier.notify(
                     NeedsYouEvent(conn.id, conn.baseUrl, conn.workspaceName, t.id, t.subject, t.lastMessage, t.updatedAt ?: "")
                 )
                 store.markNotified(conn.id, t.id)
-            } else if (!t.needsYou && notified) {
+            } else if (!needsAttention && notified) {
                 store.clear(conn.id, t.id)
             }
         }

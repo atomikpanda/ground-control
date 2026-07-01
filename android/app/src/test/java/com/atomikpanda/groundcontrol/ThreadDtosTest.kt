@@ -1,10 +1,12 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.buildJson
+import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -55,5 +57,33 @@ class ThreadDtosTest {
         val s = buildJson().decodeFromString<ThreadSummary>("""{"id":"t1","subject":"s"}""")
         assertFalse(s.needsYou)
         assertFalse(s.unseen)
+    }
+
+    @Test fun parses_message_with_decision_payload() {
+        val raw = """{"id":"m1","thread_id":"t1","role":"agent","text":"pick one","kind":"decision",
+            "decision":{"options":["File-per-thread","SQLite"],"recommended":0,"allow_free_text":false}}"""
+        val m = json.decodeFromString(Message.serializer(), raw.trimIndent())
+        assertEquals("decision", m.kind)
+        assertEquals(listOf("File-per-thread", "SQLite"), m.decision?.options)
+        assertEquals(0, m.decision?.recommended)
+        assertFalse(m.decision!!.allowFreeText)
+    }
+
+    @Test fun message_kind_and_decision_default_when_omitted() {
+        val raw = """{"id":"m1","thread_id":"t1","role":"human","text":"hi"}"""
+        val m = json.decodeFromString(Message.serializer(), raw)
+        assertEquals("note", m.kind)
+        assertNull(m.decision)
+    }
+
+    @Test fun parses_needs_decision() {
+        val raw = """{"id":"t1","subject":"s","needs_decision":true}"""
+        val s = buildJson().decodeFromString<ThreadSummary>(raw)
+        assertTrue(s.needsDecision)
+    }
+
+    @Test fun needs_decision_defaults_false_when_omitted() {
+        val s = buildJson().decodeFromString<ThreadSummary>("""{"id":"t1","subject":"s"}""")
+        assertFalse(s.needsDecision)
     }
 }
