@@ -137,10 +137,10 @@ private fun ConversationContentView(
     // than just `lastOrNull()`) means a trailing agent note posted after an
     // unanswered decision doesn't accidentally clear the free-text gate.
     val lastHumanIndex = thread.messages.indexOfLast { it.role == "human" }
-    val activeDecision = thread.messages
+    val activeDecisionIndex = thread.messages.indices
         .drop(lastHumanIndex + 1)
-        .lastOrNull { it.kind == "decision" }
-        ?.decision
+        .lastOrNull { thread.messages[it].kind == "decision" }
+    val activeDecision = if (activeDecisionIndex == null) null else thread.messages[activeDecisionIndex].decision
     val allowFreeText = activeDecision?.allowFreeText ?: true
 
     // Keep the latest message visible when the keyboard opens — the existing
@@ -148,6 +148,17 @@ private fun ConversationContentView(
     val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
     LaunchedEffect(imeBottom) {
         if (imeBottom > 0 && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
+    }
+
+    // When free text is gated, the active decision card may have scrolled off
+    // screen (e.g. after a bottom-anchored auto-scroll). Bring it back into
+    // view so the "choose an option above" hint has something to point at.
+    // Keyed on the decision index + the gate itself so this only re-fires
+    // when the active decision actually changes, not on every recompose.
+    LaunchedEffect(activeDecisionIndex, allowFreeText) {
+        if (!allowFreeText && activeDecisionIndex != null) {
+            listState.animateScrollToItem(activeDecisionIndex)
+        }
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
@@ -167,8 +178,11 @@ private fun ConversationContentView(
                 itemsIndexed(thread.messages, key = { _, message -> message.id }) { index, message ->
                     // A decision is "answered" once a human message exists after it —
                     // resolved decisions must not offer live buttons (prevents silent
-                    // double-answering when scrolling back through history).
-                    val answered = thread.messages.drop(index + 1).any { it.role == "human" }
+                    // double-answering when scrolling back through history). A human
+                    // message exists after `index` iff `lastHumanIndex` (the last human
+                    // message in the whole thread) is past it — avoids allocating a
+                    // fresh sublist per item per recompose.
+                    val answered = index < lastHumanIndex
                     MessageRow(message, inFlight = s.inFlight, answered = answered, onOption = { vm.send(it) })
                 }
                 // Bottom-anchored: chat flows downward, so the hint belongs after
