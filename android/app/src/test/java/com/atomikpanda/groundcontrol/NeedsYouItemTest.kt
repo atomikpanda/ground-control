@@ -8,6 +8,7 @@ import com.atomikpanda.groundcontrol.ui.home.NeedsYouItem
 import com.atomikpanda.groundcontrol.ui.home.UrgencyTier
 import com.atomikpanda.groundcontrol.ui.home.approvalsFrom
 import com.atomikpanda.groundcontrol.ui.home.blockersFrom
+import com.atomikpanda.groundcontrol.ui.home.decisionsFrom
 import com.atomikpanda.groundcontrol.ui.home.displayName
 import com.atomikpanda.groundcontrol.ui.home.questionsFrom
 import com.atomikpanda.groundcontrol.ui.home.sortNeedsYou
@@ -39,6 +40,28 @@ class NeedsYouItemTest {
         val items = questionsFrom(conn, threads)
         assertEquals(1, items.size)
         assertEquals("t1", (items[0] as NeedsYouItem.Question).threadId)
+    }
+
+    @Test fun decisions_only_include_threads_that_need_decision() {
+        val conn = WorkspaceConnection("c1", "http://h", "tok", "ws")
+        val threads = listOf(
+            ThreadSummary(id = "t1", subject = "pick an option", needsDecision = true),
+            ThreadSummary(id = "t2", subject = "awaiting agent", awaitingReply = true),  // not surfaced
+            ThreadSummary(id = "t3", subject = "plain unread", unseen = true),            // not an action card
+        )
+        val items = decisionsFrom(conn, threads)
+        assertEquals(1, items.size)
+        assertEquals("t1", (items[0] as NeedsYouItem.Question).threadId)
+    }
+
+    @Test fun decisions_do_not_duplicate_a_thread_that_also_needs_you() {
+        val conn = WorkspaceConnection("c1", "http://h", "tok", "ws")
+        // A thread flagged both needsYou and needsDecision should surface once, not twice.
+        val threads = listOf(
+            ThreadSummary(id = "t1", subject = "both", needsYou = true, needsDecision = true),
+        )
+        assertEquals(1, questionsFrom(conn, threads).size)
+        assertEquals(0, decisionsFrom(conn, threads).size)
     }
 
     @Test fun blockers_only_include_blocked_tasks() {

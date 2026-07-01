@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.ui.home.NeedsYouItem
 import com.atomikpanda.groundcontrol.ui.home.NewMessageNote
 import com.atomikpanda.groundcontrol.ui.home.approvalsFrom
 import com.atomikpanda.groundcontrol.ui.home.blockersFrom
+import com.atomikpanda.groundcontrol.ui.home.decisionsFrom
 import com.atomikpanda.groundcontrol.ui.home.displayName
 import com.atomikpanda.groundcontrol.ui.home.notesFrom
 import com.atomikpanda.groundcontrol.ui.home.questionsFrom
@@ -59,6 +60,7 @@ class HomeFeedRepository(private val api: SpecApi) {
         val items = buildList {
             s.getOrNull()?.let { addAll(approvalsFrom(conn, it)) }
             t.getOrNull()?.let { addAll(questionsFrom(conn, it)) }
+            t.getOrNull()?.let { addAll(decisionsFrom(conn, it)) }
             k.getOrNull()?.let { addAll(blockersFrom(conn, it)) }
         }
         val notes = t.getOrNull()?.let { notesFrom(conn, it) } ?: emptyList()
