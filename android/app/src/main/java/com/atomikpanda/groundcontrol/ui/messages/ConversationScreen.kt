@@ -20,8 +20,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -42,9 +44,11 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
+import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -127,6 +131,14 @@ private fun ConversationContentView(
         if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
+    // If the most recent message is an unanswered decision that opts out of
+    // free text, the compose bar's text field is replaced with a hint — the
+    // operator must tap one of the decision's options to proceed.
+    val pendingDecision = thread.messages.lastOrNull()
+        ?.takeIf { it.kind == "decision" }
+        ?.decision
+    val allowFreeText = pendingDecision?.allowFreeText ?: true
+
     // Keep the latest message visible when the keyboard opens — the existing
     // effect only scrolls on message-count changes, not on IME show.
     val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
@@ -149,7 +161,7 @@ private fun ConversationContentView(
         Box(Modifier.weight(1f).nestedScroll(pull.nestedScrollConnection)) {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
                 items(thread.messages, key = { it.id }) { message ->
-                    MessageRow(message)
+                    MessageRow(message, inFlight = s.inFlight, onOption = { vm.send(it) })
                 }
                 // Bottom-anchored: chat flows downward, so the hint belongs after
                 // the last message, where the eye lands after the auto-scroll.
@@ -166,12 +178,16 @@ private fun ConversationContentView(
             }
             PullToRefreshContainer(state = pull, modifier = Modifier.align(Alignment.TopCenter))
         }
-        ComposeBar(s, vm)
+        ComposeBar(s, vm, allowFreeText = allowFreeText)
     }
 }
 
 @Composable
-private fun MessageRow(message: Message) {
+private fun MessageRow(message: Message, inFlight: Boolean = false, onOption: (String) -> Unit = {}) {
+    if (message.kind == "decision" && message.decision != null) {
+        DecisionCard(text = message.text, decision = message.decision, enabled = !inFlight, onOption = onOption)
+        return
+    }
     val isHuman = message.role == "human"
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
@@ -192,8 +208,52 @@ private fun MessageRow(message: Message) {
     }
 }
 
+/** An agent decision rendered as the question text plus one tappable button per
+ *  option — the recommended option (if any) is accented with the theme's
+ *  "question" semantic color. Tapping an option reuses the same send path as
+ *  the free-text compose bar ([onOption] is wired to `vm.send` by the caller). */
 @Composable
-private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewModel) {
+private fun DecisionCard(text: String, decision: Decision, enabled: Boolean, onOption: (String) -> Unit) {
+    val colors = LocalSemanticColors.current
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.Start) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.padding(4.dp),
+        ) {
+            Column(
+                Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                decision.options.forEachIndexed { index, option ->
+                    val isRecommended = index == decision.recommended
+                    if (isRecommended) {
+                        Button(
+                            onClick = { onOption(option) },
+                            enabled = enabled,
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.question),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(option) }
+                    } else {
+                        FilledTonalButton(
+                            onClick = { onOption(option) },
+                            enabled = enabled,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(option) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewModel, allowFreeText: Boolean = true) {
     val draft by vm.draft.collectAsStateWithLifecycle()
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -204,6 +264,17 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                 )
+            }
+            if (!allowFreeText) {
+                // The pending decision opted out of free text — the compose bar's
+                // job here is just to point back at the decision card's options.
+                Text(
+                    "Choose an option above to continue.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(16.dp),
+                )
+                return@Column
             }
             Row(
                 Modifier.fillMaxWidth().padding(8.dp),
