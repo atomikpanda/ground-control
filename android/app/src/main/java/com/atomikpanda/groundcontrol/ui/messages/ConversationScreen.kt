@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -131,13 +131,17 @@ private fun ConversationContentView(
         if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
-    // If the most recent message is an unanswered decision that opts out of
-    // free text, the compose bar's text field is replaced with a hint — the
-    // operator must tap one of the decision's options to proceed.
-    val pendingDecision = thread.messages.lastOrNull()
-        ?.takeIf { it.kind == "decision" }
+    // The "active" decision is the most recent decision message that has no
+    // human reply after it — i.e. it's still awaiting an answer. Scanning
+    // back to the last human message and checking the tail after it (rather
+    // than just `lastOrNull()`) means a trailing agent note posted after an
+    // unanswered decision doesn't accidentally clear the free-text gate.
+    val lastHumanIndex = thread.messages.indexOfLast { it.role == "human" }
+    val activeDecision = thread.messages
+        .drop(lastHumanIndex + 1)
+        .lastOrNull { it.kind == "decision" }
         ?.decision
-    val allowFreeText = pendingDecision?.allowFreeText ?: true
+    val allowFreeText = activeDecision?.allowFreeText ?: true
 
     // Keep the latest message visible when the keyboard opens — the existing
     // effect only scrolls on message-count changes, not on IME show.
@@ -160,8 +164,12 @@ private fun ConversationContentView(
         }
         Box(Modifier.weight(1f).nestedScroll(pull.nestedScrollConnection)) {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
-                items(thread.messages, key = { it.id }) { message ->
-                    MessageRow(message, inFlight = s.inFlight, onOption = { vm.send(it) })
+                itemsIndexed(thread.messages, key = { _, message -> message.id }) { index, message ->
+                    // A decision is "answered" once a human message exists after it —
+                    // resolved decisions must not offer live buttons (prevents silent
+                    // double-answering when scrolling back through history).
+                    val answered = thread.messages.drop(index + 1).any { it.role == "human" }
+                    MessageRow(message, inFlight = s.inFlight, answered = answered, onOption = { vm.send(it) })
                 }
                 // Bottom-anchored: chat flows downward, so the hint belongs after
                 // the last message, where the eye lands after the auto-scroll.
@@ -183,9 +191,20 @@ private fun ConversationContentView(
 }
 
 @Composable
-private fun MessageRow(message: Message, inFlight: Boolean = false, onOption: (String) -> Unit = {}) {
+private fun MessageRow(
+    message: Message,
+    inFlight: Boolean = false,
+    answered: Boolean = false,
+    onOption: (String) -> Unit = {},
+) {
     if (message.kind == "decision" && message.decision != null) {
-        DecisionCard(text = message.text, decision = message.decision, enabled = !inFlight, onOption = onOption)
+        DecisionCard(
+            text = message.text,
+            decision = message.decision,
+            enabled = !inFlight && !answered,
+            resolved = answered,
+            onOption = onOption,
+        )
         return
     }
     val isHuman = message.role == "human"
@@ -211,9 +230,19 @@ private fun MessageRow(message: Message, inFlight: Boolean = false, onOption: (S
 /** An agent decision rendered as the question text plus one tappable button per
  *  option — the recommended option (if any) is accented with the theme's
  *  "question" semantic color. Tapping an option reuses the same send path as
- *  the free-text compose bar ([onOption] is wired to `vm.send` by the caller). */
+ *  the free-text compose bar ([onOption] is wired to `vm.send` by the caller).
+ *
+ *  [resolved] marks a decision that a human has already answered (a human
+ *  message exists later in the thread) — its options are disabled and it's
+ *  visually muted so it reads as history rather than a live prompt. */
 @Composable
-private fun DecisionCard(text: String, decision: Decision, enabled: Boolean, onOption: (String) -> Unit) {
+private fun DecisionCard(
+    text: String,
+    decision: Decision,
+    enabled: Boolean,
+    resolved: Boolean = false,
+    onOption: (String) -> Unit,
+) {
     val colors = LocalSemanticColors.current
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.Start) {
         Surface(
@@ -230,6 +259,13 @@ private fun DecisionCard(text: String, decision: Decision, enabled: Boolean, onO
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (resolved) {
+                    Text(
+                        "Answered",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 decision.options.forEachIndexed { index, option ->
                     val isRecommended = index == decision.recommended
                     if (isRecommended) {
