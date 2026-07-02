@@ -1,22 +1,48 @@
 package com.atomikpanda.groundcontrol
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.NOTIFICATIONS_ENABLED
 import com.atomikpanda.groundcontrol.data.PairLink
+import com.atomikpanda.groundcontrol.data.settingsStore
+import com.atomikpanda.groundcontrol.notify.WatchController
 import com.atomikpanda.groundcontrol.ui.theme.GroundControlTheme
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val pendingThread = MutableStateFlow<Pair<String, String>?>(null)
 
+    private val notifPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) WatchController.enable(applicationContext)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycleScope.launch {
+            val enabled = settingsStore.data.first()[NOTIFICATIONS_ENABLED] ?: false
+            if (enabled) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    WatchController.enable(applicationContext)
+                }
+            }
+        }
         handleIntent(intent)
         setContent { GroundControlTheme { GroundControlApp(this, pendingThread) } }
     }
