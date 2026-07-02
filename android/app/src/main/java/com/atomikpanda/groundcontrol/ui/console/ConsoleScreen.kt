@@ -30,8 +30,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -250,12 +248,14 @@ private fun Badge(text: String, color: Color) {
     }
 }
 
-/** Free-text escape hatch: posts straight to the work-item thread via `vm.steer`. Disabled
+/** Free-text escape hatch: posts straight to the work-item thread via `vm.sendDraft`. The
+ *  draft is VM-owned (not local Compose state) so it survives a failed send instead of
+ *  being cleared on tap — [ConsoleViewModel.sendDraft] only clears it on success. Disabled
  *  (with a spinner) while a send is in flight so it can't be double-submitted, and surfaces
  *  [ConsoleViewModel.sendError] (from a prior failed send) until dismissed or the next attempt. */
 @Composable
 private fun SteerBar(vm: ConsoleViewModel) {
-    var text by remember { mutableStateOf("") }
+    val draft by vm.draft.collectAsStateWithLifecycle()
     val sending by vm.sending.collectAsStateWithLifecycle()
     val sendError by vm.sendError.collectAsStateWithLifecycle()
     Surface(tonalElevation = 3.dp) {
@@ -275,8 +275,8 @@ private fun SteerBar(vm: ConsoleViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
+                    value = draft,
+                    onValueChange = vm::onDraftChange,
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Steer…") },
                     singleLine = true,
@@ -287,13 +287,12 @@ private fun SteerBar(vm: ConsoleViewModel) {
                 } else {
                     IconButton(
                         onClick = {
-                            if (text.isNotBlank()) {
+                            if (draft.isNotBlank()) {
                                 vm.clearSendError()
-                                vm.steer(text)
-                                text = ""
+                                vm.sendDraft()
                             }
                         },
-                        enabled = text.isNotBlank(),
+                        enabled = draft.isNotBlank(),
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                     }
