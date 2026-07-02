@@ -70,4 +70,26 @@ class DoneViewModelTest {
         assertEquals("2026-07-01T12:00:00Z", c.c.completedAt)
         assertNull(c.c.review)
     }
+
+    private val taskJsonNoFinishedAt = """
+        {"slug":"a","description":"do the thing","phase":"done","branch":"feat/a",
+         "pr_urls":{},"test_results":{"mothership":"pass"},
+         "affected_repos":["mothership"],"finished_at":null}
+    """.trimIndent()
+
+    @Test fun completedAt_falls_back_to_item_updatedAt_when_no_task_finished_at() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJsonNoFinishedAt, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        val c = vm.state.value as DoneUiState.Content
+        assertEquals("2026-07-02T00:00:00Z", c.c.completedAt)
+    }
 }

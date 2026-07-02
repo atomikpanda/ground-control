@@ -202,9 +202,7 @@ fun GroundControlApp(
                                 item.phase == "in_flight" -> nav.navigate("console/$connectionId/${item.id}")
                                 item.phase == "review" -> nav.navigate("review/$connectionId/${item.id}")
                                 item.phase == "done" -> nav.navigate("done/$connectionId/${item.id}")
-                                item.phase in listOf("inbox", "shaping", "ready") && item.specId != null ->
-                                    nav.navigate("specDetail/$connectionId/${item.specId}")
-                                // generic fallbacks: spec-less inbox captures, or any unmatched item
+                                // inbox / shaping / ready (spec-bearing) home to the spec cockpit; a spec-less inbox capture falls through to its thread
                                 item.specId != null -> nav.navigate("specDetail/$connectionId/${item.specId}")
                                 item.taskSlugs.isNotEmpty() -> nav.navigate("taskDetail/$connectionId/${item.taskSlugs.first()}")
                                 item.threadIds.isNotEmpty() -> nav.navigate("thread/$connectionId/${item.threadIds.first()}")
