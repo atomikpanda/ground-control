@@ -106,6 +106,7 @@ class ConsoleViewModel(
     fun steer(text: String): Job = scope.launch {
         val tid = (state.value as? ConsoleUiState.Content)?.c?.threadId ?: return@launch
         runCatching { api.postMessage(conn, tid, text) }
-        _state.value = fetch()
+        val next = runCatching { fetch() }.getOrNull()
+        if (next is ConsoleUiState.Content) _state.value = next
     }
 }

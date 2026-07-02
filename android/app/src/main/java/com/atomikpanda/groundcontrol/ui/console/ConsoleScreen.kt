@@ -165,7 +165,11 @@ private fun TaskRow(task: TaskSummary, colors: SemanticColors) {
                             Text(
                                 "$repo:$status",
                                 style = MonoStyle,
-                                color = if (status == "pass") colors.approval else colors.error,
+                                color = when (status) {
+                                    "pass" -> colors.approval
+                                    "skip" -> colors.muted
+                                    else -> colors.error
+                                },
                             )
                         }
                     }
@@ -215,7 +219,11 @@ private fun TestResultRow(repo: String, status: String, colors: SemanticColors) 
         Text(
             status,
             style = MonoStyle,
-            color = if (status == "pass") colors.approval else colors.error,
+            color = when (status) {
+                "pass" -> colors.approval
+                "skip" -> colors.muted
+                else -> colors.error
+            },
         )
     }
 }
