@@ -6,6 +6,7 @@ import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
+import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.Thread
@@ -29,6 +30,7 @@ data class ConsoleContent(
     val journal: List<JournalEntry>,
     val review: ReviewSummary?,          // null when the item has no spec
     val activeDecision: Decision?,       // last unanswered decision on the work-item thread
+    val activeDecisionText: String?,     // the active decision message's question text
     val threadId: String?,
 )
 
@@ -73,12 +75,14 @@ class ConsoleViewModel(
             val journal = item.taskSlugs.firstOrNull()
                 ?.let { runCatching { api.getJournal(conn, it) }.getOrNull() } ?: emptyList()
             val review = item.specId?.let { runCatching { api.getReview(conn, it).summary }.getOrNull() }
+            val activeDecisionMessage = thread?.let { activeDecisionMessage(it) }
             ConsoleUiState.Content(ConsoleContent(
                 item = item,
                 tasks = tasks.awaitAll().filterNotNull(),
                 journal = journal,
                 review = review,
-                activeDecision = thread?.let { activeDecision(it) },
+                activeDecision = activeDecisionMessage?.decision,
+                activeDecisionText = activeDecisionMessage?.text,
                 threadId = threadId,
             ))
         }
@@ -88,11 +92,13 @@ class ConsoleViewModel(
         ConsoleUiState.Failed(e.message ?: "failed to load")
     }
 
-    /** Last unanswered decision after the last human message (same rule as ConversationScreen). */
-    private fun activeDecision(thread: Thread): Decision? {
+    /** Last unanswered decision message after the last human message (same rule as
+     *  ConversationScreen) — carries both the `Decision` payload and its question `text`,
+     *  since `DecisionCard` needs the question to render alongside the options. */
+    private fun activeDecisionMessage(thread: Thread): Message? {
         val lastHuman = thread.messages.indexOfLast { it.role == "human" }
         return thread.messages.drop(lastHuman + 1)
-            .lastOrNull { it.kind == "decision" }?.decision
+            .lastOrNull { it.kind == "decision" }
     }
 
     fun answerOption(text: String): Job = steer(text)   // an option tap is a plain human reply
