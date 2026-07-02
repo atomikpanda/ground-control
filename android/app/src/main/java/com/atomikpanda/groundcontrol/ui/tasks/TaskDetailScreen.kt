@@ -156,8 +156,11 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
                         Text(
                             status,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (status == "green") MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.error,
+                            color = when (status) {
+                                "pass" -> MaterialTheme.colorScheme.primary
+                                "skip" -> MaterialTheme.colorScheme.outline
+                                else -> MaterialTheme.colorScheme.error
+                            },
                         )
                     }
                 }

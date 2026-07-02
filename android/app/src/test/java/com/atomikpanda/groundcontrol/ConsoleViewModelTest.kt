@@ -1,0 +1,100 @@
+package com.atomikpanda.groundcontrol
+
+import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.mshipDefaults
+import com.atomikpanda.groundcontrol.ui.console.ConsoleUiState
+import com.atomikpanda.groundcontrol.ui.console.ConsoleViewModel
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockRequestHandler
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.respondError
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.TextContent
+import io.ktor.http.headersOf
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class ConsoleViewModelTest {
+    @Before fun setUp() = Dispatchers.setMain(StandardTestDispatcher())
+    @After fun tearDown() = Dispatchers.resetMain()
+
+    private val conn = WorkspaceConnection("1", "http://h:47100", "secret", "ws")
+    private val jsonHdr = headersOf(HttpHeaders.ContentType, "application/json")
+
+    private val itemJson = """
+        {"id":"wi-1","kind":"feature","title":"T","phase":"in_flight",
+         "task_slugs":["a"],"thread_ids":["t1"],"spec_id":null}
+    """.trimIndent()
+
+    private val taskJson = """
+        {"slug":"a","description":"do the thing","phase":"in_progress","branch":"feat/a"}
+    """.trimIndent()
+
+    private val journalJson = """
+        [{"timestamp":"2026-06-30T10:00:00Z","message":"started"}]
+    """.trimIndent()
+
+    private val threadJson = """
+        {"id":"t1","subject":"s","messages":[
+          {"id":"m1","thread_id":"t1","role":"human","text":"hi","created_at":"2026-06-30T10:00:00Z"}
+        ]}
+    """.trimIndent()
+
+    private fun vm(scope: CoroutineScope, handler: MockRequestHandler) = ConsoleViewModel(
+        SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }),
+        conn, "wi-1", testScope = scope,
+    )
+
+    /** Routes the four fan-out GETs plus the steer POST; records POSTed bodies when given a sink. */
+    private fun defaultHandler(postedTexts: MutableList<String>? = null): MockRequestHandler = { req ->
+        when {
+            req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                respond(itemJson, HttpStatusCode.OK, jsonHdr)
+            req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                respond(taskJson, HttpStatusCode.OK, jsonHdr)
+            req.url.encodedPath.endsWith("/journal/a") && req.method == HttpMethod.Get ->
+                respond(journalJson, HttpStatusCode.OK, jsonHdr)
+            req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                respond(threadJson, HttpStatusCode.OK, jsonHdr)
+            req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post -> {
+                postedTexts?.add((req.body as TextContent).text)
+                respond(threadJson, HttpStatusCode.OK, jsonHdr)
+            }
+            else -> respondError(HttpStatusCode.NotFound)
+        }
+    }
+
+    @Test fun load_fans_out_and_builds_content_with_no_active_decision() = runTest {
+        val vm = vm(this, defaultHandler())
+        vm.load().join()
+        val c = vm.state.value as ConsoleUiState.Content
+        assertEquals(1, c.c.tasks.size)
+        assertEquals("a", c.c.tasks[0].slug)
+        assertNull(c.c.activeDecision)
+    }
+
+    @Test fun steer_posts_message_to_work_item_thread() = runTest {
+        val postedTexts = mutableListOf<String>()
+        val vm = vm(this, defaultHandler(postedTexts))
+        vm.load().join()
+        vm.steer("go").join()
+        assertEquals(1, postedTexts.size)
+        assertTrue(postedTexts[0].contains("go"))
+    }
+}
