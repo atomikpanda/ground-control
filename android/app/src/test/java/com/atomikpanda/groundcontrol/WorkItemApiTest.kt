@@ -33,4 +33,22 @@ class WorkItemApiTest {
         assertEquals("in_flight", wi.phase)
         assertTrue(url!!.endsWith("/items/wi-1"))
     }
+
+    @Test
+    fun get_item_parses_external_links() = runTest {
+        val api = SpecApi(HttpClient(MockEngine {
+            respond(
+                """{"id":"wi-1","kind":"feature","title":"T","phase":"done",
+                    "external_links":[{"provider":"github","url":"https://github.com/o/r/issues/1","title":"issue 1"},
+                                      {"provider":"linear","url":"https://linear.app/x/MOS-1","title":""}]}""",
+                HttpStatusCode.OK, jsonHdr,
+            )
+        }) { mshipDefaults() })
+        val wi = api.getItem(conn, "wi-1")
+        assertEquals(2, wi.externalLinks.size)
+        assertEquals("github", wi.externalLinks[0].provider)
+        assertEquals("https://github.com/o/r/issues/1", wi.externalLinks[0].url)
+        assertEquals("issue 1", wi.externalLinks[0].title)
+        assertEquals("", wi.externalLinks[1].title)
+    }
 }
