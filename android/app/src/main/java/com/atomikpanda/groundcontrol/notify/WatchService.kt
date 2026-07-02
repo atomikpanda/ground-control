@@ -75,6 +75,7 @@ class WatchService : Service() {
         // Reconcile once up front so a thread that already needs you when the watcher starts
         // notifies immediately instead of waiting for the 15-min WatchBackstopWorker backstop.
         runCatching { reconciler.fetchAndReconcile(conn, repo) }
+            .onFailure { android.util.Log.w("WatchService", "initial reconcile failed for ${conn.id}", it) }
         var cursor = Instant.now().toString()
         var backoffMs = 1000L
         while (isActive) {

@@ -25,7 +25,15 @@ class MainActivity : ComponentActivity() {
     private val pendingThread = MutableStateFlow<Pair<String, String>?>(null)
 
     private val notifPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) WatchController.enable(applicationContext)
+        if (granted) {
+            WatchController.enable(applicationContext)
+        } else if (!shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+            Toast.makeText(
+                this,
+                "Notifications are blocked for Ground Control. Enable them in system settings to get alerts.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
