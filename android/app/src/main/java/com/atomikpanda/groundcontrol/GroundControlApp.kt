@@ -42,6 +42,8 @@ import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
 import com.atomikpanda.groundcontrol.ui.console.ConsoleScreen
 import com.atomikpanda.groundcontrol.ui.console.ConsoleViewModel
+import com.atomikpanda.groundcontrol.ui.done.DoneScreen
+import com.atomikpanda.groundcontrol.ui.done.DoneViewModel
 import com.atomikpanda.groundcontrol.ui.farm.FarmScreen
 import com.atomikpanda.groundcontrol.ui.farm.FarmViewModel
 import com.atomikpanda.groundcontrol.ui.review.ReviewScreen
@@ -199,6 +201,10 @@ fun GroundControlApp(
                             when {
                                 item.phase == "in_flight" -> nav.navigate("console/$connectionId/${item.id}")
                                 item.phase == "review" -> nav.navigate("review/$connectionId/${item.id}")
+                                item.phase == "done" -> nav.navigate("done/$connectionId/${item.id}")
+                                item.phase in listOf("inbox", "shaping", "ready") && item.specId != null ->
+                                    nav.navigate("specDetail/$connectionId/${item.specId}")
+                                // generic fallbacks: spec-less inbox captures, or any unmatched item
                                 item.specId != null -> nav.navigate("specDetail/$connectionId/${item.specId}")
                                 item.taskSlugs.isNotEmpty() -> nav.navigate("taskDetail/$connectionId/${item.taskSlugs.first()}")
                                 item.threadIds.isNotEmpty() -> nav.navigate("thread/$connectionId/${item.threadIds.first()}")
@@ -252,6 +258,31 @@ fun GroundControlApp(
                         ReviewViewModel(api, conn, itemId)
                     }
                     ReviewScreen(
+                        vm,
+                        title = conn.workspaceName.ifBlank { conn.baseUrl },
+                        onBack = { nav.popBackStack() },
+                    )
+                }
+            }
+            composable(
+                route = "done/{connectionId}/{itemId}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("itemId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val itemId = entry.arguments?.getString("itemId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
+                } else {
+                    val vm = viewModel(key = "done-$connectionId-$itemId") {
+                        DoneViewModel(api, conn, itemId)
+                    }
+                    DoneScreen(
                         vm,
                         title = conn.workspaceName.ifBlank { conn.baseUrl },
                         onBack = { nav.popBackStack() },
