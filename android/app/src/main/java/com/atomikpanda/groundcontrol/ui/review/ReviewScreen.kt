@@ -37,6 +37,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
+import com.atomikpanda.groundcontrol.ui.components.ExternalLinksRow
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 import com.atomikpanda.groundcontrol.ui.theme.SemanticColors
@@ -122,6 +123,7 @@ private fun HeaderSection(item: WorkItemSummary) {
     Column(Modifier.fillMaxWidth().padding(16.dp, 12.dp)) {
         Text(item.title, style = MaterialTheme.typography.titleLarge)
         Text("Review", style = MonoStyle, color = MaterialTheme.colorScheme.outline)
+        ExternalLinksRow(item.externalLinks, Modifier.padding(top = 4.dp))
     }
 }
 
