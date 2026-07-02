@@ -97,4 +97,27 @@ class ConsoleViewModelTest {
         assertEquals(1, postedTexts.size)
         assertTrue(postedTexts[0].contains("go"))
     }
+
+    @Test fun steer_sets_sendError_when_post_fails() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/a") && req.method == HttpMethod.Get ->
+                    respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        vm.steer("go").join()
+        assertEquals("Couldn't send — check your connection and try again.", vm.sendError.value)
+        assertEquals(false, vm.sending.value)
+    }
 }

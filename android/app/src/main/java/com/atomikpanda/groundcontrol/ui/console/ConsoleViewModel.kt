@@ -55,6 +55,18 @@ class ConsoleViewModel(
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
 
+    /** True while a `steer`/`answerOption` POST is in flight; the UI disables the Send
+     *  control on this to prevent a double-submit. */
+    private val _sending = MutableStateFlow(false)
+    val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
+    /** Non-null when the last `steer`/`answerOption` send failed; the UI surfaces it and the
+     *  user (or the next attempt) clears it via [clearSendError]. */
+    private val _sendError = MutableStateFlow<String?>(null)
+    val sendError: StateFlow<String?> = _sendError.asStateFlow()
+
+    fun clearSendError() { _sendError.value = null }
+
     fun load(): Job = scope.launch { _state.value = fetch() }
 
     /** Periodic refresh; cancel by cancelling the returned Job (bind to the composable's lifecycle). */
@@ -105,8 +117,16 @@ class ConsoleViewModel(
 
     fun steer(text: String): Job = scope.launch {
         val tid = (state.value as? ConsoleUiState.Content)?.c?.threadId ?: return@launch
-        runCatching { api.postMessage(conn, tid, text) }
-        val next = runCatching { fetch() }.getOrNull()
-        if (next is ConsoleUiState.Content) _state.value = next
+        _sending.value = true
+        _sendError.value = null
+        try {
+            val ok = runCatching { api.postMessage(conn, tid, text) }.isSuccess
+            if (!ok) _sendError.value = "Couldn't send — check your connection and try again."
+            // defensive refetch: don't drop to Failed on a transient error
+            val next = runCatching { fetch() }.getOrNull()
+            if (next is ConsoleUiState.Content) _state.value = next
+        } finally {
+            _sending.value = false
+        }
     }
 }

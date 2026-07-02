@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.ui.console
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -248,33 +250,54 @@ private fun Badge(text: String, color: Color) {
     }
 }
 
-/** Free-text escape hatch: posts straight to the work-item thread via `vm.steer`. */
+/** Free-text escape hatch: posts straight to the work-item thread via `vm.steer`. Disabled
+ *  (with a spinner) while a send is in flight so it can't be double-submitted, and surfaces
+ *  [ConsoleViewModel.sendError] (from a prior failed send) until dismissed or the next attempt. */
 @Composable
 private fun SteerBar(vm: ConsoleViewModel) {
     var text by remember { mutableStateOf("") }
+    val sending by vm.sending.collectAsStateWithLifecycle()
+    val sendError by vm.sendError.collectAsStateWithLifecycle()
     Surface(tonalElevation = 3.dp) {
-        Row(
-            Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Steer…") },
-                singleLine = true,
-            )
-            IconButton(
-                onClick = {
-                    if (text.isNotBlank()) {
-                        vm.steer(text)
-                        text = ""
-                    }
-                },
-                enabled = text.isNotBlank(),
+        Column {
+            sendError?.let { err ->
+                Text(
+                    err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalSemanticColors.current.error,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clickable { vm.clearSendError() },
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Steer…") },
+                    singleLine = true,
+                    enabled = !sending,
+                )
+                if (sending) {
+                    CircularProgressIndicator(Modifier.padding(8.dp).size(24.dp), strokeWidth = 2.dp)
+                } else {
+                    IconButton(
+                        onClick = {
+                            if (text.isNotBlank()) {
+                                vm.clearSendError()
+                                vm.steer(text)
+                                text = ""
+                            }
+                        },
+                        enabled = text.isNotBlank(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                    }
+                }
             }
         }
     }
