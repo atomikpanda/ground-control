@@ -89,11 +89,77 @@ class ConsoleViewModelTest {
         assertNull(c.c.activeDecision)
     }
 
-    @Test fun steer_posts_message_to_work_item_thread() = runTest {
+    @Test fun sendDraft_posts_message_to_work_item_thread() = runTest {
         val postedTexts = mutableListOf<String>()
         val vm = vm(this, defaultHandler(postedTexts))
         vm.load().join()
-        vm.steer("go").join()
+        vm.onDraftChange("go")
+        vm.sendDraft().join()
+        assertEquals(1, postedTexts.size)
+        assertTrue(postedTexts[0].contains("go"))
+    }
+
+    @Test fun sendDraft_sets_sendError_when_post_fails() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/a") && req.method == HttpMethod.Get ->
+                    respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        vm.onDraftChange("go")
+        vm.sendDraft().join()
+        assertEquals("Couldn't send — check your connection and try again.", vm.sendError.value)
+        assertEquals(false, vm.sending.value)
+    }
+
+    @Test fun sendDraft_retains_draft_on_failed_send_but_clears_it_on_success() = runTest {
+        var failNext = true
+        val postedTexts = mutableListOf<String>()
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/a") && req.method == HttpMethod.Get ->
+                    respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                    if (failNext) {
+                        respondError(HttpStatusCode.InternalServerError)
+                    } else {
+                        postedTexts.add((req.body as TextContent).text)
+                        respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                    }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        vm.onDraftChange("go")
+
+        // Failed send: the draft the user typed must survive.
+        vm.sendDraft().join()
+        assertEquals("go", vm.draft.value)
+        assertEquals("Couldn't send — check your connection and try again.", vm.sendError.value)
+
+        // Retry, this time succeeding: the draft is cleared only now.
+        failNext = false
+        vm.sendDraft().join()
+        assertEquals("", vm.draft.value)
+        assertNull(vm.sendError.value)
         assertEquals(1, postedTexts.size)
         assertTrue(postedTexts[0].contains("go"))
     }

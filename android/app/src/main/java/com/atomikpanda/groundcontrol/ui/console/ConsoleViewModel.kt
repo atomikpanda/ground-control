@@ -42,7 +42,7 @@ sealed interface ConsoleUiState {
 
 /** Console for a single work item: fans out GET /items/{id} into its tasks,
  *  journal, spec review, and work-item thread, then computes the active
- *  decision (if any) the same way ConversationScreen does. `steer`/`answerOption`
+ *  decision (if any) the same way ConversationScreen does. `sendDraft`/`answerOption`
  *  both reuse the existing thread-message send path. */
 class ConsoleViewModel(
     private val api: SpecApi,
@@ -54,6 +54,26 @@ class ConsoleViewModel(
     private val _state = MutableStateFlow<ConsoleUiState>(ConsoleUiState.Loading)
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
+
+    /** True while a `sendDraft`/`answerOption` POST is in flight; the UI disables the Send
+     *  control on this to prevent a double-submit. */
+    private val _sending = MutableStateFlow(false)
+    val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
+    /** Non-null when the last `sendDraft`/`answerOption` send failed; the UI surfaces it and the
+     *  user (or the next attempt) clears it via [clearSendError]. */
+    private val _sendError = MutableStateFlow<String?>(null)
+    val sendError: StateFlow<String?> = _sendError.asStateFlow()
+
+    fun clearSendError() { _sendError.value = null }
+
+    /** VM-owned Steer bar draft (same pattern as ConversationViewModel): survives recomposition
+     *  and — critically — a failed send, since the UI no longer clears its own local text state
+     *  on tap. Cleared only when [sendDraft] actually succeeds. */
+    private val _draft = MutableStateFlow("")
+    val draft: StateFlow<String> = _draft.asStateFlow()
+
+    fun onDraftChange(text: String) { _draft.value = text }
 
     fun load(): Job = scope.launch { _state.value = fetch() }
 
@@ -101,12 +121,26 @@ class ConsoleViewModel(
             .lastOrNull { it.kind == "decision" }
     }
 
-    fun answerOption(text: String): Job = steer(text)   // an option tap is a plain human reply
+    /** A decision-card option tap is a plain human reply; it must never touch the
+     *  free-text Steer draft. */
+    fun answerOption(text: String): Job = postAndRefresh(text)
 
-    fun steer(text: String): Job = scope.launch {
+    /** Send the current Steer bar draft. Clears [draft] only once the POST actually
+     *  succeeds — on failure the user's typed text survives so it isn't silently lost. */
+    fun sendDraft(): Job = postAndRefresh(_draft.value) { _draft.value = "" }
+
+    private fun postAndRefresh(text: String, onSuccess: () -> Unit = {}): Job = scope.launch {
         val tid = (state.value as? ConsoleUiState.Content)?.c?.threadId ?: return@launch
-        runCatching { api.postMessage(conn, tid, text) }
-        val next = runCatching { fetch() }.getOrNull()
-        if (next is ConsoleUiState.Content) _state.value = next
+        _sending.value = true
+        _sendError.value = null
+        try {
+            val ok = runCatching { api.postMessage(conn, tid, text) }.isSuccess
+            if (ok) onSuccess() else _sendError.value = "Couldn't send — check your connection and try again."
+            // defensive refetch: don't drop to Failed on a transient error
+            val next = runCatching { fetch() }.getOrNull()
+            if (next is ConsoleUiState.Content) _state.value = next
+        } finally {
+            _sending.value = false
+        }
     }
 }
