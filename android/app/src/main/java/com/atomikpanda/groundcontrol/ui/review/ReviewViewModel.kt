@@ -40,6 +40,18 @@ class ReviewViewModel(
     val state: StateFlow<ReviewUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
 
+    /** True while a `requestChanges` POST is in flight; the UI disables the button on this to
+     *  prevent a double-submit. */
+    private val _sending = MutableStateFlow(false)
+    val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
+    /** Non-null when the last `requestChanges` send failed; the UI surfaces it and the user
+     *  (or the next open) clears it via [clearSendError]. */
+    private val _sendError = MutableStateFlow<String?>(null)
+    val sendError: StateFlow<String?> = _sendError.asStateFlow()
+
+    fun clearSendError() { _sendError.value = null }
+
     fun load(): Job = scope.launch { _state.value = fetch() }
 
     private suspend fun fetch(): ReviewUiState = try {
@@ -63,9 +75,16 @@ class ReviewViewModel(
 
     fun requestChanges(reason: String): Job = scope.launch {
         val tid = (state.value as? ReviewUiState.Content)?.c?.threadId ?: return@launch
-        runCatching { api.postMessage(conn, tid, "**Requested changes:** $reason") }
-        // defensive refetch (mirror ConsoleViewModel.steer): don't drop to Failed on a transient error
-        val next = runCatching { fetch() }.getOrNull()
-        if (next is ReviewUiState.Content) _state.value = next
+        _sending.value = true
+        _sendError.value = null
+        try {
+            val ok = runCatching { api.postMessage(conn, tid, "**Requested changes:** $reason") }.isSuccess
+            if (!ok) _sendError.value = "Couldn't send — check your connection and try again."
+            // defensive refetch (mirror ConsoleViewModel.steer): don't drop to Failed on a transient error
+            val next = runCatching { fetch() }.getOrNull()
+            if (next is ReviewUiState.Content) _state.value = next
+        } finally {
+            _sending.value = false
+        }
     }
 }

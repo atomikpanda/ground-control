@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -104,7 +105,15 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
                 items(c.prs, key = { "${it.taskSlug}:${it.repo}" }) { pr -> PrRowView(pr, colors) }
             }
         }
-        RequestChangesBar(c.threadId, onSubmit = { vm.requestChanges(it) })
+        val sending by vm.sending.collectAsStateWithLifecycle()
+        val sendError by vm.sendError.collectAsStateWithLifecycle()
+        RequestChangesBar(
+            c.threadId,
+            sending = sending,
+            sendError = sendError,
+            onSubmit = { vm.requestChanges(it) },
+            onDismissError = { vm.clearSendError() },
+        )
     }
 }
 
@@ -144,18 +153,43 @@ private fun PrRowView(pr: PrRow, colors: SemanticColors) {
     )
 }
 
-/** "Request changes" action: disabled with a hint when the item has no thread to post to. */
+/** "Request changes" action: disabled with a hint when the item has no thread to post to,
+ *  and disabled (with a spinner) while a send is in flight so it can't be double-submitted.
+ *  Surfaces [sendError] (from a prior failed send) until dismissed or the next attempt. */
 @Composable
-private fun RequestChangesBar(threadId: String?, onSubmit: (String) -> Unit) {
+private fun RequestChangesBar(
+    threadId: String?,
+    sending: Boolean,
+    sendError: String?,
+    onSubmit: (String) -> Unit,
+    onDismissError: () -> Unit,
+) {
     var showReason by remember { mutableStateOf(false) }
 
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            sendError?.let { err ->
+                Text(
+                    err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalSemanticColors.current.error,
+                    modifier = Modifier.padding(bottom = 8.dp).clickable { onDismissError() },
+                )
+            }
             Button(
-                onClick = { showReason = true },
-                enabled = threadId != null,
+                onClick = {
+                    onDismissError()
+                    showReason = true
+                },
+                enabled = threadId != null && !sending,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Request changes") }
+            ) {
+                if (sending) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Request changes")
+                }
+            }
             if (threadId == null) {
                 Text(
                     "No conversation on this item.",

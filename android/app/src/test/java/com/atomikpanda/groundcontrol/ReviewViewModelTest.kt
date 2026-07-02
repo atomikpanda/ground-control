@@ -95,4 +95,40 @@ class ReviewViewModelTest {
         assertEquals(1, postedTexts.size)
         assertTrue(postedTexts[0].contains("please fix X"))
     }
+
+    @Test fun load_drops_a_task_that_404s_but_still_yields_content() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respondError(HttpStatusCode.NotFound)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        val c = vm.state.value as ReviewUiState.Content
+        assertTrue(c.c.prs.isEmpty())
+        assertEquals("t1", c.c.threadId)
+    }
+
+    @Test fun requestChanges_sets_sendError_when_post_fails() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        vm.requestChanges("please fix X").join()
+        assertEquals("Couldn't send — check your connection and try again.", vm.sendError.value)
+        assertEquals(false, vm.sending.value)
+    }
 }
