@@ -43,7 +43,9 @@ sealed interface ConsoleUiState {
 /** Console for a single work item: fans out GET /items/{id} into its tasks,
  *  journal, spec review, and work-item thread, then computes the active
  *  decision (if any) the same way ConversationScreen does. `sendDraft`/`answerOption`
- *  both reuse the existing thread-message send path. */
+ *  both post to the item (POST /items/{id}/messages), which lazily creates+links a
+ *  thread server-side when the item has none — so steering an in-flight item never
+ *  silently drops the message. */
 class ConsoleViewModel(
     private val api: SpecApi,
     private val conn: WorkspaceConnection,
@@ -130,11 +132,14 @@ class ConsoleViewModel(
     fun sendDraft(): Job = postAndRefresh(_draft.value) { _draft.value = "" }
 
     private fun postAndRefresh(text: String, onSuccess: () -> Unit = {}): Job = scope.launch {
-        val tid = (state.value as? ConsoleUiState.Content)?.c?.threadId ?: return@launch
+        // Post to the *item*, not its thread: an in-flight item created from a spec/task has
+        // no thread yet, so the old thread-scoped send silently no-op'd on exactly the items
+        // you'd want to steer. The server lazily creates+links a thread on first message, and
+        // `itemId` is always present — so a send always has a target (and always reports back).
         _sending.value = true
         _sendError.value = null
         try {
-            val ok = runCatching { api.postMessage(conn, tid, text) }.isSuccess
+            val ok = runCatching { api.postItemMessage(conn, itemId, text) }.isSuccess
             if (ok) onSuccess() else _sendError.value = "Couldn't send — check your connection and try again."
             // defensive refetch: don't drop to Failed on a transient error
             val next = runCatching { fetch() }.getOrNull()

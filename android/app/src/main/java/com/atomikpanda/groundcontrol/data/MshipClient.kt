@@ -127,6 +127,12 @@ class SpecApi(private val client: HttpClient) {
     suspend fun getItem(conn: WorkspaceConnection, id: String): WorkItemSummary =
         client.get("${conn.baseUrl}/items/$id") { auth(conn) }.body()
 
+    /** Steer a work item: appends a human message to its thread, lazily creating+linking one
+     *  server-side when the item has none. Item-scoped (not thread-scoped) so it can never
+     *  no-op on an in-flight item that hasn't got a thread yet. Returns the (new-or-existing) thread. */
+    suspend fun postItemMessage(conn: WorkspaceConnection, id: String, text: String): Thread =
+        client.post("${conn.baseUrl}/items/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.body()
+
     suspend fun getTask(conn: WorkspaceConnection, slug: String): TaskSummary =
         client.get("${conn.baseUrl}/tasks/$slug") { auth(conn) }.body()
 

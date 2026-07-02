@@ -61,7 +61,7 @@ class ConsoleViewModelTest {
         conn, "wi-1", testScope = scope,
     )
 
-    /** Routes the four fan-out GETs plus the steer POST; records POSTed bodies when given a sink. */
+    /** Routes the four fan-out GETs plus the item-scoped steer POST; records POSTed bodies when given a sink. */
     private fun defaultHandler(postedTexts: MutableList<String>? = null): MockRequestHandler = { req ->
         when {
             req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
@@ -72,7 +72,7 @@ class ConsoleViewModelTest {
                 respond(journalJson, HttpStatusCode.OK, jsonHdr)
             req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
                 respond(threadJson, HttpStatusCode.OK, jsonHdr)
-            req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post -> {
+            req.url.encodedPath.endsWith("/items/wi-1/messages") && req.method == HttpMethod.Post -> {
                 postedTexts?.add((req.body as TextContent).text)
                 respond(threadJson, HttpStatusCode.OK, jsonHdr)
             }
@@ -99,6 +99,40 @@ class ConsoleViewModelTest {
         assertTrue(postedTexts[0].contains("go"))
     }
 
+    /** Regression: an in-flight item created from a spec/task has no thread. The old
+     *  thread-scoped send silently returned (no post, no error, draft kept). The item-scoped
+     *  endpoint always has a target, so the message actually sends and the draft clears. */
+    @Test fun sendDraft_posts_even_when_item_has_no_thread() = runTest {
+        val itemNoThreadJson = """
+            {"id":"wi-1","kind":"feature","title":"T","phase":"in_flight",
+             "task_slugs":["a"],"thread_ids":[],"spec_id":null}
+        """.trimIndent()
+        val posted = mutableListOf<String>()
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemNoThreadJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/a") && req.method == HttpMethod.Get ->
+                    respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/items/wi-1/messages") && req.method == HttpMethod.Post -> {
+                    posted.add((req.body as TextContent).text)
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        vm.onDraftChange("steer me")
+        vm.sendDraft().join()
+        assertEquals(1, posted.size)
+        assertTrue(posted[0].contains("steer me"))
+        assertEquals("", vm.draft.value)          // cleared on success
+        assertNull(vm.sendError.value)
+    }
+
     @Test fun sendDraft_sets_sendError_when_post_fails() = runTest {
         val handler: MockRequestHandler = { req ->
             when {
@@ -110,7 +144,7 @@ class ConsoleViewModelTest {
                     respond(journalJson, HttpStatusCode.OK, jsonHdr)
                 req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
                     respond(threadJson, HttpStatusCode.OK, jsonHdr)
-                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                req.url.encodedPath.endsWith("/items/wi-1/messages") && req.method == HttpMethod.Post ->
                     respondError(HttpStatusCode.InternalServerError)
                 else -> respondError(HttpStatusCode.NotFound)
             }
@@ -136,7 +170,7 @@ class ConsoleViewModelTest {
                     respond(journalJson, HttpStatusCode.OK, jsonHdr)
                 req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
                     respond(threadJson, HttpStatusCode.OK, jsonHdr)
-                req.url.encodedPath.endsWith("/threads/t1/messages") && req.method == HttpMethod.Post ->
+                req.url.encodedPath.endsWith("/items/wi-1/messages") && req.method == HttpMethod.Post ->
                     if (failNext) {
                         respondError(HttpStatusCode.InternalServerError)
                     } else {
