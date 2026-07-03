@@ -32,13 +32,31 @@ fun ExternalLinksSection(links: List<ExternalLink>, modifier: Modifier = Modifie
             modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp),
         )
         links.forEach { link ->
+            // Only open web links, and never let a bad URL crash the app: a
+            // non-http(s) scheme (tel:/intent:/file:/…) or a URL with no handler
+            // would otherwise throw from openUri or launch an unintended target.
+            // Non-web links still display (read-only) but aren't tappable.
+            val openable = link.url.startsWith("http://", true) ||
+                link.url.startsWith("https://", true)
+            val label = "${link.provider} · ${link.title.ifBlank { link.url }}" +
+                if (openable) " ↗" else ""
             Text(
-                "${link.provider} · ${link.title.ifBlank { link.url }} ↗",
+                label,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { uriHandler.openUri(link.url) }
+                    .then(
+                        if (openable) {
+                            Modifier.clickable { runCatching { uriHandler.openUri(link.url) } }
+                        } else {
+                            Modifier
+                        },
+                    )
                     .padding(16.dp, 4.dp),
-                color = MaterialTheme.colorScheme.primary,
+                color = if (openable) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.outline
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

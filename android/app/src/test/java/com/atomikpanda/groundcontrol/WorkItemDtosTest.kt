@@ -58,4 +58,14 @@ class WorkItemDtosTest {
         assertEquals("", w.externalLinks[1].title)
         assertEquals("linear", w.externalLinks[1].provider)
     }
+
+    @Test
+    fun null_external_links_coerces_to_empty() {
+        // An explicit null (not just an absent key) must not fail the whole decode.
+        val w = json.decodeFromString(
+            WorkItemSummary.serializer(),
+            """{"id":"wi-4","kind":"chore","title":"n","phase":"inbox","external_links":null}""",
+        )
+        assertTrue(w.externalLinks.isEmpty())
+    }
 }

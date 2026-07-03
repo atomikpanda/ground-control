@@ -47,7 +47,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-fun buildJson(): Json = Json { ignoreUnknownKeys = true }
+// coerceInputValues: an explicit `null` for a field that has a default (e.g. a
+// server sending `"external_links": null` / `"task_slugs": null`) is coerced to
+// that default instead of failing the whole decode — one bad field shouldn't
+// break a cockpit's entire load.
+fun buildJson(): Json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
 class AuthException(message: String) : Exception(message)
 class NotFoundException(message: String) : Exception(message)
