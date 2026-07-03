@@ -19,14 +19,16 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -38,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -247,6 +250,11 @@ private fun MessageRow(
     }
 }
 
+// AppShapes (ui/theme/Shape.kt) caps out at 8dp for the app's instrument/
+// terminal look, but the compose bar wants a pill -- a local, explicit shape
+// rather than a theme override that would also round every button/card.
+private val ComposeFieldShape = RoundedCornerShape(24.dp)
+
 @Composable
 private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewModel, allowFreeText: Boolean = true) {
     val draft by vm.draft.collectAsStateWithLifecycle()
@@ -272,22 +280,42 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
                 return@Column
             }
             Row(
-                Modifier.fillMaxWidth().padding(8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = vm::onDraftChange,
+                // Leading attach slot: a future file-attach IconButton lands here,
+                // as the first child ahead of the input pill -- not wired up yet
+                // (out of scope for this task), but the row already has the shape
+                // (leading icon + weighted field + trailing send) to take it
+                // without a relayout.
+                Surface(
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message…") },
-                    singleLine = true,
-                    enabled = !state.inFlight,
-                )
+                    shape = ComposeFieldShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    TextField(
+                        value = draft,
+                        onValueChange = vm::onDraftChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Message…") },
+                        singleLine = true,
+                        enabled = !state.inFlight,
+                        shape = ComposeFieldShape,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
+                        ),
+                    )
+                }
                 if (state.inFlight) {
                     CircularProgressIndicator(Modifier.padding(8.dp))
                 } else {
-                    IconButton(
+                    FilledIconButton(
                         onClick = { if (draft.isNotBlank()) vm.send(draft) },
                         enabled = draft.isNotBlank(),
                     ) {
