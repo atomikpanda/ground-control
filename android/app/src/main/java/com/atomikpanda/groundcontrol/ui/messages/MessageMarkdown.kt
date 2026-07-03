@@ -28,7 +28,10 @@ fun MessageMarkdown(text: String, color: Color, modifier: Modifier = Modifier) {
         colors = markdownColor(
             text = color,
             codeText = color,
-            linkText = color,
+            // Distinct accent (not the bubble's foreground `color`) so links
+            // are visually identifiable against surrounding prose/code in the
+            // agent bubble, which sits on a `surfaceVariant` background.
+            linkText = MaterialTheme.colorScheme.primary,
         ),
         typography = markdownTypography(
             text = bodyStyle,

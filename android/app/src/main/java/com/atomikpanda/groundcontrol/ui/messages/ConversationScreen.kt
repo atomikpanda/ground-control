@@ -35,9 +35,8 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -128,12 +127,17 @@ private fun ConversationContentView(
     // count minus one (covers both messages growing and the indicator
     // appearing/disappearing).
     val itemCount = thread.messages.size + if (thread.awaitingReply) 1 else 0
-    var previousItemCount by remember { mutableStateOf(0) }
+    // rememberSaveable (not plain remember) so this survives rotation/config
+    // change: rememberLazyListState() is itself saveable, so without this the
+    // gate below would compare against a reset-to-0 previousItemCount post-
+    // rotation (`lastVisibleIndex >= -2`, always true) and yank the list to
+    // the bottom even if the user had scrolled up.
+    val previousItemCount = rememberSaveable { mutableIntStateOf(0) }
     LaunchedEffect(itemCount) {
         val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-        val wasNearBottom = lastVisibleIndex == null || lastVisibleIndex >= previousItemCount - 2
+        val wasNearBottom = lastVisibleIndex == null || lastVisibleIndex >= previousItemCount.intValue - 2
         if (itemCount > 0 && wasNearBottom) listState.animateScrollToItem(itemCount - 1)
-        previousItemCount = itemCount
+        previousItemCount.intValue = itemCount
     }
 
     // The "active" decision is the most recent decision message that has no
