@@ -37,5 +37,34 @@ class WorkItemDtosTest {
         assertTrue(w.taskSlugs.isEmpty() && w.threadIds.isEmpty())
         assertEquals(false, w.attention.needsDecision)
         assertEquals(0, w.attention.totalTasks)
+        assertTrue(w.externalLinks.isEmpty())
+    }
+
+    @Test
+    fun parses_external_links() {
+        val w = json.decodeFromString(
+            WorkItemSummary.serializer(),
+            """{"id":"wi-3","kind":"feature","title":"Links","phase":"in_flight",
+                "external_links":[
+                    {"provider":"github","url":"https://github.com/o/r/pull/1","title":"PR #1"},
+                    {"provider":"linear","url":"https://linear.app/x/issue/MOS-201"}
+                ]}""",
+        )
+        assertEquals(2, w.externalLinks.size)
+        assertEquals("github", w.externalLinks[0].provider)
+        assertEquals("https://github.com/o/r/pull/1", w.externalLinks[0].url)
+        assertEquals("PR #1", w.externalLinks[0].title)
+        // title defaults to empty string when the server omits it
+        assertEquals("", w.externalLinks[1].title)
+    }
+
+    @Test
+    fun null_external_links_coerces_to_empty() {
+        // An explicit null (not just an absent key) must not fail the whole decode.
+        val w = json.decodeFromString(
+            WorkItemSummary.serializer(),
+            """{"id":"wi-4","kind":"chore","title":"n","phase":"inbox","external_links":null}""",
+        )
+        assertTrue(w.externalLinks.isEmpty())
     }
 }
