@@ -5,10 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,10 +33,12 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.Message
@@ -65,11 +64,6 @@ fun ConversationScreen(
                 title = { Text(displayTitle, maxLines = 1) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                },
-                actions = {
-                    IconButton(onClick = { vm.requestSpec() }) {
-                        Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "Make this a spec")
-                    }
                 },
             )
         },
@@ -118,13 +112,25 @@ private fun ConversationContentView(
     if (pull.isRefreshing) LaunchedEffect(true) { vm.load()?.join(); pull.endRefresh() }
     val listState = rememberLazyListState()
 
-    // Auto-scroll to the bottom-most item when the list changes. The optional
-    // "Awaiting reply…" indicator is the last item, so the target is the total
-    // item count minus one (covers both messages growing and the indicator
+    // Auto-scroll to the bottom-most item when the list changes, but only when
+    // the user was already near the bottom beforehand -- otherwise a new
+    // message (or the "Awaiting reply…" indicator appearing) would yank the
+    // view away from wherever they'd scrolled up to, e.g. while reading back
+    // through history with the keyboard open. "Near the bottom" is judged
+    // against the *previous* item count's last index: LazyColumn doesn't move
+    // the scroll position on its own when items are appended, so at the start
+    // of this effect `listState.layoutInfo` still reflects where the user was
+    // looking before this recomposition. The optional "Awaiting reply…"
+    // indicator is the last item, so the scroll target is the total item
+    // count minus one (covers both messages growing and the indicator
     // appearing/disappearing).
     val itemCount = thread.messages.size + if (thread.awaitingReply) 1 else 0
+    var previousItemCount by remember { mutableStateOf(0) }
     LaunchedEffect(itemCount) {
-        if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
+        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+        val wasNearBottom = lastVisibleIndex == null || lastVisibleIndex >= previousItemCount - 2
+        if (itemCount > 0 && wasNearBottom) listState.animateScrollToItem(itemCount - 1)
+        previousItemCount = itemCount
     }
 
     // The "active" decision is the most recent decision message that has no
@@ -138,13 +144,6 @@ private fun ConversationContentView(
         .lastOrNull { thread.messages[it].kind == "decision" }
     val activeDecision = if (activeDecisionIndex == null) null else thread.messages[activeDecisionIndex].decision
     val allowFreeText = activeDecision?.allowFreeText ?: true
-
-    // Keep the latest message visible when the keyboard opens — the existing
-    // effect only scrolls on message-count changes, not on IME show.
-    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
-    LaunchedEffect(imeBottom) {
-        if (imeBottom > 0 && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
-    }
 
     // When free text is gated, the active decision card may have scrolled off
     // screen (e.g. after a bottom-anchored auto-scroll). Bring it back into
