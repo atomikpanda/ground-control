@@ -5,10 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,10 +16,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -35,16 +33,19 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
+import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,11 +66,6 @@ fun ConversationScreen(
                 title = { Text(displayTitle, maxLines = 1) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                },
-                actions = {
-                    IconButton(onClick = { vm.requestSpec() }) {
-                        Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "Make this a spec")
-                    }
                 },
             )
         },
@@ -123,8 +119,18 @@ private fun ConversationContentView(
     // item count minus one (covers both messages growing and the indicator
     // appearing/disappearing).
     val itemCount = thread.messages.size + if (thread.awaitingReply) 1 else 0
+    // Messaging-app behavior: only auto-scroll to the newest item when already
+    // pinned to the bottom, so a new message — or opening the keyboard — never
+    // yanks you down while you've scrolled up to read or while you're typing.
+    val isAtBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= info.totalItemsCount - 1
+        }
+    }
     LaunchedEffect(itemCount) {
-        if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
+        if (itemCount > 0 && isAtBottom) listState.animateScrollToItem(itemCount - 1)
     }
 
     // The "active" decision is the most recent decision message that has no
@@ -138,13 +144,6 @@ private fun ConversationContentView(
         .lastOrNull { thread.messages[it].kind == "decision" }
     val activeDecision = if (activeDecisionIndex == null) null else thread.messages[activeDecisionIndex].decision
     val allowFreeText = activeDecision?.allowFreeText ?: true
-
-    // Keep the latest message visible when the keyboard opens — the existing
-    // effect only scrolls on message-count changes, not on IME show.
-    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
-    LaunchedEffect(imeBottom) {
-        if (imeBottom > 0 && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
-    }
 
     // When free text is gated, the active decision card may have scrolled off
     // screen (e.g. after a bottom-anchored auto-scroll). Bring it back into
@@ -224,15 +223,30 @@ private fun MessageRow(
     ) {
         Surface(
             shape = RoundedCornerShape(12.dp),
-            color = if (isHuman) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+            // Agent bubbles: high-contrast container (was surfaceVariant — washed out).
+            color = if (isHuman) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
             modifier = Modifier.padding(4.dp),
         ) {
-            Text(
-                text = message.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isHuman) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+            if (isHuman) {
+                // Human replies are short free text — plain, on the primary bubble.
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            } else {
+                // Agent messages are usually markdown — render it, colored for contrast.
+                Markdown(
+                    content = message.text,
+                    colors = markdownColor(text = MaterialTheme.colorScheme.onSurface),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
         }
     }
 }
@@ -266,18 +280,22 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Leading slot reserved for a future attach/file button (MOS-212
+                // flags file-send as coming). Not built now — the row already
+                // leaves room, so adding an IconButton here later is drop-in.
                 OutlinedTextField(
                     value = draft,
                     onValueChange = vm::onDraftChange,
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Message…") },
+                    shape = RoundedCornerShape(24.dp),
                     singleLine = true,
                     enabled = !state.inFlight,
                 )
                 if (state.inFlight) {
                     CircularProgressIndicator(Modifier.padding(8.dp))
                 } else {
-                    IconButton(
+                    FilledIconButton(
                         onClick = { if (draft.isNotBlank()) vm.send(draft) },
                         enabled = draft.isNotBlank(),
                     ) {
