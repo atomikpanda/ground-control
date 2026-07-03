@@ -32,6 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
+import com.atomikpanda.groundcontrol.ui.components.ExternalLinksSection
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 import com.atomikpanda.groundcontrol.ui.theme.SemanticColors
@@ -89,6 +90,7 @@ private fun DoneContentView(c: DoneContent) {
 
     LazyColumn(Modifier.fillMaxSize()) {
         item { HeaderSection(c.item, c.completedAt) }
+        item { ExternalLinksSection(c.item.externalLinks) }
         item { ReposTouchedRow(c.reposTouched) }
         items(c.tasks, key = { it.slug }) { task -> TaskRow(task, colors) }
         c.review?.let { review -> item { SpecLine(review) } }

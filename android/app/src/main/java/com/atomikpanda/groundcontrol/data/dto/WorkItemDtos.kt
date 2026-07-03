@@ -14,6 +14,15 @@ data class WorkItemSummary(
     @SerialName("thread_ids") val threadIds: List<String> = emptyList(),
     val attention: Attention = Attention(),
     @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("external_links") val externalLinks: List<ExternalLink> = emptyList(),
+)
+
+/** A read-only pointer to an external tracker/resource (GitHub, Linear, …). MOS-201. */
+@Serializable
+data class ExternalLink(
+    val provider: String,
+    val url: String,
+    val title: String = "",
 )
 
 @Serializable

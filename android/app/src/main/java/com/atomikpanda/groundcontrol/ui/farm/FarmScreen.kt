@@ -137,11 +137,16 @@ private fun kindIcon(kind: String): ImageVector = when (kind) {
     else -> Icons.Filled.Description // feature
 }
 
-private fun subLine(item: WorkItemSummary): String = when {
-    item.attention.totalTasks > 0 ->
-        "${item.attention.totalTasks} task(s)" +
-            (if (item.attention.blockedTasks > 0) " · ${item.attention.blockedTasks} blocked" else "")
-    item.specId != null -> "spec"
-    item.threadIds.isNotEmpty() -> "conversation"
-    else -> item.kind
+private fun subLine(item: WorkItemSummary): String {
+    val base = when {
+        item.attention.totalTasks > 0 ->
+            "${item.attention.totalTasks} task(s)" +
+                (if (item.attention.blockedTasks > 0) " · ${item.attention.blockedTasks} blocked" else "")
+        item.specId != null -> "spec"
+        item.threadIds.isNotEmpty() -> "conversation"
+        else -> item.kind
+    }
+    // Overview grid stays compact: surface links as a count here; the actual
+    // tap-to-open links render on the detail cockpits (console/review/done). MOS-201.
+    return if (item.externalLinks.isNotEmpty()) "$base · ${item.externalLinks.size} link(s)" else base
 }

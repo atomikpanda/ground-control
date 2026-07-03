@@ -37,6 +37,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
+import com.atomikpanda.groundcontrol.ui.components.ExternalLinksSection
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 import com.atomikpanda.groundcontrol.ui.theme.SemanticColors
@@ -91,6 +92,8 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             item { HeaderSection(c.item) }
+
+            item { ExternalLinksSection(c.item.externalLinks) }
 
             if (c.prs.isEmpty()) {
                 item {

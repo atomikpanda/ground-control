@@ -41,6 +41,7 @@ import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
+import com.atomikpanda.groundcontrol.ui.components.ExternalLinksSection
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
@@ -111,6 +112,8 @@ private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             item { HeaderSection(c.item) }
+
+            item { ExternalLinksSection(c.item.externalLinks) }
 
             item { SectionLabel("TASKS") }
             items(c.tasks, key = { it.slug }) { task -> TaskRow(task, colors) }
