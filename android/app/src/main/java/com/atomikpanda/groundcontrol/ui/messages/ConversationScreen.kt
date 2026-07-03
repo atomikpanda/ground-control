@@ -227,12 +227,23 @@ private fun MessageRow(
             color = if (isHuman) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.padding(4.dp),
         ) {
-            Text(
-                text = message.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isHuman) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+            if (isHuman) {
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            } else {
+                // Full-contrast (not the muted onSurfaceVariant role) + markdown —
+                // agent replies are prose/code the operator reads closely, unlike
+                // the human's own short outbound messages, which stay plain Text.
+                MessageMarkdown(
+                    text = message.text,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
         }
     }
 }
