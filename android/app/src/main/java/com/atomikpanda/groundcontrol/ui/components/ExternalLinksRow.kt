@@ -22,9 +22,17 @@ fun ExternalLinksRow(links: List<ExternalLink>, modifier: Modifier = Modifier) {
     val uriHandler = LocalUriHandler.current
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         links.forEach { link ->
+            // Only open web links, and never let a bad URL crash the app: a non-http(s)
+            // scheme (tel:/intent:/file:/…) or a URL with no handler would otherwise throw
+            // from openUri or launch an unintended target. Non-web links show disabled.
+            val openable = link.url.startsWith("http://", true) ||
+                link.url.startsWith("https://", true)
             AssistChip(
-                onClick = { uriHandler.openUri(link.url) },
-                label = { Text("${link.title.ifBlank { link.provider }} ↗") },
+                enabled = openable,
+                onClick = { runCatching { uriHandler.openUri(link.url) } },
+                label = {
+                    Text("${link.title.ifBlank { link.provider }}" + if (openable) " ↗" else "")
+                },
             )
         }
     }
