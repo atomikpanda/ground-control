@@ -61,6 +61,12 @@ internal fun ThreadSummary.matchesStateFilter(filter: ThreadStateFilter): Boolea
     ThreadStateFilter.NEEDS_YOU -> needsYou
 }
 
+/** Unread badge count scoped the same way the Home workspace rail scopes the needs-you queue:
+ *  the [connectionId] selection's own count, or the cross-workspace total when null (All). Feeds
+ *  the Home sticky card's badge so it always matches the currently-selected workspace chip. */
+fun MessagesUiState.Content.unreadCountFor(connectionId: String?): Int =
+    if (connectionId == null) unreadCount else unreadCountsByWorkspace[connectionId] ?: 0
+
 class MessagesViewModel(
     private val repo: ThreadsRepository,
     private val connectionsProvider: () -> List<WorkspaceConnection>,

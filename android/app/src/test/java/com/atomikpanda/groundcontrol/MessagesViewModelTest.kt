@@ -10,6 +10,7 @@ import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateFilter
 import com.atomikpanda.groundcontrol.ui.messages.mergeThreadsById
+import com.atomikpanda.groundcontrol.ui.messages.unreadCountFor
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -173,6 +174,16 @@ class MessagesViewModelTest {
         vm.refresh()?.join()
         assertEquals(listOf("b1", "a3"), vm.topThreads(2).map { it.id })
         assertEquals(listOf("a3"), vm.topThreads(1, "A").map { it.id })
+    }
+
+    @Test fun unreadCountFor_returns_total_for_all_and_per_workspace_count_when_scoped() = runTest {
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        vm.refresh()?.join()
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(2, content.unreadCountFor(null))
+        assertEquals(1, content.unreadCountFor("A"))
+        assertEquals(1, content.unreadCountFor("B"))
+        assertEquals(0, content.unreadCountFor("nope"))
     }
 
     // --- pure merge helper -----------------------------------------------------------------
