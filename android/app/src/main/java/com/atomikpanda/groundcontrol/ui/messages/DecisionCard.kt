@@ -133,6 +133,7 @@ internal fun DecisionCard(
                             selected = emptySet()
                         },
                         enabled = enabled && selected.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.question),
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("Send") }
                 }
@@ -266,7 +267,7 @@ private fun CommentSheet(
 /** Formats the combined human message posted by the per-option comment
  *  affordance: 1-based option number, the option text verbatim, an em dash,
  *  then the caveat -- e.g. `"1. Ship it — but gate behind a flag"`. */
-fun formatCommentMessage(index: Int, optionText: String, caveat: String): String =
+internal fun formatCommentMessage(index: Int, optionText: String, caveat: String): String =
     "${index + 1}. $optionText — $caveat"
 
 /** Formats the combined human message posted by a multiselect decision's
@@ -274,7 +275,7 @@ fun formatCommentMessage(index: Int, optionText: String, caveat: String): String
  *  joined by "; ", e.g. `"Selected: 1. Add index; 3. Backfill nulls"`.
  *  Selected indices are sorted so the message reads in option order
  *  regardless of tap order. */
-fun formatMultiSelectMessage(options: List<String>, selectedIndices: Collection<Int>): String {
+internal fun formatMultiSelectMessage(options: List<String>, selectedIndices: Collection<Int>): String {
     val parts = selectedIndices.sorted().joinToString("; ") { i -> "${i + 1}. ${options[i]}" }
     return "Selected: $parts"
 }
