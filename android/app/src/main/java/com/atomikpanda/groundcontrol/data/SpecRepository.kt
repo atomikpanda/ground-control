@@ -19,4 +19,8 @@ class SpecRepository(private val api: SpecApi) {
                 async { WorkspaceSpecs(conn, runCatching { api.listSpecs(conn) }) }
             }.awaitAll()
         }
+
+    /** Archive a spec (swipe-to-archive). Thin passthrough so the ViewModel only ever talks
+     *  to the repository, matching [listAllSpecs]'s layering. */
+    suspend fun archiveSpec(conn: WorkspaceConnection, id: String) = api.archiveSpec(conn, id)
 }

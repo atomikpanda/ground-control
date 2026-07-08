@@ -145,4 +145,86 @@ class FarmViewModelTest {
         val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
         assertTrue(after.unattended)
     }
+
+    private fun vmWithPhaseEndpoint(
+        scope: CoroutineScope,
+        phaseFails: Boolean,
+        initialPhaseOverride: String? = null,
+    ) = FarmViewModel(
+        SpecApi(HttpClient(MockEngine { req ->
+            if (req.url.encodedPath.endsWith("/phase")) {
+                if (phaseFails) respond("boom", HttpStatusCode.InternalServerError)
+                else respond("""{"id":"a","phase_override":"done"}""", HttpStatusCode.OK, jsonHdr)
+            } else {
+                val overrideJson = initialPhaseOverride?.let { "\"$it\"" } ?: "null"
+                respond(
+                    """[{"id":"a","kind":"feature","title":"A","phase":"inbox","phase_override":$overrideJson}]""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+            }
+        }) { mshipDefaults() }),
+        conn, testScope = scope,
+    )
+
+    /** /phase throws CancellationException directly (standing in for the scope being cancelled
+     *  mid-request) rather than failing normally — mirrors [vmWithCancellingUnattendedEndpoint]. */
+    private fun vmWithCancellingPhaseEndpoint(scope: CoroutineScope) = FarmViewModel(
+        SpecApi(HttpClient(MockEngine { req ->
+            if (req.url.encodedPath.endsWith("/phase")) {
+                throw CancellationException("scope cancelled")
+            } else {
+                respond(
+                    """[{"id":"a","kind":"feature","title":"A","phase":"inbox","phase_override":null}]""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+            }
+        }) { mshipDefaults() }),
+        conn, testScope = scope,
+    )
+
+    @Test fun mark_done_optimistically_updates_phase_override() = runTest {
+        val vm = vmWithPhaseEndpoint(this, phaseFails = false)
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        vm.setItemPhase(item, "done").join()
+        val updated = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals("done", updated.phaseOverride)
+    }
+
+    @Test fun mark_done_reverts_on_failure() = runTest {
+        val vm = vmWithPhaseEndpoint(this, phaseFails = true)
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        vm.setItemPhase(item, "done").join()
+        val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals(null, after.phaseOverride)
+    }
+
+    // Same regression shape as toggle_unattended_reverts_to_captured_original_not_negated_target:
+    // rollback must restore the captured original value, not assume the opposite of the target.
+    // Item starts with phaseOverride = "done"; requesting Reopen (phase = null) and failing must
+    // roll back to the captured original ("done"), not null.
+    @Test fun reopen_reverts_to_captured_original_not_cleared_target() = runTest {
+        val vm = vmWithPhaseEndpoint(this, phaseFails = true, initialPhaseOverride = "done")
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals("done", item.phaseOverride)
+        vm.setItemPhase(item, null).join()
+        val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals("done", after.phaseOverride)
+    }
+
+    // Mirrors toggle_unattended_propagates_cancellation_instead_of_rolling_back: runCatching
+    // swallows CancellationException, so without the explicit rethrow a scope cancellation
+    // mid-request would fall into the failure branch (rolling back) instead of propagating.
+    @Test fun set_phase_propagates_cancellation_instead_of_rolling_back() = runTest {
+        val vm = vmWithCancellingPhaseEndpoint(this)
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        val job = vm.setItemPhase(item, "done")
+        job.join()
+        assertTrue(job.isCancelled)
+        val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals("done", after.phaseOverride)
+    }
 }

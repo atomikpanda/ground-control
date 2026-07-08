@@ -24,6 +24,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -94,6 +95,8 @@ fun FarmScreen(
                                     item = wi,
                                     onClick = { onOpen(wi) },
                                     onToggleUnattended = { on -> vm.setUnattended(wi, on) },
+                                    onMarkDone = { vm.setItemPhase(wi, "done") },
+                                    onReopen = { vm.setItemPhase(wi, null) },
                                 )
                             }
                         }
@@ -106,7 +109,13 @@ fun FarmScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FarmCard(item: WorkItemSummary, onClick: () -> Unit, onToggleUnattended: (Boolean) -> Unit) {
+private fun FarmCard(
+    item: WorkItemSummary,
+    onClick: () -> Unit,
+    onToggleUnattended: (Boolean) -> Unit,
+    onMarkDone: () -> Unit,
+    onReopen: () -> Unit,
+) {
     // Only present a tap affordance when there's somewhere to go. A brand-new inbox item can
     // legally have no spec/task/thread yet; making such a card non-clickable avoids a silent
     // dead-tap (until the per-phase cockpits give every item its own destination).
@@ -132,6 +141,17 @@ private fun FarmCard(item: WorkItemSummary, onClick: () -> Unit, onToggleUnatten
                         onCheckedChange = onToggleUnattended,
                         modifier = Modifier.padding(start = 8.dp),
                     )
+                }
+                // Quick actions only (no full phase picker, per spec non-goals): "Mark done"
+                // sets an override to done; "Reopen" clears it so the item falls back to its
+                // server-derived phase. Both are always offered — the item's own phase already
+                // tells the operator which one is a no-op.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
+                    TextButton(onClick = onMarkDone) { Text("Mark done") }
+                    TextButton(onClick = onReopen) { Text("Reopen") }
                 }
             }
         },

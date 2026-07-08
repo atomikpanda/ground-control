@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 data class GroupBlock(val group: SpecGroup, val specs: List<SpecSummary>)
 
@@ -63,5 +64,38 @@ class SpecInboxViewModel(
         return orderedGroups().mapNotNull { g ->
             byGroup[g]?.takeIf { it.isNotEmpty() }?.let { GroupBlock(g, it) }
         }   // empty groups + null-group (archived/unknown) omitted
+    }
+
+    /** Swipe-to-archive: remove the spec from its workspace section immediately (optimistic)
+     *  and archive it server-side, restoring the pre-archive state on failure. Same
+     *  capture-then-restore + rethrow-CancellationException shape as FarmViewModel's
+     *  setUnattended, but restores a whole state snapshot rather than a single field — removing
+     *  a list entry (not toggling a value) is what's being undone here. */
+    fun archiveSpec(connectionId: String, specId: String): Job = (testScope ?: viewModelScope).launch {
+        val conn = connectionsProvider().find { it.id == connectionId } ?: return@launch
+        val previous = _state.value
+        removeSpec(connectionId, specId)
+        runCatching { repo.archiveSpec(conn, specId) }.onFailure {
+            if (it is CancellationException) throw it
+            _state.value = previous
+        }
+    }
+
+    private fun removeSpec(connectionId: String, specId: String) {
+        val current = _state.value as? InboxUiState.Content ?: return
+        _state.value = current.copy(
+            sections = current.sections.map { section ->
+                if (section.connectionId != connectionId) {
+                    section
+                } else {
+                    section.copy(groups = section.groups.map { blocks ->
+                        blocks.mapNotNull { block ->
+                            val filtered = block.specs.filterNot { it.id == specId }
+                            filtered.takeIf { it.isNotEmpty() }?.let { block.copy(specs = it) }
+                        }
+                    })
+                }
+            },
+        )
     }
 }

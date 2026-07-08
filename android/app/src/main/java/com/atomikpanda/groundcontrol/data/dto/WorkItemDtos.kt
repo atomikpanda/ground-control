@@ -16,11 +16,18 @@ data class WorkItemSummary(
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("external_links") val externalLinks: List<ExternalLink> = emptyList(),
     val unattended: Boolean = false,
+    @SerialName("phase_override") val phaseOverride: String? = null,
 )
 
 /** Body for POST /items/{id}/unattended — toggles cloud-runner eligibility. */
 @Serializable
 data class UnattendedBody(val on: Boolean)
+
+/** Body for POST /items/{id}/phase — set/clear a work item's phase override (the
+ *  "Mark done" / "Reopen" quick actions). `phase = null` clears the override so the item
+ *  returns to its server-derived phase. */
+@Serializable
+data class PhaseBody(val phase: String?)
 
 @Serializable
 data class ExternalLink(

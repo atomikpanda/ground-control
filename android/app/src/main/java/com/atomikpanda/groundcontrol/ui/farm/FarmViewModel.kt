@@ -54,6 +54,21 @@ class FarmViewModel(
         }
     }
 
+    /** Quick actions on the WorkItem card: "Mark done" (`phase = "done"`) and "Reopen"
+     *  (`phase = null`, clearing the override so the item returns to its derived phase).
+     *  Sets `phaseOverride` immediately (the server's list/get responses don't echo the field
+     *  back into a full summary either) and rolls back to the pre-call value on failure —
+     *  same shape as [setUnattended], including re-throwing CancellationException so scope
+     *  cancellation isn't swallowed as an ordinary failure. */
+    fun setItemPhase(item: WorkItemSummary, phase: String?): Job = (testScope ?: viewModelScope).launch {
+        val original = item.phaseOverride
+        applyToItem(item.id) { it.copy(phaseOverride = phase) }
+        runCatching { api.setItemPhase(conn, item.id, phase) }.onFailure {
+            if (it is CancellationException) throw it
+            applyToItem(item.id) { summary -> summary.copy(phaseOverride = original) }
+        }
+    }
+
     private fun applyToItem(id: String, transform: (WorkItemSummary) -> WorkItemSummary) {
         val current = _state.value as? FarmUiState.Content ?: return
         _state.value = current.copy(
