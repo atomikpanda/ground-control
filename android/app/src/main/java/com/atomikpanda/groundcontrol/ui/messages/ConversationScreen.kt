@@ -1,6 +1,10 @@
 package com.atomikpanda.groundcontrol.ui.messages
 
+import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,14 +12,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,16 +43,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -133,11 +148,43 @@ private fun ConversationContentView(
     // rotation (`lastVisibleIndex >= -2`, always true) and yank the list to
     // the bottom even if the user had scrolled up.
     val previousItemCount = rememberSaveable { mutableIntStateOf(0) }
+    // Tracked separately from previousItemCount so the "awaiting reply…"
+    // indicator flipping on/off (which also moves itemCount by one) can't
+    // masquerade as a new message below.
+    val previousMessageCount = rememberSaveable { mutableIntStateOf(0) }
+    var showJumpToLatest by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(itemCount) {
         val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
         val wasNearBottom = lastVisibleIndex == null || lastVisibleIndex >= previousItemCount.intValue - 2
-        if (itemCount > 0 && wasNearBottom) listState.animateScrollToItem(itemCount - 1)
+        val newInboundMessage = thread.messages.size > previousMessageCount.intValue &&
+            thread.messages.lastOrNull()?.role != "human"
+        if (itemCount > 0 && wasNearBottom) {
+            listState.animateScrollToItem(itemCount - 1)
+        } else if (newInboundMessage) {
+            // The gate above deliberately left the scroll position alone
+            // because the user had scrolled away from the bottom -- surface
+            // a pill instead of yanking the view.
+            showJumpToLatest = true
+        }
         previousItemCount.intValue = itemCount
+        previousMessageCount.intValue = thread.messages.size
+    }
+
+    // If the user scrolls back near the bottom on their own (without tapping
+    // the pill), drop it rather than leaving it stuck on screen. Reads
+    // listState.layoutInfo directly (not the outer itemCount val) so the
+    // long-lived coroutine below always sees the live item count rather than
+    // a value captured from whichever composition first launched it.
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            info.visibleItemsInfo.lastOrNull()?.index to info.totalItemsCount
+        }.collect { (lastVisibleIndex, totalItems) ->
+            if (showJumpToLatest && lastVisibleIndex != null && lastVisibleIndex >= totalItems - 2) {
+                showJumpToLatest = false
+            }
+        }
     }
 
     // The "active" decision is the most recent decision message that has no
@@ -163,7 +210,7 @@ private fun ConversationContentView(
         }
     }
 
-    Column(Modifier.fillMaxSize().imePadding()) {
+    Column(Modifier.fillMaxSize()) {
         // "View spec ->" affordance — only shown when this thread has been linked to a spec.
         thread.specId?.let { specId ->
             OutlinedButton(
@@ -201,11 +248,43 @@ private fun ConversationContentView(
                 }
             }
             PullToRefreshContainer(state = pull, modifier = Modifier.align(Alignment.TopCenter))
+            if (showJumpToLatest) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp)
+                        .clickable {
+                            showJumpToLatest = false
+                            scope.launch { listState.animateScrollToItem(itemCount - 1) }
+                        },
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.primary,
+                    tonalElevation = 4.dp,
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Text(
+                            "Jump to latest",
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
         }
         ComposeBar(s, vm, allowFreeText = allowFreeText)
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageRow(
     message: Message,
@@ -224,23 +303,55 @@ private fun MessageRow(
         return
     }
     val isHuman = message.role == "human"
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
         horizontalArrangement = if (isHuman) Arrangement.End else Arrangement.Start,
     ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = if (isHuman) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.padding(4.dp),
-        ) {
-            if (isHuman) {
-                Text(
-                    text = message.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                )
-            } else {
+        if (isHuman) {
+            // Plain-text bubble: native long-press-to-select + copy via
+            // SelectionContainer works cleanly here — there's no competing
+            // tap-gesture handling for SelectionContainer's own long-press
+            // recognizer to conflict with (unlike the markdown bubble below).
+            SelectionContainer {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(4.dp),
+                ) {
+                    Text(
+                        text = message.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        } else {
+            // The markdown renderer (multiplatform-markdown-renderer) detects
+            // link taps with its own raw pointerInput + AnnotatedString
+            // string-annotation gesture handling rather than the newer
+            // LinkAnnotation API — the same low-level pattern that's long been
+            // known to have its taps swallowed by SelectionContainer's own
+            // long-press-to-select gesture recognizer once both are attached
+            // to the same subtree. Wrapping this bubble in SelectionContainer
+            // would risk breaking link taps, so it falls back to an explicit
+            // long-press-to-copy affordance on the bubble itself instead of
+            // native text selection.
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier
+                    .padding(4.dp)
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = {
+                            clipboard.setText(AnnotatedString(message.text))
+                            Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                        },
+                    ),
+            ) {
                 // Full-contrast (not the muted onSurfaceVariant role) + markdown —
                 // agent replies are prose/code the operator reads closely, unlike
                 // the human's own short outbound messages, which stay plain Text.
@@ -262,7 +373,18 @@ private val ComposeFieldShape = RoundedCornerShape(24.dp)
 @Composable
 private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewModel, allowFreeText: Boolean = true) {
     val draft by vm.draft.collectAsStateWithLifecycle()
-    Surface(tonalElevation = 3.dp) {
+    Surface(
+        tonalElevation = 3.dp,
+        // navigationBarsPadding() first, then imePadding(): the standard
+        // stacking order so the bar sits above the nav bar when the keyboard
+        // is closed and above the keyboard when it's open, without double-
+        // padding for both at once. The flat 12dp on top is the actual
+        // "don't sit flush" gap in either state.
+        modifier = Modifier
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(bottom = 12.dp),
+    ) {
         Column {
             state.sendError?.let { err ->
                 Text(
