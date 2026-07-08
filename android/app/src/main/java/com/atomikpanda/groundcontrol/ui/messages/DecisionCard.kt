@@ -252,7 +252,9 @@ private fun CommentSheet(
             )
             Button(
                 onClick = {
-                    onSend(caveat)
+                    val toSend = caveat
+                    caveat = ""                       // clear first so the button disables next frame (no double-submit)
+                    onSend(toSend)
                     scope.launch { sheetState.hide() }.invokeOnCompletion {
                         if (!sheetState.isVisible) onDismiss()
                     }
