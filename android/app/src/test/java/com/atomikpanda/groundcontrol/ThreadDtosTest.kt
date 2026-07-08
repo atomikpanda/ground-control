@@ -76,6 +76,20 @@ class ThreadDtosTest {
         assertNull(m.decision)
     }
 
+    @Test fun parses_decision_multi_true() {
+        val raw = """{"id":"m1","thread_id":"t1","role":"agent","text":"pick some","kind":"decision",
+            "decision":{"options":["a","b","c"],"multi":true}}"""
+        val m = json.decodeFromString(Message.serializer(), raw.trimIndent())
+        assertTrue(m.decision!!.multi)
+    }
+
+    @Test fun decision_multi_defaults_false_when_omitted() {
+        val raw = """{"id":"m1","thread_id":"t1","role":"agent","text":"pick one","kind":"decision",
+            "decision":{"options":["a","b"]}}"""
+        val m = json.decodeFromString(Message.serializer(), raw.trimIndent())
+        assertFalse(m.decision!!.multi)
+    }
+
     @Test fun parses_needs_decision() {
         val raw = """{"id":"t1","subject":"s","needs_decision":true}"""
         val s = buildJson().decodeFromString<ThreadSummary>(raw)

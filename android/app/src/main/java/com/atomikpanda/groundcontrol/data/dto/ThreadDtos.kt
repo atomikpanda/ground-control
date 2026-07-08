@@ -21,6 +21,7 @@ data class Decision(
     val options: List<String> = emptyList(),
     val recommended: Int? = null,
     @SerialName("allow_free_text") val allowFreeText: Boolean = true,
+    val multi: Boolean = false,
 )
 
 @Serializable
