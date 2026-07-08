@@ -90,14 +90,15 @@ class MessagesViewModelTest {
         }, { listOf(WorkspaceConnection("1", "http://h:47100", null, "ws")) }, this)
         vm.refresh()?.join()
         val before = (vm.state.value as MessagesUiState.Content).filteredThreads
-        assertEquals(listOf("t3", "t2", "t1"), before.map { it.id })
+        assertEquals(listOf("t3", "t2", "t1"), before.map { it.thread.id })
+        assertEquals(listOf("1", "1", "1"), before.map { it.connectionId })
 
         val next = vm.pollOnce(WorkspaceConnection("1", "http://h:47100", null, "ws"), "2026-06-22T10:00:00Z")
 
         val after = (vm.state.value as MessagesUiState.Content).filteredThreads
-        assertEquals(3, after.size)                                   // MUST NOT collapse to 1
-        assertEquals(listOf("t1", "t3", "t2"), after.map { it.id })   // t1 updated + resorted to top
-        assertEquals("2026-06-22T12:00:00Z", next)                    // cursor advanced
+        assertEquals(3, after.size)                                          // MUST NOT collapse to 1
+        assertEquals(listOf("t1", "t3", "t2"), after.map { it.thread.id })   // t1 updated + resorted to top
+        assertEquals("2026-06-22T12:00:00Z", next)                           // cursor advanced
     }
 
     private val mixedThreadsWsAJson = """
@@ -131,7 +132,7 @@ class MessagesViewModelTest {
         vm.refresh()?.join()
         vm.selectStateFilter(ThreadStateFilter.UNREAD)
         val content = vm.state.value as MessagesUiState.Content
-        assertEquals(setOf("a1", "b1"), content.filteredThreads.map { it.id }.toSet())
+        assertEquals(setOf("a1", "b1"), content.filteredThreads.map { it.thread.id }.toSet())
     }
 
     @Test fun state_filter_needs_you_shows_only_needs_you_threads() = runTest {
@@ -139,7 +140,7 @@ class MessagesViewModelTest {
         vm.refresh()?.join()
         vm.selectStateFilter(ThreadStateFilter.NEEDS_YOU)
         val content = vm.state.value as MessagesUiState.Content
-        assertEquals(setOf("a2", "b1"), content.filteredThreads.map { it.id }.toSet())
+        assertEquals(setOf("a2", "b1"), content.filteredThreads.map { it.thread.id }.toSet())
     }
 
     @Test fun state_filter_composes_with_workspace_selection() = runTest {
@@ -148,16 +149,27 @@ class MessagesViewModelTest {
         vm.selectWorkspace("A")
         vm.selectStateFilter(ThreadStateFilter.UNREAD)
         val onlyAUnread = vm.state.value as MessagesUiState.Content
-        assertEquals(listOf("a1"), onlyAUnread.filteredThreads.map { it.id })
+        assertEquals(listOf("a1"), onlyAUnread.filteredThreads.map { it.thread.id })
 
         vm.selectStateFilter(ThreadStateFilter.NEEDS_YOU)
         val onlyANeedsYou = vm.state.value as MessagesUiState.Content
-        assertEquals(listOf("a2"), onlyANeedsYou.filteredThreads.map { it.id })
+        assertEquals(listOf("a2"), onlyANeedsYou.filteredThreads.map { it.thread.id })
 
         vm.selectWorkspace(null)
         vm.selectStateFilter(ThreadStateFilter.ALL)
         val all = vm.state.value as MessagesUiState.Content
         assertEquals(4, all.filteredThreads.size)
+    }
+
+    @Test fun filteredThreads_carries_the_owning_connectionId_per_thread() = runTest {
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        vm.refresh()?.join()
+        val content = vm.state.value as MessagesUiState.Content
+        val byThreadId = content.filteredThreads.associate { it.thread.id to it.connectionId }
+        assertEquals("A", byThreadId["a1"])
+        assertEquals("A", byThreadId["a2"])
+        assertEquals("A", byThreadId["a3"])
+        assertEquals("B", byThreadId["b1"])
     }
 
     @Test fun unread_count_reflects_unseen_threads_total_and_per_workspace() = runTest {

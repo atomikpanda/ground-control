@@ -20,6 +20,12 @@ data class ThreadsSection(
     val threads: Result<List<ThreadSummary>>,
 )
 
+/** A thread paired with the connectionId of the workspace it came from. Built directly from
+ *  [ThreadsSection]s in [MessagesViewModel.render] so the UI never has to re-derive ownership by
+ *  scanning `sections` — that lookup can transiently miss during a live-merge and silently
+ *  swallow a tap (see [MessagesUiState.Content.filteredThreads]). */
+data class FilteredThread(val connectionId: String, val thread: ThreadSummary)
+
 /** Thread-state filter for the second (state) chip row. Composes with a workspace selection. */
 enum class ThreadStateFilter { ALL, UNREAD, NEEDS_YOU }
 
@@ -31,7 +37,9 @@ sealed interface MessagesUiState {
      * @param sections raw, unfiltered per-workspace threads (kept for backward-compat call sites).
      * @param selectedConnectionId the workspace-rail selection driving [filteredThreads]; null = All.
      * @param stateFilter the state-chip selection driving [filteredThreads].
-     * @param filteredThreads workspace-AND-state filtered threads, newest-first — what the drill-in list renders.
+     * @param filteredThreads workspace-AND-state filtered threads, newest-first, each paired with its
+     *   owning connectionId — what the drill-in list renders and navigates from directly (no
+     *   re-lookup against [sections], which can transiently race during a live-merge).
      * @param unreadCount total unseen-thread count across all workspaces (for the sticky card badge).
      * @param unreadCountsByWorkspace unseen-thread count per connectionId (for per-workspace badges).
      */
@@ -39,7 +47,7 @@ sealed interface MessagesUiState {
         val sections: List<ThreadsSection>,
         val selectedConnectionId: String? = null,
         val stateFilter: ThreadStateFilter = ThreadStateFilter.ALL,
-        val filteredThreads: List<ThreadSummary> = emptyList(),
+        val filteredThreads: List<FilteredThread> = emptyList(),
         val unreadCount: Int = 0,
         val unreadCountsByWorkspace: Map<String, Int> = emptyMap(),
     ) : MessagesUiState
@@ -164,7 +172,13 @@ class MessagesViewModel(
             .sortedByDescending { it.updatedAt ?: "" }
 
     private fun render() {
-        val filtered = allThreads(selectedConnectionId).filter { it.matchesStateFilter(stateFilter) }
+        val filtered = sections
+            .filter { selectedConnectionId == null || it.connectionId == selectedConnectionId }
+            .flatMap { section ->
+                (section.threads.getOrNull() ?: emptyList()).map { FilteredThread(section.connectionId, it) }
+            }
+            .filter { it.thread.matchesStateFilter(stateFilter) }
+            .sortedByDescending { it.thread.updatedAt ?: "" }
         val unreadByWorkspace = sections.associate { section ->
             section.connectionId to (section.threads.getOrNull()?.count { it.unseen } ?: 0)
         }

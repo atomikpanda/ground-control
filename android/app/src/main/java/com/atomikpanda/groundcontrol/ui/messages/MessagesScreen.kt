@@ -43,12 +43,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 
-/** Which connectionId owns [threadId], recovered from the raw per-workspace [this] sections. Needed
- *  because [MessagesUiState.Content.filteredThreads] is flattened across workspaces once merged —
- *  a pure UI-layer lookup, not a change to the ViewModel's merge/filter logic. */
-private fun List<ThreadsSection>.connectionIdFor(threadId: String): String? =
-    firstOrNull { sec -> sec.threads.getOrNull()?.any { it.id == threadId } == true }?.connectionId
-
 /**
  * Threads drill-in list (not a bottom-nav tab): reached from the Home sticky threads card.
  * Renders `filteredThreads` (already workspace + state filtered, newest-first) and starts the
@@ -67,7 +61,12 @@ fun MessagesScreen(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
-        vm.refresh()?.join()
+        // The activity-scoped VM may already hold fresh Content (loaded by HomeScreen) — only
+        // force a reload+spinner when there's nothing to show yet. Always (re)start polling so
+        // this screen stays live even if Home's own startLivePolling() call raced or was skipped.
+        if (vm.state.value !is MessagesUiState.Content) {
+            vm.refresh()?.join()
+        }
         vm.startLivePolling()
     }
 
@@ -115,10 +114,9 @@ fun MessagesScreen(
                             }
                         }
                     }
-                    items(s.filteredThreads.size, key = { s.filteredThreads[it].id }) { i ->
-                        val thread = s.filteredThreads[i]
-                        val connId = s.sections.connectionIdFor(thread.id)
-                        ThreadRow(thread) { connId?.let { onThreadClick(it, thread.id) } }
+                    items(s.filteredThreads.size, key = { s.filteredThreads[it].thread.id }) { i ->
+                        val filtered = s.filteredThreads[i]
+                        ThreadRow(filtered.thread) { onThreadClick(filtered.connectionId, filtered.thread.id) }
                     }
                 }
             }

@@ -64,7 +64,13 @@ fun HomeScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val messagesState by messagesVm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refresh() }
-    LaunchedEffect(Unit) { messagesVm.refresh() }
+    LaunchedEffect(Unit) {
+        // Start live polling from Home too — the sticky card's unread count + peek must stay live
+        // even if the user never opens the Threads drill-in list (startLivePolling is idempotent
+        // per connection, so MessagesScreen calling it again later is safe).
+        messagesVm.refresh()?.join()
+        messagesVm.startLivePolling()
+    }
 
     Scaffold(
         floatingActionButton = {
