@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +36,29 @@ class FarmViewModel(
             onFailure = {
                 if (it is CancellationException) throw it
                 FarmUiState.Content(emptyList(), errored = true)
+            },
+        )
+    }
+
+    /** Toggle a work item's unattended flag. Updates local state immediately (the server's
+     *  own list/get responses don't echo `unattended` back into the summary yet, so a
+     *  post-then-refetch would silently drop the change) and rolls back to the pre-toggle
+     *  value on failure — mirrors [refresh]'s runCatching style, including re-throwing
+     *  CancellationException so scope cancellation isn't swallowed as an ordinary failure. */
+    fun setUnattended(item: WorkItemSummary, on: Boolean): Job = (testScope ?: viewModelScope).launch {
+        val original = item.unattended
+        applyToItem(item.id) { it.copy(unattended = on) }
+        runCatching { api.setUnattended(conn, item.id, on) }.onFailure {
+            if (it is CancellationException) throw it
+            applyToItem(item.id) { summary -> summary.copy(unattended = original) }
+        }
+    }
+
+    private fun applyToItem(id: String, transform: (WorkItemSummary) -> WorkItemSummary) {
+        val current = _state.value as? FarmUiState.Content ?: return
+        _state.value = current.copy(
+            groups = current.groups.map { g ->
+                g.copy(items = g.items.map { if (it.id == id) transform(it) else it })
             },
         )
     }

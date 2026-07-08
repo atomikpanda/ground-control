@@ -19,6 +19,7 @@ import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.ThreadsWaitResponse
+import com.atomikpanda.groundcontrol.data.dto.UnattendedBody
 import com.atomikpanda.groundcontrol.data.dto.VerdictBody
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import io.ktor.client.HttpClient
@@ -130,6 +131,13 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun getItem(conn: WorkspaceConnection, id: String): WorkItemSummary =
         client.get("${conn.baseUrl}/items/$id") { auth(conn) }.body()
+
+    /** Toggle a work item's eligibility for unattended (cloud-runner) execution.
+     *  The server response is just `{id, unattended}` (not a full WorkItemSummary), so — like
+     *  [markThreadSeen] — this ignores the body; callers apply the optimistic update themselves. */
+    suspend fun setUnattended(conn: WorkspaceConnection, id: String, on: Boolean) {
+        client.post("${conn.baseUrl}/items/$id/unattended") { auth(conn); jsonBody(UnattendedBody(on)) }
+    }
 
     /** Steer a work item: appends a human message to its thread, lazily creating+linking one
      *  server-side when the item has none. Item-scoped (not thread-scoped) so it can never

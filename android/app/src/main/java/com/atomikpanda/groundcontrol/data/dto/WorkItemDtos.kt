@@ -15,7 +15,12 @@ data class WorkItemSummary(
     val attention: Attention = Attention(),
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("external_links") val externalLinks: List<ExternalLink> = emptyList(),
+    val unattended: Boolean = false,
 )
+
+/** Body for POST /items/{id}/unattended — toggles cloud-runner eligibility. */
+@Serializable
+data class UnattendedBody(val on: Boolean)
 
 @Serializable
 data class ExternalLink(
