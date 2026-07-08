@@ -42,13 +42,16 @@ class FarmViewModel(
 
     /** Toggle a work item's unattended flag. Updates local state immediately (the server's
      *  own list/get responses don't echo `unattended` back into the summary yet, so a
-     *  post-then-refetch would silently drop the change) and rolls back on failure — mirrors
-     *  [refresh]'s runCatching style but is a mutation, not a fetch, so it doesn't re-throw
-     *  CancellationException. */
+     *  post-then-refetch would silently drop the change) and rolls back to the pre-toggle
+     *  value on failure — mirrors [refresh]'s runCatching style, including re-throwing
+     *  CancellationException so scope cancellation isn't swallowed as an ordinary failure. */
     fun setUnattended(item: WorkItemSummary, on: Boolean): Job = (testScope ?: viewModelScope).launch {
+        val original = item.unattended
         applyToItem(item.id) { it.copy(unattended = on) }
-        val ok = runCatching { api.setUnattended(conn, item.id, on) }.isSuccess
-        if (!ok) applyToItem(item.id) { it.copy(unattended = !on) }
+        runCatching { api.setUnattended(conn, item.id, on) }.onFailure {
+            if (it is CancellationException) throw it
+            applyToItem(item.id) { summary -> summary.copy(unattended = original) }
+        }
     }
 
     private fun applyToItem(id: String, transform: (WorkItemSummary) -> WorkItemSummary) {
