@@ -38,6 +38,16 @@ class WorkItemDtosTest {
         assertEquals(false, w.attention.needsDecision)
         assertEquals(0, w.attention.totalTasks)
         assertTrue(w.externalLinks.isEmpty())
+        assertEquals(false, w.unattended)
+    }
+
+    @Test
+    fun parses_unattended_flag() {
+        val w = json.decodeFromString(
+            WorkItemSummary.serializer(),
+            """{"id":"wi-5","kind":"feature","title":"Auto","phase":"ready","unattended":true}""",
+        )
+        assertTrue(w.unattended)
     }
 
     @Test

@@ -144,6 +144,22 @@ class SpecApiTest {
         assertTrue(!body!!.contains("task_slug"))
     }
 
+    @Test fun setUnattended_posts_on_flag() = runTest {
+        var url: String? = null
+        var method: String? = null
+        var body: String? = null
+        val api = SpecApi(client { req ->
+            url = req.url.toString(); method = req.method.value
+            body = (req.body as io.ktor.http.content.TextContent).text
+            respond("""{"id":"wi-1","unattended":true}""", HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"))
+        })
+        api.setUnattended(conn, "wi-1", true)
+        assertTrue(url!!.endsWith("/items/wi-1/unattended"))
+        assertEquals("POST", method)
+        assertTrue(body!!.contains("\"on\":true"))
+    }
+
     @Test fun create_spec_409_maps_to_conflict() = runTest {
         val api = SpecApi(client { respond("""{"detail":"spec 'my-idea' already exists"}""",
             HttpStatusCode.Conflict, headersOf(HttpHeaders.ContentType, "application/json")) })

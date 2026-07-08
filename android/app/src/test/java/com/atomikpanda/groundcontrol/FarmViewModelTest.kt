@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -56,5 +57,39 @@ class FarmViewModelTest {
         val vm = vm(this, fail = true); vm.refresh().join()
         val c = vm.state.value as FarmUiState.Content
         assertTrue(c.errored && c.groups.isEmpty())
+    }
+
+    private fun vmWithUnattendedEndpoint(scope: CoroutineScope, unattendedFails: Boolean) =
+        FarmViewModel(
+            SpecApi(HttpClient(MockEngine { req ->
+                if (req.url.encodedPath.endsWith("/unattended")) {
+                    if (unattendedFails) respond("boom", HttpStatusCode.InternalServerError)
+                    else respond("""{"id":"a","unattended":true}""", HttpStatusCode.OK, jsonHdr)
+                } else {
+                    respond(
+                        """[{"id":"a","kind":"feature","title":"A","phase":"inbox","unattended":false}]""",
+                        HttpStatusCode.OK, jsonHdr,
+                    )
+                }
+            }) { mshipDefaults() }),
+            conn, testScope = scope,
+        )
+
+    @Test fun toggle_unattended_optimistically_updates() = runTest {
+        val vm = vmWithUnattendedEndpoint(this, unattendedFails = false)
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        vm.setUnattended(item, true).join()
+        val updated = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertTrue(updated.unattended)
+    }
+
+    @Test fun toggle_unattended_reverts_on_failure() = runTest {
+        val vm = vmWithUnattendedEndpoint(this, unattendedFails = true)
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        vm.setUnattended(item, true).join()
+        val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertFalse(after.unattended)
     }
 }
