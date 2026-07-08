@@ -37,6 +37,9 @@ import com.atomikpanda.groundcontrol.ui.home.HomeScreen
 import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
 import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
+import com.atomikpanda.groundcontrol.ui.messages.MessagesScreen
+import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
+import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadScreen
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
@@ -76,6 +79,12 @@ fun GroundControlApp(
     // stateIn collector across Activity recreations.
     val appScope = rememberCoroutineScope()
     val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
+    // Activity-scoped (not per-NavBackStackEntry): shared by the Home sticky threads card and the
+    // "threads" drill-in list so the loaded sections + live-poll loop survive navigating between
+    // them (spec: ground-control-thread-findability).
+    val messagesVm = viewModel {
+        MessagesViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+    }
 
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -97,11 +106,24 @@ fun GroundControlApp(
                 }
                 HomeScreen(
                     vm,
+                    messagesVm,
                     onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
                     onBrowseWorkspace = { connId -> nav.navigate("farm/$connId") },
                     onCapture = { nav.navigate("capture") },
+                    onOpenThreads = { nav.navigate("threads") },
+                )
+            }
+            composable("threads") {
+                MessagesScreen(
+                    messagesVm,
+                    onThreadClick = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
+                    onNewThread = {
+                        val connId = (messagesVm.state.value as? MessagesUiState.Content)?.selectedConnectionId
+                        nav.navigate(if (connId != null) "newThread?connectionId=$connId" else "newThread")
+                    },
+                    onBack = { nav.popBackStack() },
                 )
             }
             composable(Section.TASKS.route) {
