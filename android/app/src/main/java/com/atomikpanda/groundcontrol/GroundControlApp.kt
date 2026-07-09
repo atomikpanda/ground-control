@@ -1,9 +1,11 @@
 package com.atomikpanda.groundcontrol
 
 import android.content.Context
+import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -16,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -309,6 +312,48 @@ fun GroundControlApp(
                     )
                 }
             }
+            composable(
+                route = "item/{connectionId}/{itemId}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("itemId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val itemId = entry.arguments?.getString("itemId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                LaunchedEffect(connectionId, itemId) {
+                    // This route is a pure redirect with no fallback UI of its own, so every
+                    // dead-end pops back to where the user came from instead of stranding them on
+                    // the transient spinner (reachable from the related-item card and from OS-level
+                    // groundcontrol://item deep links).
+                    if (conn == null) {
+                        nav.popBackStack(); return@LaunchedEffect
+                    }
+                    val item = runCatching { api.getItem(conn, itemId) }.getOrNull()
+                    if (item == null) {
+                        nav.popBackStack(); return@LaunchedEffect
+                    }
+                    val dest = when {
+                        item.phase == "in_flight" -> "console/$connectionId/$itemId"
+                        item.phase == "review" -> "review/$connectionId/$itemId"
+                        item.phase == "done" -> "done/$connectionId/$itemId"
+                        // inbox / shaping / ready (spec-bearing) home to the spec cockpit; a spec-less
+                        // inbox capture falls through to its task or thread — matches farm's onOpen.
+                        item.specId != null -> "specDetail/$connectionId/${item.specId}"
+                        item.taskSlugs.isNotEmpty() -> "taskDetail/$connectionId/${item.taskSlugs.first()}"
+                        item.threadIds.isNotEmpty() -> "thread/$connectionId/${item.threadIds.first()}"
+                        else -> null
+                    }
+                    if (dest == null) {
+                        nav.popBackStack(); return@LaunchedEffect
+                    }
+                    nav.navigate(dest) { popUpTo("item/$connectionId/$itemId") { inclusive = true } }
+                }
+                Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+            }
             composable("capture") {
                 val vm = viewModel {
                     NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
@@ -371,6 +416,14 @@ fun GroundControlApp(
                         title = threadId,
                         onBack = { nav.popBackStack() },
                         onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
+                        onOpenEntity = { kind, id ->
+                            when (kind) {
+                                "item" -> nav.navigate("item/$connectionId/${Uri.encode(id)}")
+                                "spec" -> nav.navigate("specDetail/$connectionId/${Uri.encode(id)}")
+                                "task" -> nav.navigate("taskDetail/$connectionId/${Uri.encode(id)}")
+                            }
+                        },
+                        onOpenWorkItem = { id -> nav.navigate("item/$connectionId/${Uri.encode(id)}") },
                     )
                 }
             }

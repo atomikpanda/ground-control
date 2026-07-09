@@ -21,14 +21,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -73,6 +76,8 @@ fun ConversationScreen(
     title: String,
     onBack: () -> Unit,
     onViewSpec: (specId: String) -> Unit = {},
+    onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
+    onOpenWorkItem: (String) -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load()?.join(); vm.startPolling() }
@@ -94,7 +99,7 @@ fun ConversationScreen(
                 ConversationUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 is ConversationUiState.Error -> ConversationErrorView(s, vm, onBack)
-                is ConversationUiState.Content -> ConversationContentView(s, vm, onViewSpec)
+                is ConversationUiState.Content -> ConversationContentView(s, vm, onViewSpec, onOpenEntity, onOpenWorkItem)
             }
         }
     }
@@ -127,6 +132,8 @@ private fun ConversationContentView(
     s: ConversationUiState.Content,
     vm: ConversationViewModel,
     onViewSpec: (specId: String) -> Unit = {},
+    onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
+    onOpenWorkItem: (String) -> Unit = {},
 ) {
     val thread = s.thread
     val pull = rememberPullToRefreshState()
@@ -231,6 +238,22 @@ private fun ConversationContentView(
                 Text("View spec →")
             }
         }
+        // "Related work item" card -- only shown when this thread belongs to a WorkItem
+        // (T1/T2 mothership + T4 GC DTO). Taps through the shared item resolver route
+        // rather than duplicating its phase-dispatch logic here.
+        thread.workItem?.let { wi ->
+            ElevatedCard(
+                onClick = { onOpenWorkItem(wi.id) },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                ListItem(
+                    overlineContent = { Text("Related work item") },
+                    headlineContent = { Text(wi.title.ifBlank { wi.id }) },
+                    supportingContent = { if (wi.phase.isNotBlank()) Text(wi.phase.replace('_', ' ')) },
+                    trailingContent = { Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open work item") },
+                )
+            }
+        }
         Box(Modifier.weight(1f).nestedScroll(pull.nestedScrollConnection)) {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
                 itemsIndexed(thread.messages, key = { _, message -> message.id }) { index, message ->
@@ -241,7 +264,13 @@ private fun ConversationContentView(
                     // message in the whole thread) is past it — avoids allocating a
                     // fresh sublist per item per recompose.
                     val answered = index < lastHumanIndex
-                    MessageRow(message, inFlight = s.inFlight, answered = answered, onOption = { vm.send(it) })
+                    MessageRow(
+                        message,
+                        inFlight = s.inFlight,
+                        answered = answered,
+                        onOption = { vm.send(it) },
+                        onOpenEntity = onOpenEntity,
+                    )
                 }
                 // Bottom-anchored: chat flows downward, so the hint belongs after
                 // the last message, where the eye lands after the auto-scroll.
@@ -373,6 +402,7 @@ private fun MessageRow(
     inFlight: Boolean = false,
     answered: Boolean = false,
     onOption: (String) -> Unit = {},
+    onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
 ) {
     if (message.kind == "decision" && message.decision != null) {
         DecisionCard(
@@ -441,6 +471,7 @@ private fun MessageRow(
                     text = message.text,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    onOpenEntity = onOpenEntity,
                 )
             }
         }
