@@ -37,7 +37,9 @@ object DeepLinkResolver {
         }
     }
 
-    private fun parseQuery(rawQuery: String?): Map<String, String> =
+    /** Shared with [com.atomikpanda.groundcontrol.ui.messages.EntityLink], whose inline
+     *  entity links use the same `key=value&...` query format without a `workspace` param. */
+    internal fun parseQuery(rawQuery: String?): Map<String, String> =
         (rawQuery ?: "").split("&").mapNotNull { pair ->
             val i = pair.indexOf('=')
             if (i <= 0) null else pair.substring(0, i) to URLDecoder.decode(pair.substring(i + 1), "UTF-8")

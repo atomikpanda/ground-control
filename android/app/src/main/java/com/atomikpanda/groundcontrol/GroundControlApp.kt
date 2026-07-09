@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import android.content.Context
+import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -417,12 +418,12 @@ fun GroundControlApp(
                         onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
                         onOpenEntity = { kind, id ->
                             when (kind) {
-                                "item" -> nav.navigate("item/$connectionId/$id")
-                                "spec" -> nav.navigate("specDetail/$connectionId/$id")
-                                "task" -> nav.navigate("taskDetail/$connectionId/$id")
+                                "item" -> nav.navigate("item/$connectionId/${Uri.encode(id)}")
+                                "spec" -> nav.navigate("specDetail/$connectionId/${Uri.encode(id)}")
+                                "task" -> nav.navigate("taskDetail/$connectionId/${Uri.encode(id)}")
                             }
                         },
-                        onOpenWorkItem = { id -> nav.navigate("item/$connectionId/$id") },
+                        onOpenWorkItem = { id -> nav.navigate("item/$connectionId/${Uri.encode(id)}") },
                     )
                 }
             }

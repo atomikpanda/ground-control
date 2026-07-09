@@ -3,7 +3,9 @@ package com.atomikpanda.groundcontrol.ui.messages
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
@@ -38,11 +40,12 @@ fun MessageMarkdown(
 ) {
     val bodyStyle = MaterialTheme.typography.bodyMedium
     val defaultHandler = LocalUriHandler.current
-    val handler = remember(onOpenEntity, defaultHandler) {
+    val latestOnOpenEntity by rememberUpdatedState(onOpenEntity)
+    val handler = remember(defaultHandler) {
         object : UriHandler {
             override fun openUri(uri: String) {
                 val ref = EntityLink.parse(uri)
-                if (ref != null) onOpenEntity(ref.first, ref.second) else defaultHandler.openUri(uri)
+                if (ref != null) latestOnOpenEntity(ref.first, ref.second) else defaultHandler.openUri(uri)
             }
         }
     }

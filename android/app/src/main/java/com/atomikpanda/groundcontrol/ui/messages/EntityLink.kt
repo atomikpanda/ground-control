@@ -1,7 +1,7 @@
 package com.atomikpanda.groundcontrol.ui.messages
 
+import com.atomikpanda.groundcontrol.notify.DeepLinkResolver
 import java.net.URI
-import java.net.URLDecoder
 
 /**
  * Parses `groundcontrol://<kind>?id=<id>` links embedded in agent message markdown so
@@ -20,13 +20,7 @@ object EntityLink {
     fun parse(uri: String): Pair<String, String>? {
         val parsed = runCatching { URI(uri) }.getOrNull() ?: return null
         if (parsed.scheme != "groundcontrol" || parsed.host !in supportedKinds) return null
-        val id = parseQuery(parsed.rawQuery)["id"]?.takeIf { it.isNotBlank() } ?: return null
+        val id = DeepLinkResolver.parseQuery(parsed.rawQuery)["id"]?.takeIf { it.isNotBlank() } ?: return null
         return parsed.host to id
     }
-
-    private fun parseQuery(rawQuery: String?): Map<String, String> =
-        (rawQuery ?: "").split("&").mapNotNull { pair ->
-            val i = pair.indexOf('=')
-            if (i <= 0) null else pair.substring(0, i) to URLDecoder.decode(pair.substring(i + 1), "UTF-8")
-        }.toMap()
 }
