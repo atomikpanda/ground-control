@@ -55,12 +55,16 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.OffsetDateTime
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -211,6 +215,11 @@ private fun ConversationContentView(
     }
 
     Column(Modifier.fillMaxSize()) {
+        // MOS-224 activity strip: pinned at the very top of the conversation (below the
+        // app bar, above everything else — including the "View spec" affordance) since it
+        // reads as ambient status/context for the whole thread. Only for threads linked to
+        // a task; a thread with no task_slug shows nothing here.
+        if (thread.taskSlug != null) { ActivityStrip(s.journal) }
         // "View spec ->" affordance — only shown when this thread has been linked to a spec.
         thread.specId?.let { specId ->
             OutlinedButton(
@@ -281,6 +290,79 @@ private fun ConversationContentView(
             }
         }
         ComposeBar(s, vm, allowFreeText = allowFreeText)
+    }
+}
+
+/**
+ * MOS-224 in-thread activity strip: a slim, subordinate-to-messages row showing the last
+ * couple of task-journal entries so "Awaiting reply" isn't a black box. Deliberately quiet —
+ * small type, muted color, single-line-each — it's ambient status, not part of the
+ * conversation. Renders a subtle "no recent activity" line (not an error) when the linked
+ * task's journal came back empty or unavailable, per the graceful-degradation requirement.
+ */
+@Composable
+private fun ActivityStrip(journal: List<JournalEntry>) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp,
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+            if (journal.isEmpty()) {
+                Text(
+                    "No recent activity yet",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                val now = System.currentTimeMillis()
+                journal.forEach { entry ->
+                    Text(
+                        journalStripLine(entry, now),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Max characters shown for a journal entry's label before it's ellipsized -- entries can be
+ *  terse or verbose (a whole paragraph); the strip is one line each and must never blow up
+ *  the layout. */
+private const val ACTIVITY_STRIP_LABEL_MAX_CHARS = 60
+
+/** Compact single-line label for one activity-strip entry, e.g. "wrote parser · 3m ago".
+ *  Prefers the entry's short `action` tag; falls back to its `message` when there's no
+ *  action (the common case for ad-hoc `mship journal` notes). Pure + JVM-testable (mirrors
+ *  DecisionCard's formatCommentMessage / NotificationFormat's parse helpers). */
+internal fun journalStripLine(entry: JournalEntry, nowMillis: Long): String {
+    val label = entry.action?.takeIf { it.isNotBlank() } ?: entry.message
+    val truncated = if (label.length > ACTIVITY_STRIP_LABEL_MAX_CHARS) {
+        label.take(ACTIVITY_STRIP_LABEL_MAX_CHARS - 1).trimEnd() + "…"
+    } else {
+        label
+    }
+    val ago = relativeTimeAgo(entry.timestamp, nowMillis)
+    return if (ago != null) "$truncated · $ago" else truncated
+}
+
+/** "just now" / "3m ago" / "2h ago" / "5d ago" relative-time label. Returns null when
+ *  [iso] doesn't parse (accepts both `...Z` and offset forms) so callers can omit the
+ *  suffix instead of showing garbage -- a malformed timestamp must never crash the strip. */
+internal fun relativeTimeAgo(iso: String, nowMillis: Long): String? {
+    val thenMillis = runCatching { Instant.parse(iso).toEpochMilli() }.getOrNull()
+        ?: runCatching { OffsetDateTime.parse(iso).toInstant().toEpochMilli() }.getOrNull()
+        ?: return null
+    val deltaSeconds = ((nowMillis - thenMillis) / 1000).coerceAtLeast(0)
+    return when {
+        deltaSeconds < 60 -> "just now"
+        deltaSeconds < 3600 -> "${deltaSeconds / 60}m ago"
+        deltaSeconds < 86400 -> "${deltaSeconds / 3600}h ago"
+        else -> "${deltaSeconds / 86400}d ago"
     }
 }
 

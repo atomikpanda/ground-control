@@ -16,9 +16,12 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -28,6 +31,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -310,5 +315,274 @@ class ConversationViewModelTest {
         val content = v.state.value as ConversationUiState.Content
         assertEquals("LIVE REPLY", content.thread.messages.last().text)     // refreshed to the new reply
         assertNotNull(content.sendError)                                    // banner preserved across refresh
+    }
+
+    // --- MOS-224: in-thread activity strip (journal fetch/merge) ---
+
+    // GET /threads/t2 response -- linked to a task (task_slug), unlike threadJson above.
+    private val threadWithTaskJson = """
+        {
+          "id": "t2",
+          "subject": "Ship the strip",
+          "task_slug": "mos-224",
+          "awaiting_reply": true,
+          "messages": [
+            {"id":"m1","thread_id":"t2","role":"human","text":"how's it going","created_at":"2026-06-22T10:00:00Z"}
+          ]
+        }
+    """.trimIndent()
+
+    private val journalJson3Entries = """
+        [
+          {"timestamp":"2026-06-22T09:57:00Z","message":"spawned","action":"spawned"},
+          {"timestamp":"2026-06-22T09:58:00Z","message":"wrote parser","action":"wrote parser"},
+          {"timestamp":"2026-06-22T09:59:00Z","message":"ran tests","action":"ran tests","test_state":"pass"}
+        ]
+    """.trimIndent()
+
+    private fun vmFor(scope: CoroutineScope, threadId: String, handler: MockRequestHandler) =
+        ConversationViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() })),
+            conn, threadId, testScope = scope,
+        )
+
+    @Test fun load_fetches_last_two_journal_entries_when_thread_has_task_slug() = runTest {
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get ->
+                    respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        val c = v.state.value as ConversationUiState.Content
+        assertEquals(2, c.journal.size)                          // last 2 of 3, not all 3
+        assertEquals("wrote parser", c.journal[0].message)
+        assertEquals("ran tests", c.journal[1].message)
+    }
+
+    @Test fun load_skips_journal_fetch_when_task_slug_is_null() = runTest {
+        var journalRequested = false
+        val v = vmFor(this, "t1") { req ->
+            when {
+                req.url.encodedPath.endsWith("/journal") || req.url.encodedPath.contains("/journal/") -> {
+                    journalRequested = true
+                    respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)   // no task_slug
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        val c = v.state.value as ConversationUiState.Content
+        assertEquals(emptyList<Any>(), c.journal)
+        assertFalse("journal endpoint must not be hit for a task-less thread", journalRequested)
+    }
+
+    @Test fun load_degrades_to_empty_journal_when_journal_fetch_fails() = runTest {
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/mos-224") ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        val c = v.state.value as ConversationUiState.Content   // conversation still loads
+        assertEquals("Ship the strip", c.thread.subject)
+        assertEquals(emptyList<Any>(), c.journal)               // journal degrades to empty, not an Error state
+    }
+
+    @Test fun pollOnce_refreshes_journal_even_when_thread_itself_is_unchanged() = runTest {
+        var journalCalls = 0
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.parameters["wait"] == "1" ->
+                    respond(waitMissJson, HttpStatusCode.OK, jsonHdr)   // "other" thread changed, not t2
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get -> {
+                    journalCalls++
+                    // First call (during load()) sees one entry; the poll should pick up a second.
+                    val body = if (journalCalls == 1) """[{"timestamp":"2026-06-22T09:58:00Z","message":"wrote parser"}]"""
+                               else journalJson3Entries
+                    respond(body, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        assertEquals(1, (v.state.value as ConversationUiState.Content).journal.size)
+        v.pollOnce("2026-06-22T10:00:00Z")
+        val c = v.state.value as ConversationUiState.Content
+        assertEquals(2, c.journal.size)                          // refreshed via the poll cadence
+        assertEquals("ran tests", c.journal.last().message)
+        assertEquals(2, journalCalls)                             // load() + one poll tick, no extra loop
+    }
+
+    @Test fun pollOnce_refreshes_journal_alongside_thread_when_thread_changes() = runTest {
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.parameters["wait"] == "1" ->
+                    respond("""{"threads":[{"id":"t2","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}""", HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get ->
+                    respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        val next = v.pollOnce("2026-06-22T10:00:00Z")   // "wait" reports t2 changed -> full thread+journal refetch
+        val c = v.state.value as ConversationUiState.Content
+        assertEquals(2, c.journal.size)                 // journal came along with the refreshed thread
+        assertEquals("2026-06-22T10:10:00Z", next)
+    }
+
+    // Greptile finding on PR #40: pollOnce used to await the /journal fetch before applying
+    // the refreshed thread, so a slow (or hung) journal endpoint delayed the user seeing the
+    // agent's reply by up to the OkHttp read timeout. Gate the *poll's* journal call (but not
+    // load()'s) so it never resolves during this test, and prove pollOnce still returns and
+    // applies the refreshed thread/messages -- carrying the last-known journal forward rather
+    // than blocking on the new one. Then release the gate and confirm the journal refresh
+    // does eventually land (fire-and-forget, not silently dropped).
+    @Test fun pollOnce_delivers_thread_refresh_without_waiting_on_journal_fetch() = runTest {
+        val journalGate = CompletableDeferred<Unit>()
+        var journalCalls = 0
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.parameters["wait"] == "1" ->
+                    respond("""{"threads":[{"id":"t2","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}""", HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get -> {
+                    journalCalls++
+                    if (journalCalls == 1) {
+                        // load()'s journal fetch: resolves normally, 1 entry.
+                        respond("""[{"timestamp":"2026-06-22T09:58:00Z","message":"wrote parser"}]""", HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        // The poll's journal refresh: hangs until this test releases it below.
+                        journalGate.await()
+                        respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)
+                    }
+                }
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        assertEquals(1, (v.state.value as ConversationUiState.Content).journal.size)   // sanity: load's journal landed
+
+        // Run pollOnce on a real dispatcher under a real (wall-clock) timeout: if the fix
+        // regresses to awaiting the journal fetch before applying the thread refresh, this
+        // times out instead of hanging the suite -- the gate above isn't released until after
+        // this call returns.
+        val next = withContext(Dispatchers.IO) {
+            withTimeoutOrNull(3_000) { v.pollOnce("2026-06-22T10:00:00Z") }
+        }
+        assertEquals("2026-06-22T10:10:00Z", next)
+        val afterPoll = v.state.value as ConversationUiState.Content
+        assertEquals("Ship the strip", afterPoll.thread.subject)   // reply delivered immediately...
+        assertEquals(1, afterPoll.journal.size)                     // ...journal not yet refreshed (still hung)
+
+        // Let the deferred journal refresh resolve and confirm it eventually lands (fire-and-
+        // forget, not dropped) -- wait for it in real time since it settles on the MockEngine's
+        // IO dispatcher, off the virtual clock (mirrors load_marks_thread_seen above).
+        advanceUntilIdle()
+        journalGate.complete(Unit)
+        withContext(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + 2_000
+            while ((v.state.value as ConversationUiState.Content).journal.size < 2 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        }
+        assertEquals(2, (v.state.value as ConversationUiState.Content).journal.size)
+    }
+
+    // Greptile finding on PR #40 (round 2): the UNCHANGED-thread `else` branch of pollOnce used
+    // to write back the captured `cur` (inFlight=false) after its inline journal fetch. If a
+    // send() lands during that fetch -- setting inFlight=true -- the stale write clears the flag,
+    // so a second tap slips past send()'s `if (current.inFlight) return null` guard and fires a
+    // DUPLICATE POST. This exercises that exact window: gate the poll's journal fetch, send()
+    // while it's suspended, then release and prove the journal write preserved inFlight (fix
+    // re-reads the latest state) so a concurrent second tap is still blocked.
+    @Test fun pollOnce_journal_refresh_does_not_clear_inflight_set_by_a_concurrent_send() = runTest {
+        val journalPollStarted = CompletableDeferred<Unit>()
+        val releaseJournalPoll = CompletableDeferred<Unit>()
+        val releasePost = CompletableDeferred<Unit>()
+        var journalCalls = 0
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.parameters["wait"] == "1" ->
+                    respond(waitMissJson, HttpStatusCode.OK, jsonHdr)   // "other" changed, not t2 -> else branch
+                req.url.encodedPath.endsWith("/threads/t2/messages") && req.method == HttpMethod.Post -> {
+                    // Keep the first send genuinely in flight for the whole window: its onSuccess
+                    // (which would itself reset inFlight) must not fire before we've probed the
+                    // guard, so the only thing that could clear inFlight is the journal write.
+                    releasePost.await()
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get -> {
+                    journalCalls++
+                    if (journalCalls == 1) {
+                        respond("""[{"timestamp":"2026-06-22T09:58:00Z","message":"wrote parser"}]""", HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        journalPollStarted.complete(Unit)   // poll's journal fetch is now suspended
+                        releaseJournalPoll.await()
+                        respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)   // 3 -> takeLast(2)
+                    }
+                }
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        assertEquals(1, (v.state.value as ConversationUiState.Content).journal.size)
+
+        // Orchestrate on real threads (off the virtual clock): pollOnce and the MockEngine handler
+        // both run on IO, so real-time synchronization via the deferreds is deterministic here,
+        // whereas advanceUntilIdle wouldn't cross the dispatcher boundary (see project memory).
+        withContext(Dispatchers.IO) {
+            val poll = async { v.pollOnce("2026-06-22T10:00:00Z") }
+            assertNotNull("poll should reach the journal fetch", withTimeoutOrNull(3_000) { journalPollStarted.await() })
+
+            // First tap while the poll is parked inside fetchJournal: sets inFlight synchronously.
+            v.send("first")
+            assertTrue((v.state.value as ConversationUiState.Content).inFlight)
+
+            releaseJournalPoll.complete(Unit)                 // let the else-branch journal write run
+            assertNotNull("poll should return", withTimeoutOrNull(3_000) { poll.await() })
+
+            val after = v.state.value as ConversationUiState.Content
+            assertEquals(2, after.journal.size)               // journal was refreshed (write did happen)...
+            assertTrue("inFlight must survive the journal write", after.inFlight)   // ...without clobbering inFlight
+            // The guard held: a second tap is rejected synchronously (returns null), so no
+            // duplicate POST is ever issued.
+            assertNull("a second tap during the in-flight send must be a no-op", v.send("dup"))
+            releasePost.complete(Unit)   // let the first send settle so runTest can drain cleanly
+        }
+    }
+
+    @Test fun send_preserves_journal_across_a_successful_send() = runTest {
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads/t2/messages") && req.method == HttpMethod.Post ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get ->
+                    respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        assertEquals(2, (v.state.value as ConversationUiState.Content).journal.size)
+        v.send("go on")?.join()
+        // send()'s success path doesn't refetch the journal -- it must carry the last-known
+        // journal forward rather than resetting it to empty.
+        assertEquals(2, (v.state.value as ConversationUiState.Content).journal.size)
     }
 }
