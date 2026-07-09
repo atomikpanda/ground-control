@@ -11,6 +11,7 @@ import com.atomikpanda.groundcontrol.notify.Notifier
 import com.atomikpanda.groundcontrol.notify.NotifiedStore
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockRequestHandler
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
@@ -19,6 +20,9 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 private class FakeStore : NotifiedStore {
@@ -37,15 +41,35 @@ private class FakeNotifier : Notifier {
 class NeedsYouReconcilerTest {
     private val conn = WorkspaceConnection("c1", "http://h:47100", "tok", "ws")
     private val jsonHdr = headersOf(HttpHeaders.ContentType, "application/json")
+
     private fun summary(id: String, needsYou: Boolean) =
         ThreadSummary(id = id, subject = "S-$id", needsYou = needsYou, lastMessage = "msg-$id", updatedAt = "2026-06-30T12:00:00Z")
 
     private fun decisionSummary(id: String, needsDecision: Boolean) =
         ThreadSummary(id = id, subject = "S-$id", needsDecision = needsDecision, lastMessage = "msg-$id", updatedAt = "2026-06-30T12:00:00Z")
 
+    /** Route GET /threads (list) and GET /threads/{id} (full thread) to canned bodies. */
+    private fun routedRepo(
+        threads: String = "[]",
+        thread: (String) -> String = { """{"id":"$it","subject":"S","messages":[]}""" },
+    ): ThreadsRepository {
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            val body = when {
+                Regex(".*/threads/[^/]+").matches(path) -> thread(path.substringAfterLast('/'))
+                path.endsWith("/threads") -> threads
+                else -> "{}"
+            }
+            respond(body, HttpStatusCode.OK, jsonHdr)
+        }
+        return ThreadsRepository(SpecApi(HttpClient(MockEngine(handler)) {
+            install(ContentNegotiation) { json(buildJson()) }
+        }))
+    }
+
     @Test fun notifies_once_for_a_new_needs_decision() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
-        val r = NeedsYouReconciler(store, notifier)
+        val r = NeedsYouReconciler(store, notifier, routedRepo())
         r.reconcile(conn, listOf(decisionSummary("t1", true)))
         assertEquals(1, notifier.events.size)
         assertEquals("t1", notifier.events[0].threadId)
@@ -55,7 +79,7 @@ class NeedsYouReconcilerTest {
 
     @Test fun notifies_once_for_a_new_needs_you() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
-        val r = NeedsYouReconciler(store, notifier)
+        val r = NeedsYouReconciler(store, notifier, routedRepo())
         r.reconcile(conn, listOf(summary("t1", true)))
         assertEquals(1, notifier.events.size)
         assertEquals("t1", notifier.events[0].threadId)
@@ -66,27 +90,61 @@ class NeedsYouReconcilerTest {
 
     @Test fun plain_note_does_not_notify() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
-        NeedsYouReconciler(store, notifier).reconcile(conn, listOf(summary("t1", false)))
+        NeedsYouReconciler(store, notifier, routedRepo()).reconcile(conn, listOf(summary("t1", false)))
         assertEquals(0, notifier.events.size)
     }
 
     @Test fun re_notifies_after_resolve_then_recurrence() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
-        val r = NeedsYouReconciler(store, notifier)
+        val r = NeedsYouReconciler(store, notifier, routedRepo())
         r.reconcile(conn, listOf(summary("t1", true)))
         r.reconcile(conn, listOf(summary("t1", false)))
         r.reconcile(conn, listOf(summary("t1", true)))
         assertEquals(2, notifier.events.size)
     }
 
+    @Test fun enriches_event_with_thread_messages_and_active_decision() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        val repo = routedRepo(thread = { id ->
+            """{"id":"$id","subject":"S-$id","messages":[
+                {"id":"m1","thread_id":"$id","role":"human","text":"hi","created_at":"2026-06-30T12:00:00Z"},
+                {"id":"m2","thread_id":"$id","role":"agent","text":"pick","created_at":"2026-06-30T12:01:00Z",
+                 "kind":"decision","decision":{"options":["A","B","C"],"recommended":1,"allow_free_text":false}}
+            ]}"""
+        })
+        NeedsYouReconciler(store, notifier, repo).reconcile(conn, listOf(decisionSummary("t1", true)))
+        assertEquals(1, notifier.events.size)
+        val e = notifier.events[0]
+        assertEquals(2, e.messages.size)
+        assertNotNull(e.decision)
+        assertEquals(listOf("A", "B", "C"), e.decision!!.options)
+        assertEquals(1, e.decision!!.recommended)
+    }
+
+    @Test fun enrichment_degrades_gracefully_when_get_thread_fails() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        val handler: MockRequestHandler = { req ->
+            if (Regex(".*/threads/[^/]+").matches(req.url.encodedPath))
+                respond("""{"detail":"boom"}""", HttpStatusCode.InternalServerError, jsonHdr)
+            else respond("[]", HttpStatusCode.OK, jsonHdr)
+        }
+        val repo = ThreadsRepository(SpecApi(HttpClient(MockEngine(handler)) {
+            install(ContentNegotiation) { json(buildJson()) }
+        }))
+        NeedsYouReconciler(store, notifier, repo).reconcile(conn, listOf(summary("t1", true)))
+        assertEquals(1, notifier.events.size)
+        assertTrue(notifier.events[0].messages.isEmpty())
+        assertNull(notifier.events[0].decision)
+        assertEquals("msg-t1", notifier.events[0].preview)
+    }
+
     @Test fun fetch_and_reconcile_via_mockengine() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
-        val api = SpecApi(HttpClient(MockEngine {
-            respond("""[{"id":"t1","subject":"hi","needs_you":true,"last_message":"look"}]""",
-                HttpStatusCode.OK, jsonHdr)
-        }) { install(ContentNegotiation) { json(buildJson()) } })
-        val r = NeedsYouReconciler(store, notifier)
-        r.fetchAndReconcile(conn, ThreadsRepository(api))
+        val repo = routedRepo(
+            threads = """[{"id":"t1","subject":"hi","needs_you":true,"last_message":"look"}]""",
+            thread = { id -> """{"id":"$id","subject":"hi","messages":[]}""" },
+        )
+        NeedsYouReconciler(store, notifier, repo).fetchAndReconcile(conn)
         assertEquals(1, notifier.events.size)
         assertEquals("look", notifier.events[0].preview)
     }

@@ -42,6 +42,10 @@
             android:name=".notify.WatchService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- Inline notification direct-reply / option-tap → expedited ReplyWorker. Not exported. -->
+        <receiver
+            android:name=".notify.ReplyReceiver"
+            android:exported="false" />
         <receiver
             android:name=".notify.BootReceiver"
             android:exported="false">
