@@ -94,6 +94,9 @@ fun stripMarkdownForNotification(text: String): String {
     // Emphasis: bold before italic so **x** isn't seen as two italics.
     s = s.replace(Regex("(\\*\\*|__)(.+?)\\1"), "$2")
     s = s.replace(Regex("\\*([^*\\n]+)\\*"), "$1")
+    // Single-underscore italic. Word-boundary guarded so snake_case_identifiers (underscores
+    // flanked by word chars on both outer sides) are left alone.
+    s = s.replace(Regex("(?<!\\w)_([^_\\n]+)_(?!\\w)"), "$1")
     // Links [label](url) -> label.
     s = s.replace(Regex("\\[([^\\]]+)]\\([^)]+\\)"), "$1")
     // Collapse 3+ newlines into a blank-line separator.

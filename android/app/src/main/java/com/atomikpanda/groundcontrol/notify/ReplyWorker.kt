@@ -5,6 +5,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
@@ -22,6 +23,9 @@ import com.atomikpanda.groundcontrol.data.defaultHttpClient
  * existing `POST /threads/{id}/messages`, and re-notifies:
  *  - on success: the returned thread (the sent message is appended, clearing the reply spinner);
  *  - on failure: an error line + the attempted text preserved, keeping the reply action for retry.
+ *
+ * [enqueue] uses unique work keyed by thread so a rapid double-tap or duplicate broadcast for the
+ * same thread can't post twice while the first attempt is still in flight.
  */
 class ReplyWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
@@ -95,6 +99,9 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
         private const val K_WORKSPACE = "workspace"
         private const val K_BASE_URL = "base_url"
 
+        /** Unique work name for a thread's in-flight reply, so a duplicate enqueue is a no-op. */
+        fun uniqueWorkName(connId: String, threadId: String): String = "reply_${connId}_$threadId"
+
         fun enqueue(
             context: Context,
             connId: String,
@@ -116,7 +123,10 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
                 .setInputData(data)
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .build()
-            WorkManager.getInstance(context).enqueue(req)
+            // KEEP: a rapid double-tap or duplicate broadcast for the same thread must not post
+            // twice while the first reply is still in flight.
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork(uniqueWorkName(connId, threadId), ExistingWorkPolicy.KEEP, req)
         }
     }
 }

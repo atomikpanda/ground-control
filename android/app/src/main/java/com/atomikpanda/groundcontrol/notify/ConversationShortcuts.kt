@@ -21,6 +21,9 @@ import com.atomikpanda.groundcontrol.MainActivity
 object ConversationShortcuts {
     private const val PREFIX = "thread_"
 
+    /** Required so the shortcut/notification is eligible for the Conversations shade/bubbles. */
+    private const val SHORTCUT_CATEGORY_CONVERSATION = "android.shortcut.conversation"
+
     /** Fallback cap when the platform doesn't report one. Docs guarantee at least 5. */
     private const val DEFAULT_MAX = 4
 
@@ -54,6 +57,7 @@ object ConversationShortcuts {
             .setLongLived(true)
             .setLocusId(LocusIdCompat(id))
             .setPerson(agent)
+            .setCategories(setOf(SHORTCUT_CATEGORY_CONVERSATION))
             .setIntent(intent)
             .build()
         runCatching { ShortcutManagerCompat.pushDynamicShortcut(context, shortcut) }
@@ -64,10 +68,24 @@ object ConversationShortcuts {
     private fun prune(context: Context, keep: String, cap: Int) {
         val existing = runCatching { ShortcutManagerCompat.getDynamicShortcuts(context) }
             .getOrDefault(emptyList())
-        val others = existing.map { it.id }.filter { it.startsWith(PREFIX) && it != keep }
-        val overBy = (others.size + 1) - cap
-        if (overBy > 0) {
-            runCatching { ShortcutManagerCompat.removeLongLivedShortcuts(context, others.take(overBy)) }
+        val toRemove = idsToPrune(existing.map { it.id }, PREFIX, keep, cap)
+        if (toRemove.isNotEmpty()) {
+            runCatching { ShortcutManagerCompat.removeLongLivedShortcuts(context, toRemove) }
         }
+    }
+
+    /**
+     * Pure sizing logic for [prune]: the platform's dynamic-shortcut cap applies to ALL dynamic
+     * shortcuts (not just ones we own that start with [prefix]), so overage must be computed
+     * against [existingIds] in full. We only ever remove shortcuts we own (the [prefix]'d ones,
+     * excluding [keep]) — pruning surplus conversation shortcuts first/only — and never count
+     * [keep] twice if it's already dynamic (re-pushing it doesn't grow the total).
+     */
+    internal fun idsToPrune(existingIds: List<String>, prefix: String, keep: String, cap: Int): List<String> {
+        val willAdd = if (keep in existingIds) 0 else 1
+        val overBy = (existingIds.size + willAdd) - cap
+        if (overBy <= 0) return emptyList()
+        val conversationCandidates = existingIds.filter { it.startsWith(prefix) && it != keep }
+        return conversationCandidates.take(overBy)
     }
 }

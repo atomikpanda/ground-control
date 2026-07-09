@@ -144,6 +144,16 @@ class NotificationFormatTest {
         assertEquals("run this", stripMarkdownForNotification("run `this`"))
     }
 
+    @Test fun strips_single_underscore_italic() {
+        assertEquals("bold and italic", stripMarkdownForNotification("__bold__ and _italic_"))
+        assertEquals("run this please", stripMarkdownForNotification("run _this_ please"))
+    }
+
+    @Test fun underscore_italic_does_not_mangle_snake_case() {
+        val prose = "the snake_case_word stays intact"
+        assertEquals(prose, stripMarkdownForNotification(prose))
+    }
+
     @Test fun converts_bullets_and_links() {
         assertEquals("• one\n• two", stripMarkdownForNotification("- one\n- two"))
         assertEquals("see docs", stripMarkdownForNotification("see [docs](https://example.com)"))
