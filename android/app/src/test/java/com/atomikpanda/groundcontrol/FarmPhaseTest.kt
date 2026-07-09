@@ -35,4 +35,23 @@ class FarmPhaseTest {
     fun unknown_phase_is_dropped() {
         assertEquals(emptyList<PhaseGroup>(), groupByPhase(listOf(item("x", "bogus"))))
     }
+
+    // Greptile finding on PR #37: the Farm list used to group strictly by the server-derived
+    // `phase`, so a "Mark done" / "Reopen" quick action's `phaseOverride` write was invisible
+    // until the next full refresh -- the card just sat in its old group looking like the tap
+    // did nothing. Grouping must key off the override when present.
+    @Test
+    fun phase_override_wins_over_derived_phase_for_grouping() {
+        val overridden = item("a", "inbox").copy(phaseOverride = "done")
+        val groups = groupByPhase(listOf(overridden))
+        assertEquals(listOf(FarmPhase.DONE), groups.map { it.phase })
+        assertEquals(listOf("a"), groups.single().items.map { it.id })
+    }
+
+    @Test
+    fun cleared_override_falls_back_to_derived_phase_for_grouping() {
+        val cleared = item("a", "inbox").copy(phaseOverride = null)
+        val groups = groupByPhase(listOf(cleared))
+        assertEquals(listOf(FarmPhase.INBOX), groups.map { it.phase })
+    }
 }

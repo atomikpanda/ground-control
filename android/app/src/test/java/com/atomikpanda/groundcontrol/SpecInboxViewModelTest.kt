@@ -5,6 +5,7 @@ import com.atomikpanda.groundcontrol.data.SpecGroup
 import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.buildJson
+import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.specs.InboxUiState
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxViewModel
 import io.ktor.client.HttpClient
@@ -15,12 +16,14 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlin.coroutines.cancellation.CancellationException
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -70,5 +73,113 @@ class SpecInboxViewModelTest {
         vm.refresh()?.join()
         val content = vm.state.value as InboxUiState.Content
         assertEquals("conn-7", content.sections[0].connectionId)
+    }
+
+    private fun repoWithArchiveEndpoint(archiveFails: Boolean) = SpecRepository(SpecApi(HttpClient(MockEngine { req ->
+        if (req.url.encodedPath.endsWith("/archive")) {
+            if (archiveFails) respond("boom", HttpStatusCode.InternalServerError)
+            else respond("""{"id":"b","status":"archived"}""", HttpStatusCode.OK, jsonHdr)
+        } else {
+            respond(
+                """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
+                    {"id":"b","title":"B","status":"needs_review","task_slug":null,"affected_repos":[]}]""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+    }) { mshipDefaults() }))
+
+    /** /archive throws CancellationException directly (standing in for the scope being
+     *  cancelled mid-request) rather than failing normally — mirrors FarmViewModelTest's
+     *  vmWithCancellingUnattendedEndpoint. */
+    private fun repoWithCancellingArchiveEndpoint() = SpecRepository(SpecApi(HttpClient(MockEngine { req ->
+        if (req.url.encodedPath.endsWith("/archive")) {
+            throw CancellationException("scope cancelled")
+        } else {
+            respond(
+                """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
+                    {"id":"b","title":"B","status":"needs_review","task_slug":null,"affected_repos":[]}]""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+    }) { mshipDefaults() }))
+
+    private fun specIds(vm: SpecInboxViewModel) =
+        (vm.state.value as InboxUiState.Content).sections[0].groups.getOrThrow().flatMap { it.specs.map { s -> s.id } }
+
+    @Test fun archive_optimistically_removes_spec_from_inbox() = runTest {
+        val vm = SpecInboxViewModel(repoWithArchiveEndpoint(archiveFails = false), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+        vm.refresh()?.join()
+        assertEquals(listOf("b", "a"), specIds(vm))   // needs_review(b) before ready_to_dispatch(a)
+        vm.archiveSpec("conn-7", "b").join()
+        assertEquals(listOf("a"), specIds(vm))
+    }
+
+    @Test fun archive_reverts_inbox_on_failure() = runTest {
+        val vm = SpecInboxViewModel(repoWithArchiveEndpoint(archiveFails = true), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+        vm.refresh()?.join()
+        vm.archiveSpec("conn-7", "b").join()
+        assertEquals(listOf("b", "a"), specIds(vm))
+    }
+
+    // Mirrors FarmViewModelTest's cancellation-propagation coverage: runCatching swallows
+    // CancellationException, so without the explicit rethrow a scope cancellation mid-request
+    // would fall into the failure branch (rolling back) instead of propagating.
+    @Test fun archive_propagates_cancellation_instead_of_rolling_back() = runTest {
+        val vm = SpecInboxViewModel(repoWithCancellingArchiveEndpoint(), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+        vm.refresh()?.join()
+        val job = vm.archiveSpec("conn-7", "b")
+        job.join()
+        assertTrue(job.isCancelled)
+        assertEquals(listOf("a"), specIds(vm))   // optimistic removal stands; no rollback ran
+    }
+
+    /** Archiving "b" blocks in flight until the test releases it; archiving "a" always succeeds
+     *  immediately. Lets a test force a concurrent change to land while "b"'s request is still
+     *  outstanding. */
+    private fun repoWithGatedArchiveEndpoint(bStarted: CompletableDeferred<Unit>, releaseB: CompletableDeferred<Unit>) =
+        SpecRepository(SpecApi(HttpClient(MockEngine { req ->
+            if (req.url.encodedPath.endsWith("/specs/b/archive")) {
+                bStarted.complete(Unit)
+                releaseB.await()
+                respond("boom", HttpStatusCode.InternalServerError)
+            } else if (req.url.encodedPath.endsWith("/archive")) {
+                respond("""{"id":"a","status":"archived"}""", HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond(
+                    """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
+                        {"id":"b","title":"B","status":"needs_review","task_slug":null,"affected_repos":[]}]""",
+                    HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() }))
+
+    // Greptile finding on PR #37: a failed archive used to restore the whole pre-archive
+    // snapshot, resurrecting any spec removed by a *different*, concurrently-succeeding archive
+    // (or a refresh) that landed while the failed request was still in flight. Force that
+    // ordering deterministically: start archiving "b" (blocks), archive "a" while "b" is still in
+    // flight (succeeds immediately), then let "b" fail. Only "b" should come back.
+    @Test fun archive_failure_reinserts_only_that_spec_not_the_whole_snapshot() = runTest {
+        val bStarted = CompletableDeferred<Unit>()
+        val releaseB = CompletableDeferred<Unit>()
+        val vm = SpecInboxViewModel(repoWithGatedArchiveEndpoint(bStarted, releaseB), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+        vm.refresh()?.join()
+        assertEquals(listOf("b", "a"), specIds(vm))
+
+        val archiveBJob = vm.archiveSpec("conn-7", "b")
+        bStarted.await()   // "b" removed optimistically; its archive request is now in flight
+
+        vm.archiveSpec("conn-7", "a").join()   // concurrently archives (and confirms) "a"
+        assertEquals(emptyList<String>(), specIds(vm))
+
+        releaseB.complete(Unit)   // now let "b"'s archive fail
+        archiveBJob.join()
+
+        // "b" comes back (its archive failed); "a" stays gone (its archive genuinely succeeded).
+        assertEquals(listOf("b"), specIds(vm))
     }
 }

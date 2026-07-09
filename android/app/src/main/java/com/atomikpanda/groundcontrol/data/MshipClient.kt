@@ -10,6 +10,7 @@ import com.atomikpanda.groundcontrol.data.dto.NewMessageBody
 import com.atomikpanda.groundcontrol.data.dto.SeenBody
 import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
 import com.atomikpanda.groundcontrol.data.dto.NewThreadBody
+import com.atomikpanda.groundcontrol.data.dto.PhaseBody
 import com.atomikpanda.groundcontrol.data.dto.QuestionBody
 import com.atomikpanda.groundcontrol.data.dto.ReasonBody
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
@@ -123,6 +124,12 @@ class SpecApi(private val client: HttpClient) {
     suspend fun dispatch(conn: WorkspaceConnection, id: String): DispatchResult =
         client.post("${conn.baseUrl}/specs/$id/dispatch") { auth(conn) }.body()
 
+    /** Archive a spec (swipe-to-archive in the inbox). The response is just `{id, status}` —
+     *  like [setUnattended], callers apply the optimistic removal themselves. */
+    suspend fun archiveSpec(conn: WorkspaceConnection, id: String) {
+        client.post("${conn.baseUrl}/specs/$id/archive") { auth(conn) }
+    }
+
     suspend fun listTasks(conn: WorkspaceConnection): List<TaskSummary> =
         client.get("${conn.baseUrl}/tasks") { auth(conn) }.body()
 
@@ -137,6 +144,13 @@ class SpecApi(private val client: HttpClient) {
      *  [markThreadSeen] — this ignores the body; callers apply the optimistic update themselves. */
     suspend fun setUnattended(conn: WorkspaceConnection, id: String, on: Boolean) {
         client.post("${conn.baseUrl}/items/$id/unattended") { auth(conn); jsonBody(UnattendedBody(on)) }
+    }
+
+    /** Set or clear a work item's phase override ("Mark done" → `phase = "done"`, "Reopen" →
+     *  `phase = null`). The response is just `{id, phase_override}` (not a full
+     *  WorkItemSummary) — like [setUnattended], callers apply the optimistic update themselves. */
+    suspend fun setItemPhase(conn: WorkspaceConnection, id: String, phase: String?) {
+        client.post("${conn.baseUrl}/items/$id/phase") { auth(conn); jsonBody(PhaseBody(phase)) }
     }
 
     /** Steer a work item: appends a human message to its thread, lazily creating+linking one

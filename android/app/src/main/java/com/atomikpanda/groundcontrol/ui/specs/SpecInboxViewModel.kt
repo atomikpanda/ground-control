@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 data class GroupBlock(val group: SpecGroup, val specs: List<SpecSummary>)
 
@@ -63,5 +64,68 @@ class SpecInboxViewModel(
         return orderedGroups().mapNotNull { g ->
             byGroup[g]?.takeIf { it.isNotEmpty() }?.let { GroupBlock(g, it) }
         }   // empty groups + null-group (archived/unknown) omitted
+    }
+
+    /** Swipe-to-archive: remove the spec from its workspace section immediately (optimistic)
+     *  and archive it server-side. Rethrows CancellationException, same as FarmViewModel's
+     *  setUnattended, so scope cancellation isn't swallowed as an ordinary failure.
+     *
+     *  On failure, re-inserts only this one spec back into the section's *current* groups rather
+     *  than restoring a whole pre-archive snapshot — a whole-snapshot restore would resurrect any
+     *  spec removed by a concurrent refresh or a different, concurrently-succeeding archive that
+     *  landed while this request was still in flight. */
+    fun archiveSpec(connectionId: String, specId: String): Job = (testScope ?: viewModelScope).launch {
+        val conn = connectionsProvider().find { it.id == connectionId } ?: return@launch
+        val archived = findSpec(connectionId, specId)
+        removeSpec(connectionId, specId)
+        runCatching { repo.archiveSpec(conn, specId) }.onFailure {
+            if (it is CancellationException) throw it
+            if (archived != null) reinsertSpec(connectionId, archived)
+        }
+    }
+
+    private fun findSpec(connectionId: String, specId: String): SpecSummary? =
+        (_state.value as? InboxUiState.Content)?.sections
+            ?.firstOrNull { it.connectionId == connectionId }
+            ?.groups?.getOrNull()
+            ?.flatMap { it.specs }
+            ?.firstOrNull { it.id == specId }
+
+    private fun removeSpec(connectionId: String, specId: String) {
+        val current = _state.value as? InboxUiState.Content ?: return
+        _state.value = current.copy(
+            sections = current.sections.map { section ->
+                if (section.connectionId != connectionId) {
+                    section
+                } else {
+                    section.copy(groups = section.groups.map { blocks ->
+                        blocks.mapNotNull { block ->
+                            val filtered = block.specs.filterNot { it.id == specId }
+                            filtered.takeIf { it.isNotEmpty() }?.let { block.copy(specs = it) }
+                        }
+                    })
+                }
+            },
+        )
+    }
+
+    /** Re-inserts a single archived spec back into its section, recomputed against the section's
+     *  CURRENT specs (not a captured-at-call-time snapshot) so concurrent changes — another
+     *  archive that succeeded, or a refresh — aren't clobbered. A no-op if the spec is already
+     *  present (e.g. a concurrent refresh already brought it back). */
+    private fun reinsertSpec(connectionId: String, spec: SpecSummary) {
+        val current = _state.value as? InboxUiState.Content ?: return
+        _state.value = current.copy(
+            sections = current.sections.map { section ->
+                if (section.connectionId != connectionId) {
+                    section
+                } else {
+                    section.copy(groups = section.groups.map { blocks ->
+                        val specs = blocks.flatMap { it.specs }
+                        if (specs.any { it.id == spec.id }) blocks else toGroupBlocks(specs + spec)
+                    })
+                }
+            },
+        )
     }
 }

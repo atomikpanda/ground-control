@@ -1,18 +1,25 @@
 package com.atomikpanda.groundcontrol.ui.specs
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -22,6 +29,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 
 /**
  * Pull-to-refresh uses the material3 1.2.1 API (`PullToRefreshContainer` +
@@ -58,10 +66,10 @@ fun SpecInboxScreen(vm: SpecInboxViewModel, onSpecClick: (connectionId: String, 
                                 item { Text(block.group.label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(16.dp, 4.dp)) }
                                 items(block.specs.size, key = { block.specs[it].id }) { i ->
                                     val spec = block.specs[i]
-                                    ListItem(
-                                        headlineContent = { Text(spec.title) },
-                                        supportingContent = { Text("${spec.status} · ${spec.affectedRepos.joinToString().ifBlank { "—" }}") },
-                                        modifier = Modifier.clickable { onSpecClick(section.connectionId, spec.id) },
+                                    SwipeableSpecRow(
+                                        spec = spec,
+                                        onClick = { onSpecClick(section.connectionId, spec.id) },
+                                        onArchive = { vm.archiveSpec(section.connectionId, spec.id) },
                                     )
                                 }
                             }
@@ -72,5 +80,46 @@ fun SpecInboxScreen(vm: SpecInboxViewModel, onSpecClick: (connectionId: String, 
             }
         }
         PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))
+    }
+}
+
+/** A spec row that swipes (either direction) to archive it. `confirmValueChange` fires the
+ *  archive call and reports the swipe as confirmed for both directions; `Settled` (no swipe)
+ *  is left unconfirmed since there's nothing to do there. The ViewModel removes the spec from
+ *  state optimistically, so there's no explicit reset back to `Settled` on success — the row
+ *  is gone from the list by the time a rebound would matter. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableSpecRow(spec: SpecSummary, onClick: () -> Unit, onArchive: () -> Unit) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.Settled) {
+                false
+            } else {
+                onArchive()
+                true
+            }
+        },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        backgroundContent = {
+            Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer).padding(horizontal = 20.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    Icons.Filled.Archive,
+                    contentDescription = "Archive",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
+        },
+    ) {
+        ListItem(
+            headlineContent = { Text(spec.title) },
+            supportingContent = { Text("${spec.status} · ${spec.affectedRepos.joinToString().ifBlank { "—" }}") },
+            modifier = Modifier.clickable(onClick = onClick),
+        )
     }
 }
