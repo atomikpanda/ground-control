@@ -324,9 +324,17 @@ fun GroundControlApp(
                     runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
                 }
                 LaunchedEffect(connectionId, itemId) {
-                    if (conn == null) return@LaunchedEffect
+                    // This route is a pure redirect with no fallback UI of its own, so every
+                    // dead-end pops back to where the user came from instead of stranding them on
+                    // the transient spinner (reachable from the related-item card and from OS-level
+                    // groundcontrol://item deep links).
+                    if (conn == null) {
+                        nav.popBackStack(); return@LaunchedEffect
+                    }
                     val item = runCatching { api.getItem(conn, itemId) }.getOrNull()
-                        ?: return@LaunchedEffect
+                    if (item == null) {
+                        nav.popBackStack(); return@LaunchedEffect
+                    }
                     val dest = when {
                         item.phase == "in_flight" -> "console/$connectionId/$itemId"
                         item.phase == "review" -> "review/$connectionId/$itemId"
@@ -336,7 +344,10 @@ fun GroundControlApp(
                         item.specId != null -> "specDetail/$connectionId/${item.specId}"
                         item.taskSlugs.isNotEmpty() -> "taskDetail/$connectionId/${item.taskSlugs.first()}"
                         item.threadIds.isNotEmpty() -> "thread/$connectionId/${item.threadIds.first()}"
-                        else -> return@LaunchedEffect
+                        else -> null
+                    }
+                    if (dest == null) {
+                        nav.popBackStack(); return@LaunchedEffect
                     }
                     nav.navigate(dest) { popUpTo("item/$connectionId/$itemId") { inclusive = true } }
                 }
