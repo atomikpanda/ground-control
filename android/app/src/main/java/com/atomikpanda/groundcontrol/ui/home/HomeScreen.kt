@@ -34,6 +34,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -230,7 +232,11 @@ private fun ThreadsStickyCard(unreadCount: Int, peek: List<ThreadSummary>, onCli
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 if (unreadCount > 0) {
-                    Badge { Text("$unreadCount") }
+                    Badge(
+                        modifier = Modifier.semantics {
+                            contentDescription = "$unreadCount unread threads"
+                        },
+                    ) { Text("$unreadCount") }
                 }
             }
             if (peek.isEmpty()) {
