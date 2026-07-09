@@ -16,16 +16,17 @@ class WatchBackstopWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        val repo = ThreadsRepository(SpecApi(defaultHttpClient()))
         val reconciler = NeedsYouReconciler(
             RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),
             AndroidNotifier(applicationContext),
+            repo,
         )
-        val repo = ThreadsRepository(SpecApi(defaultHttpClient()))
         val conns = ConnectionsRepository(applicationContext).snapshot()
         if (conns.isEmpty()) return Result.success()
         // Isolate failures per connection: one failing/auth-erroring workspace must not skip the
         // others. Retry the whole job only if EVERY connection failed (a wide transient issue).
-        val results = conns.map { conn -> runCatching { reconciler.fetchAndReconcile(conn, repo) } }
+        val results = conns.map { conn -> runCatching { reconciler.fetchAndReconcile(conn) } }
         return if (results.all { it.isFailure }) Result.retry() else Result.success()
     }
 

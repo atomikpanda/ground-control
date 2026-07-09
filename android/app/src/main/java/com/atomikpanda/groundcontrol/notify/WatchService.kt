@@ -40,6 +40,7 @@ class WatchService : Service() {
         reconciler = NeedsYouReconciler(
             RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),
             AndroidNotifier(applicationContext),
+            repo,
         )
     }
 
@@ -74,7 +75,7 @@ class WatchService : Service() {
     private suspend fun CoroutineScope.watchOne(conn: WorkspaceConnection) {
         // Reconcile once up front so a thread that already needs you when the watcher starts
         // notifies immediately instead of waiting for the 15-min WatchBackstopWorker backstop.
-        runCatching { reconciler.fetchAndReconcile(conn, repo) }
+        runCatching { reconciler.fetchAndReconcile(conn) }
             .onFailure { android.util.Log.w("WatchService", "initial reconcile failed for ${conn.id}", it) }
         var cursor = Instant.now().toString()
         var backoffMs = 1000L

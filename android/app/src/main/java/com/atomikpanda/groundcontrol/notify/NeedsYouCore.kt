@@ -2,6 +2,8 @@ package com.atomikpanda.groundcontrol.notify
 
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.dto.Decision
+import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 
 data class NeedsYouEvent(
@@ -12,6 +14,10 @@ data class NeedsYouEvent(
     val subject: String,
     val preview: String,
     val updatedAt: String,
+    /** Full thread messages for MessagingStyle context (empty if the enrichment fetch failed). */
+    val messages: List<Message> = emptyList(),
+    /** The active, still-unanswered decision (drives the option-action buttons), if any. */
+    val decision: Decision? = null,
 )
 
 interface NotifiedStore {
@@ -27,14 +33,29 @@ interface Notifier {
 class NeedsYouReconciler(
     private val store: NotifiedStore,
     private val notifier: Notifier,
+    private val repo: ThreadsRepository,
 ) {
     suspend fun reconcile(conn: WorkspaceConnection, threads: List<ThreadSummary>) {
         for (t in threads) {
             val notified = store.isNotified(conn.id, t.id)
             val needsAttention = t.needsYou || t.needsDecision
             if (needsAttention && !notified) {
+                // Fetch the full thread once (gated by the dedupe store, so one GET per new
+                // notification) to build MessagingStyle context + resolve the active decision.
+                // Degrades to the summary preview if the fetch fails — a notification always fires.
+                val messages = runCatching { repo.getThread(conn, t.id).messages }.getOrDefault(emptyList())
                 notifier.notify(
-                    NeedsYouEvent(conn.id, conn.baseUrl, conn.workspaceName, t.id, t.subject, t.lastMessage, t.updatedAt ?: "")
+                    NeedsYouEvent(
+                        connectionId = conn.id,
+                        baseUrl = conn.baseUrl,
+                        workspaceName = conn.workspaceName,
+                        threadId = t.id,
+                        subject = t.subject,
+                        preview = t.lastMessage,
+                        updatedAt = t.updatedAt ?: "",
+                        messages = messages,
+                        decision = activeDecision(messages),
+                    )
                 )
                 store.markNotified(conn.id, t.id)
             } else if (!needsAttention && notified) {
@@ -43,7 +64,6 @@ class NeedsYouReconciler(
         }
     }
 
-    suspend fun fetchAndReconcile(conn: WorkspaceConnection, repo: ThreadsRepository) {
+    suspend fun fetchAndReconcile(conn: WorkspaceConnection) =
         reconcile(conn, repo.listThreadsFor(conn))
-    }
 }
