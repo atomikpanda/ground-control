@@ -422,6 +422,7 @@ fun GroundControlApp(
                                 "task" -> nav.navigate("taskDetail/$connectionId/$id")
                             }
                         },
+                        onOpenWorkItem = { id -> nav.navigate("item/$connectionId/$id") },
                     )
                 }
             }
