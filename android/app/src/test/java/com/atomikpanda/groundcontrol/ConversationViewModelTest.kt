@@ -19,6 +19,7 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -30,6 +31,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -496,6 +499,71 @@ class ConversationViewModelTest {
             while ((v.state.value as ConversationUiState.Content).journal.size < 2 && System.currentTimeMillis() < deadline) Thread.sleep(10)
         }
         assertEquals(2, (v.state.value as ConversationUiState.Content).journal.size)
+    }
+
+    // Greptile finding on PR #40 (round 2): the UNCHANGED-thread `else` branch of pollOnce used
+    // to write back the captured `cur` (inFlight=false) after its inline journal fetch. If a
+    // send() lands during that fetch -- setting inFlight=true -- the stale write clears the flag,
+    // so a second tap slips past send()'s `if (current.inFlight) return null` guard and fires a
+    // DUPLICATE POST. This exercises that exact window: gate the poll's journal fetch, send()
+    // while it's suspended, then release and prove the journal write preserved inFlight (fix
+    // re-reads the latest state) so a concurrent second tap is still blocked.
+    @Test fun pollOnce_journal_refresh_does_not_clear_inflight_set_by_a_concurrent_send() = runTest {
+        val journalPollStarted = CompletableDeferred<Unit>()
+        val releaseJournalPoll = CompletableDeferred<Unit>()
+        val releasePost = CompletableDeferred<Unit>()
+        var journalCalls = 0
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.parameters["wait"] == "1" ->
+                    respond(waitMissJson, HttpStatusCode.OK, jsonHdr)   // "other" changed, not t2 -> else branch
+                req.url.encodedPath.endsWith("/threads/t2/messages") && req.method == HttpMethod.Post -> {
+                    // Keep the first send genuinely in flight for the whole window: its onSuccess
+                    // (which would itself reset inFlight) must not fire before we've probed the
+                    // guard, so the only thing that could clear inFlight is the journal write.
+                    releasePost.await()
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get -> {
+                    journalCalls++
+                    if (journalCalls == 1) {
+                        respond("""[{"timestamp":"2026-06-22T09:58:00Z","message":"wrote parser"}]""", HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        journalPollStarted.complete(Unit)   // poll's journal fetch is now suspended
+                        releaseJournalPoll.await()
+                        respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)   // 3 -> takeLast(2)
+                    }
+                }
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        assertEquals(1, (v.state.value as ConversationUiState.Content).journal.size)
+
+        // Orchestrate on real threads (off the virtual clock): pollOnce and the MockEngine handler
+        // both run on IO, so real-time synchronization via the deferreds is deterministic here,
+        // whereas advanceUntilIdle wouldn't cross the dispatcher boundary (see project memory).
+        withContext(Dispatchers.IO) {
+            val poll = async { v.pollOnce("2026-06-22T10:00:00Z") }
+            assertNotNull("poll should reach the journal fetch", withTimeoutOrNull(3_000) { journalPollStarted.await() })
+
+            // First tap while the poll is parked inside fetchJournal: sets inFlight synchronously.
+            v.send("first")
+            assertTrue((v.state.value as ConversationUiState.Content).inFlight)
+
+            releaseJournalPoll.complete(Unit)                 // let the else-branch journal write run
+            assertNotNull("poll should return", withTimeoutOrNull(3_000) { poll.await() })
+
+            val after = v.state.value as ConversationUiState.Content
+            assertEquals(2, after.journal.size)               // journal was refreshed (write did happen)...
+            assertTrue("inFlight must survive the journal write", after.inFlight)   // ...without clobbering inFlight
+            // The guard held: a second tap is rejected synchronously (returns null), so no
+            // duplicate POST is ever issued.
+            assertNull("a second tap during the in-flight send must be a no-op", v.send("dup"))
+            releasePost.complete(Unit)   // let the first send settle so runTest can drain cleanly
+        }
     }
 
     @Test fun send_preserves_journal_across_a_successful_send() = runTest {

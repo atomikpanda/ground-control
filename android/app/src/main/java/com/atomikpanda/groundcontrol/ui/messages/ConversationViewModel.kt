@@ -127,7 +127,13 @@ class ConversationViewModel(
                     }
             } else {
                 val journal = fetchJournal(cur.thread.taskSlug)
-                if (journal != cur.journal) _state.value = cur.copy(journal = journal)
+                // Re-read state after the await rather than writing back the captured `cur`
+                // (Greptile finding on PR #40): during the inline fetchJournal above, a send()
+                // may have set inFlight=true. Writing `cur.copy(...)` (inFlight=false) would
+                // clear that flag, letting a second tap slip past send()'s in-flight guard and
+                // fire a duplicate POST. Only patch the journal onto the *latest* Content.
+                val latest = _state.value as? ConversationUiState.Content ?: return resp.cursor
+                if (journal != latest.journal) _state.value = latest.copy(journal = journal)
             }
         }
         return resp.cursor
