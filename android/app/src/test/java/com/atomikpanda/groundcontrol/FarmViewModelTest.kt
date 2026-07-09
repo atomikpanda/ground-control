@@ -13,6 +13,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.http.HttpHeaders.ContentType
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -226,5 +227,91 @@ class FarmViewModelTest {
         assertTrue(job.isCancelled)
         val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
         assertEquals("done", after.phaseOverride)
+    }
+
+    // Greptile finding on PR #37: the Farm list groups cards by phase, but "Mark done" / "Reopen"
+    // only ever set `phaseOverride` -- the card stayed in its old phase group until the next full
+    // refresh, so the tap visibly appeared to do nothing. The card must move groups immediately.
+    @Test fun mark_done_moves_card_into_done_group() = runTest {
+        val vm = vmWithPhaseEndpoint(this, phaseFails = false)
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals(FarmPhase.INBOX, (vm.state.value as FarmUiState.Content).groups.single().phase)
+        vm.setItemPhase(item, "done").join()
+        val c = vm.state.value as FarmUiState.Content
+        assertEquals(listOf(FarmPhase.DONE), c.groups.map { it.phase })
+        assertEquals("a", c.groups.single().items.single().id)
+    }
+
+    @Test fun mark_done_that_fails_leaves_card_in_its_original_group() = runTest {
+        val vm = vmWithPhaseEndpoint(this, phaseFails = true)
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        vm.setItemPhase(item, "done").join()
+        val c = vm.state.value as FarmUiState.Content
+        assertEquals(listOf(FarmPhase.INBOX), c.groups.map { it.phase })
+    }
+
+    @Test fun reopen_moves_card_back_to_its_derived_phase_group() = runTest {
+        val vm = vmWithPhaseEndpoint(this, phaseFails = false, initialPhaseOverride = "done")
+        vm.refresh().join()
+        val before = vm.state.value as FarmUiState.Content
+        assertEquals(listOf(FarmPhase.DONE), before.groups.map { it.phase })   // override wins
+        vm.setItemPhase(before.groups.single().items.single(), null).join()
+        val after = vm.state.value as FarmUiState.Content
+        assertEquals(listOf(FarmPhase.INBOX), after.groups.map { it.phase })   // back to derived
+    }
+
+    // Greptile finding on PR #37: a failed rollback used to restore whatever value the *passed-in*
+    // `item` snapshot held, which -- under rapid repeated taps -- can be another call's not-yet-
+    // confirmed optimistic write rather than the last value the server actually confirmed. Force
+    // the race deterministically: gate the first ("Mark done") request so it's still in flight when
+    // the second ("Reopen") call starts and captures its rollback target; both calls ultimately
+    // fail. The last-confirmed value before either call started was `null` (no override), so both
+    // rollbacks must land on `null` -- never on the other call's transient "done"/"review" value.
+    @Test fun rapid_repeated_phase_actions_roll_back_to_last_confirmed_value_not_a_transient_one() = runTest {
+        val firstCallStarted = CompletableDeferred<Unit>()
+        val releaseFirstCall = CompletableDeferred<Unit>()
+        var phaseCalls = 0
+        val vm = FarmViewModel(
+            SpecApi(HttpClient(MockEngine { req ->
+                if (req.url.encodedPath.endsWith("/phase")) {
+                    phaseCalls++
+                    if (phaseCalls == 1) {
+                        firstCallStarted.complete(Unit)
+                        releaseFirstCall.await()
+                        respond("boom", HttpStatusCode.InternalServerError)
+                    } else {
+                        respond("boom", HttpStatusCode.InternalServerError)
+                    }
+                } else {
+                    respond(
+                        """[{"id":"a","kind":"feature","title":"A","phase":"inbox","phase_override":null}]""",
+                        HttpStatusCode.OK, jsonHdr,
+                    )
+                }
+            }) { mshipDefaults() }),
+            conn, testScope = this,
+        )
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals(null, item.phaseOverride)
+
+        val markDoneJob = vm.setItemPhase(item, "done")
+        firstCallStarted.await()   // first call's optimistic write ("done") has landed and is in flight
+
+        val midFlight = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals("done", midFlight.phaseOverride)   // sanity: reading a genuinely unconfirmed value
+
+        // Second tap, using the current (still-optimistic) card -- exactly what a real recomposition
+        // would hand the click handler.
+        val reopenJob = vm.setItemPhase(midFlight, "review")
+
+        releaseFirstCall.complete(Unit)   // let the first call resolve (fails) so the second can proceed
+        markDoneJob.join()
+        reopenJob.join()
+
+        val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+        assertEquals(null, after.phaseOverride)
     }
 }
