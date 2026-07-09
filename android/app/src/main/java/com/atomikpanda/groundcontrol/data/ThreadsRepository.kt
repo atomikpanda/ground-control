@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.data
 
+import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -26,4 +27,8 @@ class ThreadsRepository(private val api: SpecApi) {
     suspend fun waitForChange(conn: WorkspaceConnection, since: String, timeoutSeconds: Int) =
         api.listThreadsWait(conn, since, timeoutSeconds)
     suspend fun listThreadsFor(conn: WorkspaceConnection) = api.listThreads(conn)
+
+    /** Recent task-journal entries for a thread's linked task (MOS-224 activity strip). */
+    suspend fun getJournal(conn: WorkspaceConnection, slug: String): List<JournalEntry> =
+        api.getJournal(conn, slug)
 }

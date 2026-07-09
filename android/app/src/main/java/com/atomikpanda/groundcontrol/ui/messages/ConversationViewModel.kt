@@ -6,8 +6,10 @@ import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.NotFoundException
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -16,6 +18,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+/** Most recent journal entries to surface in the in-thread activity strip (MOS-224):
+ *  "last 2" per the recorded operator decision. */
+private const val ACTIVITY_STRIP_ENTRY_COUNT = 2
 
 sealed interface ConversationUiState {
     data object Loading : ConversationUiState
@@ -26,6 +32,11 @@ sealed interface ConversationUiState {
         /** Non-null when the last send failed; the compose bar surfaces it and
          *  restores the user's typed text so it isn't silently lost. */
         val sendError: String? = null,
+        /** Last [ACTIVITY_STRIP_ENTRY_COUNT] task-journal entries (oldest-first) for the
+         *  in-thread activity strip -- empty when the thread has no `task_slug` or the
+         *  journal fetch failed. Never surfaced as an [Error]: a missing/unavailable
+         *  journal degrades to an empty strip, not a broken conversation. */
+        val journal: List<JournalEntry> = emptyList(),
     ) : ConversationUiState
 }
 
@@ -53,11 +64,28 @@ class ConversationViewModel(
         return scope().launch {
             runCatching { repo.getThread(conn, threadId) }
                 .onSuccess { thread ->
-                    _state.value = ConversationUiState.Content(thread)
+                    val journal = fetchJournal(thread.taskSlug)
+                    _state.value = ConversationUiState.Content(thread, journal = journal)
                     markSeen(thread)
                 }
                 .onFailure { t -> _state.value = ConversationUiState.Error(t.toKind(), t.message ?: "error") }
         }
+    }
+
+    /** Like [runCatching], but rethrows [CancellationException] so scope cancellation propagates
+     *  (mirrors WorkspaceViewModel/HomeFeedRepository's `catchingApi` elsewhere in the app). */
+    private inline fun <T> catchingApi(block: () -> T): Result<T> =
+        runCatching(block).onFailure { if (it is CancellationException) throw it }
+
+    /** Journal entries for the activity strip (MOS-224): the last [ACTIVITY_STRIP_ENTRY_COUNT]
+     *  entries for [taskSlug], oldest-first -- an empty list when the thread has no linked task
+     *  (skips the fetch entirely) or the fetch fails, so a flaky/unavailable journal never turns
+     *  into a broken conversation. */
+    private suspend fun fetchJournal(taskSlug: String?): List<JournalEntry> {
+        if (taskSlug == null) return emptyList()
+        return catchingApi { repo.getJournal(conn, taskSlug) }
+            .getOrDefault(emptyList())
+            .takeLast(ACTIVITY_STRIP_ENTRY_COUNT)
     }
 
     /** Best-effort: mark this thread seen up to its loaded high-water timestamp.
@@ -69,16 +97,27 @@ class ConversationViewModel(
     /** One long-poll iteration: wait for a change since `cursor`; if THIS thread
      *  changed (and no send is in flight), re-fetch it. Returns the next cursor
      *  (unchanged on a network error so the caller can back off). Terminating —
-     *  unit-tested directly; the loop below is a thin wrapper. */
+     *  unit-tested directly; the loop below is a thin wrapper.
+     *
+     *  Also refreshes the MOS-224 activity strip's journal on this same cadence —
+     *  even when the thread's *messages* haven't changed — so a task that's actively
+     *  journaling progress doesn't go stale just because the agent hasn't replied yet
+     *  (reuses this poll; no separate tight loop). */
     internal suspend fun pollOnce(cursor: String): String {
         val resp = runCatching { repo.waitForChange(conn, cursor, 25) }.getOrNull() ?: return cursor
-        if (resp.threads.any { it.id == threadId }) {
-            val cur = _state.value
-            if (cur is ConversationUiState.Content && !cur.inFlight) {
+        val cur = _state.value
+        if (cur is ConversationUiState.Content && !cur.inFlight) {
+            if (resp.threads.any { it.id == threadId }) {
                 runCatching { repo.getThread(conn, threadId) }
-                    // Preserve a visible send-error banner across a live refresh — an
-                    // agent reply arriving must not silently erase "couldn't send".
-                    .onSuccess { _state.value = ConversationUiState.Content(it, sendError = cur.sendError) }
+                    .onSuccess { thread ->
+                        val journal = fetchJournal(thread.taskSlug)
+                        // Preserve a visible send-error banner across a live refresh — an
+                        // agent reply arriving must not silently erase "couldn't send".
+                        _state.value = ConversationUiState.Content(thread, sendError = cur.sendError, journal = journal)
+                    }
+            } else {
+                val journal = fetchJournal(cur.thread.taskSlug)
+                if (journal != cur.journal) _state.value = cur.copy(journal = journal)
             }
         }
         return resp.cursor
@@ -115,7 +154,10 @@ class ConversationViewModel(
             runCatching { repo.postMessage(conn, threadId, text) }
                 .onSuccess { updatedThread ->
                     _draft.value = ""
-                    _state.value = ConversationUiState.Content(updatedThread, inFlight = false)
+                    // Carry the current journal forward: a message send doesn't itself change
+                    // the linked task's journal, and resetting to empty here would flash the
+                    // activity strip away until the next poll refetches it.
+                    _state.value = ConversationUiState.Content(updatedThread, inFlight = false, journal = current.journal)
                 }
                 .onFailure { t ->
                     // Keep the existing thread, drop inFlight, and surface the failure so
