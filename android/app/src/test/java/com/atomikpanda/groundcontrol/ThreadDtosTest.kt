@@ -100,4 +100,20 @@ class ThreadDtosTest {
         val s = buildJson().decodeFromString<ThreadSummary>("""{"id":"t1","subject":"s"}""")
         assertFalse(s.needsDecision)
     }
+
+    @Test fun parses_work_item_fields() {
+        val raw = """{"id":"t1","subject":"Idea","work_item_id":"wi-1",
+            "work_item":{"id":"wi-1","title":"Make capture conversational","kind":"feature","phase":"in_flight"}}"""
+        val t = json.decodeFromString(Thread.serializer(), raw.trimIndent())
+        assertEquals("wi-1", t.workItemId)
+        assertEquals("Make capture conversational", t.workItem?.title)
+        assertEquals("in_flight", t.workItem?.phase)
+    }
+
+    @Test fun work_item_fields_default_null_when_omitted() {
+        val raw = """{"id":"t1","subject":"Idea"}"""
+        val t = json.decodeFromString(Thread.serializer(), raw)
+        assertNull(t.workItemId)
+        assertNull(t.workItem)
+    }
 }

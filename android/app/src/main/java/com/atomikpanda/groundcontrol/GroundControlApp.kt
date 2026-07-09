@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -16,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -308,6 +310,37 @@ fun GroundControlApp(
                         onBack = { nav.popBackStack() },
                     )
                 }
+            }
+            composable(
+                route = "item/{connectionId}/{itemId}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("itemId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val itemId = entry.arguments?.getString("itemId").orEmpty()
+                val conn = remember(connectionId) {
+                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                }
+                LaunchedEffect(connectionId, itemId) {
+                    if (conn == null) return@LaunchedEffect
+                    val item = runCatching { api.getItem(conn, itemId) }.getOrNull()
+                        ?: return@LaunchedEffect
+                    val dest = when {
+                        item.phase == "in_flight" -> "console/$connectionId/$itemId"
+                        item.phase == "review" -> "review/$connectionId/$itemId"
+                        item.phase == "done" -> "done/$connectionId/$itemId"
+                        // inbox / shaping / ready (spec-bearing) home to the spec cockpit; a spec-less
+                        // inbox capture falls through to its task or thread — matches farm's onOpen.
+                        item.specId != null -> "specDetail/$connectionId/${item.specId}"
+                        item.taskSlugs.isNotEmpty() -> "taskDetail/$connectionId/${item.taskSlugs.first()}"
+                        item.threadIds.isNotEmpty() -> "thread/$connectionId/${item.threadIds.first()}"
+                        else -> return@LaunchedEffect
+                    }
+                    nav.navigate(dest) { popUpTo("item/$connectionId/$itemId") { inclusive = true } }
+                }
+                Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
             }
             composable("capture") {
                 val vm = viewModel {

@@ -45,6 +45,18 @@ data class Thread(
     @SerialName("spec_id") val specId: String? = null,
     val messages: List<Message> = emptyList(),
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
+    @SerialName("work_item_id") val workItemId: String? = null,
+    @SerialName("work_item") val workItem: WorkItemRef? = null,
+)
+
+/** Compact work-item reference embedded on a Thread, so a thread that belongs to a
+ *  WorkItem can show/link its cockpit context without a second round trip. */
+@Serializable
+data class WorkItemRef(
+    val id: String,
+    val title: String = "",
+    val kind: String = "",
+    val phase: String = "",
 )
 
 @Serializable
