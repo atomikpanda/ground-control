@@ -219,7 +219,7 @@ private fun ConversationContentView(
         // app bar, above everything else — including the "View spec" affordance) since it
         // reads as ambient status/context for the whole thread. Only for threads linked to
         // a task; a thread with no task_slug shows nothing here.
-        thread.taskSlug?.let { ActivityStrip(s.journal) }
+        if (thread.taskSlug != null) { ActivityStrip(s.journal) }
         // "View spec ->" affordance — only shown when this thread has been linked to a spec.
         thread.specId?.let { specId ->
             OutlinedButton(

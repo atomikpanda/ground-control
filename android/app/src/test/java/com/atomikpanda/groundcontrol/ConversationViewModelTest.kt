@@ -16,9 +16,11 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -437,6 +439,63 @@ class ConversationViewModelTest {
         val c = v.state.value as ConversationUiState.Content
         assertEquals(2, c.journal.size)                 // journal came along with the refreshed thread
         assertEquals("2026-06-22T10:10:00Z", next)
+    }
+
+    // Greptile finding on PR #40: pollOnce used to await the /journal fetch before applying
+    // the refreshed thread, so a slow (or hung) journal endpoint delayed the user seeing the
+    // agent's reply by up to the OkHttp read timeout. Gate the *poll's* journal call (but not
+    // load()'s) so it never resolves during this test, and prove pollOnce still returns and
+    // applies the refreshed thread/messages -- carrying the last-known journal forward rather
+    // than blocking on the new one. Then release the gate and confirm the journal refresh
+    // does eventually land (fire-and-forget, not silently dropped).
+    @Test fun pollOnce_delivers_thread_refresh_without_waiting_on_journal_fetch() = runTest {
+        val journalGate = CompletableDeferred<Unit>()
+        var journalCalls = 0
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.parameters["wait"] == "1" ->
+                    respond("""{"threads":[{"id":"t2","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}""", HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get -> {
+                    journalCalls++
+                    if (journalCalls == 1) {
+                        // load()'s journal fetch: resolves normally, 1 entry.
+                        respond("""[{"timestamp":"2026-06-22T09:58:00Z","message":"wrote parser"}]""", HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        // The poll's journal refresh: hangs until this test releases it below.
+                        journalGate.await()
+                        respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)
+                    }
+                }
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get ->
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+        assertEquals(1, (v.state.value as ConversationUiState.Content).journal.size)   // sanity: load's journal landed
+
+        // Run pollOnce on a real dispatcher under a real (wall-clock) timeout: if the fix
+        // regresses to awaiting the journal fetch before applying the thread refresh, this
+        // times out instead of hanging the suite -- the gate above isn't released until after
+        // this call returns.
+        val next = withContext(Dispatchers.IO) {
+            withTimeoutOrNull(3_000) { v.pollOnce("2026-06-22T10:00:00Z") }
+        }
+        assertEquals("2026-06-22T10:10:00Z", next)
+        val afterPoll = v.state.value as ConversationUiState.Content
+        assertEquals("Ship the strip", afterPoll.thread.subject)   // reply delivered immediately...
+        assertEquals(1, afterPoll.journal.size)                     // ...journal not yet refreshed (still hung)
+
+        // Let the deferred journal refresh resolve and confirm it eventually lands (fire-and-
+        // forget, not dropped) -- wait for it in real time since it settles on the MockEngine's
+        // IO dispatcher, off the virtual clock (mirrors load_marks_thread_seen above).
+        advanceUntilIdle()
+        journalGate.complete(Unit)
+        withContext(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + 2_000
+            while ((v.state.value as ConversationUiState.Content).journal.size < 2 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        }
+        assertEquals(2, (v.state.value as ConversationUiState.Content).journal.size)
     }
 
     @Test fun send_preserves_journal_across_a_successful_send() = runTest {

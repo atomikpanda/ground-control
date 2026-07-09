@@ -102,7 +102,16 @@ class ConversationViewModel(
      *  Also refreshes the MOS-224 activity strip's journal on this same cadence —
      *  even when the thread's *messages* haven't changed — so a task that's actively
      *  journaling progress doesn't go stale just because the agent hasn't replied yet
-     *  (reuses this poll; no separate tight loop). */
+     *  (reuses this poll; no separate tight loop).
+     *
+     *  The journal fetch must never gate reply delivery (Greptile finding on PR #40):
+     *  when the thread itself changed, the refreshed thread/messages are applied to
+     *  state immediately, carrying the last-known journal forward as a placeholder;
+     *  the journal refresh for *this* tick is kicked off separately (fire-and-forget)
+     *  and only updates the `journal` field once it resolves. A slow or hanging
+     *  `/journal` fetch (up to the ~10s OkHttp read timeout) would otherwise delay the
+     *  user seeing the agent's reply. The unchanged-thread tick below has nothing else
+     *  to deliver, so it keeps awaiting the journal inline. */
     internal suspend fun pollOnce(cursor: String): String {
         val resp = runCatching { repo.waitForChange(conn, cursor, 25) }.getOrNull() ?: return cursor
         val cur = _state.value
@@ -110,10 +119,11 @@ class ConversationViewModel(
             if (resp.threads.any { it.id == threadId }) {
                 runCatching { repo.getThread(conn, threadId) }
                     .onSuccess { thread ->
-                        val journal = fetchJournal(thread.taskSlug)
                         // Preserve a visible send-error banner across a live refresh — an
                         // agent reply arriving must not silently erase "couldn't send".
-                        _state.value = ConversationUiState.Content(thread, sendError = cur.sendError, journal = journal)
+                        // Applied immediately -- do not wait on the journal fetch below.
+                        _state.value = ConversationUiState.Content(thread, sendError = cur.sendError, journal = cur.journal)
+                        refreshJournalAsync(thread.taskSlug)
                     }
             } else {
                 val journal = fetchJournal(cur.thread.taskSlug)
@@ -121,6 +131,21 @@ class ConversationViewModel(
             }
         }
         return resp.cursor
+    }
+
+    /** Fire-and-forget refresh of the activity-strip journal after a live thread refresh in
+     *  [pollOnce]: launched separately from (and not awaited by) the primary thread/messages
+     *  update so a slow or hanging `/journal` fetch can never delay reply delivery. Only
+     *  applies the fetched journal if the state is still `Content` by the time it resolves —
+     *  a concurrent load()/send() landing in the meantime must win over a stale background
+     *  update. */
+    private fun refreshJournalAsync(taskSlug: String?) {
+        scope().launch {
+            val journal = fetchJournal(taskSlug)
+            (_state.value as? ConversationUiState.Content)?.let { latest ->
+                _state.value = latest.copy(journal = journal)
+            }
+        }
     }
 
     /** Start the live-reply loop (idempotent). Seeds from the loaded thread's
