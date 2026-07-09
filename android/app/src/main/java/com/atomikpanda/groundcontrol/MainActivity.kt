@@ -77,6 +77,9 @@ class MainActivity : ComponentActivity() {
                         "That workspace isn't connected on this device.",
                         Toast.LENGTH_LONG,
                     ).show()
+                // OS-level (cold-open) nav for item/spec/task deep links is out of scope
+                // for v1 — inline in-thread taps handle these (see EntityLink / MessageMarkdown).
+                // Intentional no-op so the `when` stays exhaustive over DeepLinkOutcome.
                 is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.OpenItem,
                 is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.OpenSpec,
                 is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.OpenTask,
