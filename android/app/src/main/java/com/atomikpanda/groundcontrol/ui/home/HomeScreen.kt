@@ -19,7 +19,6 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -216,19 +215,29 @@ private fun ThreadsStickyCard(unreadCount: Int, peek: List<ThreadSummary>, onCli
             .clickable(onClick = onClick),
     ) {
         Column(Modifier.padding(12.dp, 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Header + unread count live in their own row slots (title leading, badge
+            // trailing) rather than a BadgedBox anchored on the "Threads" text — a
+            // BadgedBox's default corner anchor sat right on top of the last glyph of
+            // short text like this, overlapping it instead of sitting beside it.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Threads",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
                 if (unreadCount > 0) {
-                    BadgedBox(badge = { Badge { Text("$unreadCount") } }) {
-                        Text("Threads", style = MaterialTheme.typography.titleSmall)
-                    }
-                } else {
-                    Text("Threads", style = MaterialTheme.typography.titleSmall)
+                    Badge { Text("$unreadCount") }
                 }
             }
             if (peek.isEmpty()) {
                 Text(
                     "No conversations yet.",
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             } else {
@@ -236,6 +245,10 @@ private fun ThreadsStickyCard(unreadCount: Int, peek: List<ThreadSummary>, onCli
                     Text(
                         thread.subject.ifBlank { "(no subject)" },
                         style = MaterialTheme.typography.bodyMedium,
+                        // Full contrast (matches the onSurface role agent prose bubbles
+                        // use elsewhere) — the previous default content color read as a
+                        // muted onSurfaceVariant-ish tone and was hard to read.
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = if (thread.unseen) FontWeight.Bold else FontWeight.Normal,
                         maxLines = 1,
                         modifier = Modifier.padding(top = 6.dp),
@@ -244,6 +257,9 @@ private fun ThreadsStickyCard(unreadCount: Int, peek: List<ThreadSummary>, onCli
                         Text(
                             thread.lastMessage,
                             style = MaterialTheme.typography.bodySmall,
+                            // Secondary line: legible but still visually subordinate to
+                            // the subject line above.
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             modifier = Modifier.padding(top = 1.dp),
                         )
