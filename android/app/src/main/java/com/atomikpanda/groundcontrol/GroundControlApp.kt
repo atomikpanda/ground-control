@@ -415,6 +415,13 @@ fun GroundControlApp(
                         title = threadId,
                         onBack = { nav.popBackStack() },
                         onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
+                        onOpenEntity = { kind, id ->
+                            when (kind) {
+                                "item" -> nav.navigate("item/$connectionId/$id")
+                                "spec" -> nav.navigate("specDetail/$connectionId/$id")
+                                "task" -> nav.navigate("taskDetail/$connectionId/$id")
+                            }
+                        },
                     )
                 }
             }

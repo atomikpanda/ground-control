@@ -73,6 +73,7 @@ fun ConversationScreen(
     title: String,
     onBack: () -> Unit,
     onViewSpec: (specId: String) -> Unit = {},
+    onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load()?.join(); vm.startPolling() }
@@ -94,7 +95,7 @@ fun ConversationScreen(
                 ConversationUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 is ConversationUiState.Error -> ConversationErrorView(s, vm, onBack)
-                is ConversationUiState.Content -> ConversationContentView(s, vm, onViewSpec)
+                is ConversationUiState.Content -> ConversationContentView(s, vm, onViewSpec, onOpenEntity)
             }
         }
     }
@@ -127,6 +128,7 @@ private fun ConversationContentView(
     s: ConversationUiState.Content,
     vm: ConversationViewModel,
     onViewSpec: (specId: String) -> Unit = {},
+    onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
 ) {
     val thread = s.thread
     val pull = rememberPullToRefreshState()
@@ -241,7 +243,13 @@ private fun ConversationContentView(
                     // message in the whole thread) is past it — avoids allocating a
                     // fresh sublist per item per recompose.
                     val answered = index < lastHumanIndex
-                    MessageRow(message, inFlight = s.inFlight, answered = answered, onOption = { vm.send(it) })
+                    MessageRow(
+                        message,
+                        inFlight = s.inFlight,
+                        answered = answered,
+                        onOption = { vm.send(it) },
+                        onOpenEntity = onOpenEntity,
+                    )
                 }
                 // Bottom-anchored: chat flows downward, so the hint belongs after
                 // the last message, where the eye lands after the auto-scroll.
@@ -373,6 +381,7 @@ private fun MessageRow(
     inFlight: Boolean = false,
     answered: Boolean = false,
     onOption: (String) -> Unit = {},
+    onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
 ) {
     if (message.kind == "decision" && message.decision != null) {
         DecisionCard(
@@ -441,6 +450,7 @@ private fun MessageRow(
                     text = message.text,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    onOpenEntity = onOpenEntity,
                 )
             }
         }
