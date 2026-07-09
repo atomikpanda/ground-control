@@ -77,6 +77,10 @@ class MainActivity : ComponentActivity() {
                         "That workspace isn't connected on this device.",
                         Toast.LENGTH_LONG,
                     ).show()
+                is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.OpenItem,
+                is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.OpenSpec,
+                is com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.OpenTask,
+                -> {}
                 com.atomikpanda.groundcontrol.notify.DeepLinkOutcome.Ignore -> {}
             }
         }
