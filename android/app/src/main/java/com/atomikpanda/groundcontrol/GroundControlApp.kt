@@ -20,6 +20,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -30,6 +31,7 @@ import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.DataStoreNotificationsSetting
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
+import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.TasksRepository
@@ -46,6 +48,8 @@ import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadScreen
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.nav.Section
+import com.atomikpanda.groundcontrol.ui.queue.QueueScreen
+import com.atomikpanda.groundcontrol.ui.queue.QueueViewModel
 import com.atomikpanda.groundcontrol.ui.console.ConsoleScreen
 import com.atomikpanda.groundcontrol.ui.console.ConsoleViewModel
 import com.atomikpanda.groundcontrol.ui.done.DoneScreen
@@ -75,6 +79,7 @@ fun GroundControlApp(
     val connRepo = remember { ConnectionsRepository(context.applicationContext) }
     val api = remember { SpecApi(defaultHttpClient()) }
     val homeRepo = remember { HomeFeedRepository(api) }
+    val queueRepo = remember { QueueRepository(api) }
     val detailRepo = remember { SpecDetailRepository(api) }
     val tasksRepo = remember { TasksRepository(api) }
     val threadsRepo = remember { ThreadsRepository(api) }
@@ -116,6 +121,17 @@ fun GroundControlApp(
                     onBrowseWorkspace = { connId -> nav.navigate("farm/$connId") },
                     onCapture = { nav.navigate("capture") },
                     onOpenThreads = { nav.navigate("threads") },
+                )
+            }
+            composable(Section.QUEUE.route) {
+                val vm = viewModel {
+                    QueueViewModel(queueRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                }
+                val uriHandler = LocalUriHandler.current
+                QueueScreen(
+                    vm,
+                    onOpenItem = { connId, itemId -> nav.navigate("item/$connId/$itemId") },
+                    onOpenPr = { url -> uriHandler.openUri(url) },
                 )
             }
             composable("threads") {
