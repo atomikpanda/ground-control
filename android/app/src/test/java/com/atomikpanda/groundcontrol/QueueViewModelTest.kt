@@ -22,6 +22,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -71,12 +72,16 @@ class QueueViewModelTest {
         assertNull(c.current)
     }
 
-    // ws-a: two needs_approval items -> two cards
-    private fun repo2() = QueueRepository(SpecApi(HttpClient(MockEngine { _ ->
-        respond("""[
+    // ws-a: two needs_approval items -> two cards. Approve POSTs return a valid SpecReview so the
+    // (success-only) advance in approveCurrent fires; /items returns the two-item feed.
+    private fun repo2() = QueueRepository(SpecApi(HttpClient(MockEngine { req ->
+        val body = if (req.url.encodedPath.endsWith("/approve"))
+            """{"id":"s1","status":"approved"}"""
+        else """[
           {"id":"wi1","kind":"feature","title":"A","phase":"ready","spec_id":"s1","updated_at":"2026-01-01T00:00:00Z","attention":{"needs_approval":true}},
           {"id":"wi2","kind":"feature","title":"B","phase":"ready","spec_id":"s2","updated_at":"2026-02-01T00:00:00Z","attention":{"needs_approval":true}}
-        ]""", HttpStatusCode.OK, jsonHdr)
+        ]"""
+        respond(body, HttpStatusCode.OK, jsonHdr)
     }) { mshipDefaults() }))
     private val one = listOf(WorkspaceConnection("a", "http://a:47100", null, "ws-a"))
 
@@ -175,5 +180,73 @@ class QueueViewModelTest {
         val c = vm.state.value as QueueUiState.Content
         assertEquals("Pick one", c.focusedDecision!!.text)
         assertEquals(listOf("X", "Y"), c.focusedDecision!!.decision.options)
+    }
+
+    // C1: a FAILED approve must not silently hide the card — it stays put and surfaces actionError.
+    @Test fun approve_failure_keeps_card_and_sets_action_error() = runTest {
+        val engine = MockEngine { req ->
+            when {
+                req.url.encodedPath.endsWith("/items") -> respond(
+                    """[{"id":"wi1","kind":"feature","title":"A","phase":"ready","spec_id":"s1","attention":{"needs_approval":true}}]""",
+                    HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/specs/s1/approve") -> respond(
+                    "{}", HttpStatusCode.InternalServerError, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = QueueViewModel(QueueRepository(SpecApi(HttpClient(engine) { mshipDefaults() })), { one }, this)
+        vm.refresh()?.join()
+        val before = vm.state.value as QueueUiState.Content
+        val cardKey = before.current!!.key
+        val posBefore = before.position
+        vm.approveCurrent()?.join()
+        val after = vm.state.value as QueueUiState.Content
+        assertEquals(cardKey, after.current!!.key)   // same card still at the head (NOT advanced)
+        assertNotNull(after.actionError)             // failure surfaced
+        assertEquals(posBefore, after.position)      // position indicator unchanged
+        assertNull(after.undo)                       // undo NOT armed on a failed action
+    }
+
+    // C2: a decision head whose thread carries no structured decision must settle
+    // decisionLoaded=true with a null prompt (drives the UI fallback, not an infinite spinner).
+    @Test fun decision_without_structured_payload_settles_loaded_with_null_prompt() = runTest {
+        val engine = MockEngine { req ->
+            when {
+                req.url.encodedPath.endsWith("/items") -> respond(
+                    """[{"id":"wi1","kind":"feature","title":"Q","phase":"in_flight","thread_ids":["t1"],"attention":{"needs_decision":true}}]""",
+                    HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1") -> respond(
+                    """{"id":"t1","subject":"Q","messages":[{"id":"m1","role":"agent","text":"just a note","kind":"note"}]}""",
+                    HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = QueueViewModel(QueueRepository(SpecApi(HttpClient(engine) { mshipDefaults() })), { one }, this)
+        vm.refresh()?.join()
+        // The decision load is fire-and-forget; after refresh().join() decisionLoaded is still false.
+        // Pump the scheduler + yield real time to the engine's IO thread until it settles true
+        // (GC MockEngine fire-and-forget flake — advanceUntilIdle alone races the off-clock call).
+        var settled = (vm.state.value as? QueueUiState.Content)?.decisionLoaded ?: false
+        var tries = 0
+        while (!settled && tries < 300) {
+            advanceUntilIdle()
+            settled = (vm.state.value as? QueueUiState.Content)?.decisionLoaded ?: false
+            if (!settled) { Thread.sleep(10); tries++ }
+        }
+        val c = vm.state.value as QueueUiState.Content
+        assertTrue(c.decisionLoaded)      // finished loading (no infinite spinner)
+        assertNull(c.focusedDecision)     // …but there was no structured decision to show
+    }
+
+    // C3: a deferred card stays pinned to the back across a live refresh (doesn't pop back to front).
+    @Test fun defer_persists_across_refresh() = runTest {
+        val vm = QueueViewModel(repo2(), { one }, this)
+        vm.refresh()?.join()
+        val deferredKey = (vm.state.value as QueueUiState.Content).current!!.key
+        vm.defer()                         // send the head to the back
+        vm.refresh()?.join()               // same MockEngine returns both items again
+        val c = vm.state.value as QueueUiState.Content
+        assertEquals(deferredKey, c.cards.last().key)     // deferred card kept at the back
+        assertTrue(c.current!!.key != deferredKey)        // NOT yanked back to the front
     }
 }
