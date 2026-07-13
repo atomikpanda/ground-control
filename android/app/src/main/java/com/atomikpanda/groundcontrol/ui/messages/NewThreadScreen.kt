@@ -44,6 +44,7 @@ fun NewThreadScreen(
     showSubject: Boolean = true,
     bodyLabel: String = "Message",
     submitLabel: String = "Create",
+    showKindPicker: Boolean = false,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
@@ -102,6 +103,20 @@ fun NewThreadScreen(
                     label = selected?.let { it.workspaceName.ifBlank { it.baseUrl } } ?: "Select workspace",
                     options = state.connections.map { it.id to it.workspaceName.ifBlank { it.baseUrl } },
                     onPick = vm::onSelectConnection,
+                )
+            }
+
+            if (showKindPicker) {
+                WorkspacePickerDropdown(
+                    label = when (state.kind) {
+                        CaptureKind.QUICK_NOTE -> "Quick note"
+                        CaptureKind.BRAINSTORM_SPEC -> "Brainstorm into a spec"
+                    },
+                    options = listOf(
+                        CaptureKind.QUICK_NOTE.name to "Quick note",
+                        CaptureKind.BRAINSTORM_SPEC.name to "Brainstorm into a spec",
+                    ),
+                    onPick = { vm.onSelectKind(CaptureKind.valueOf(it)) },
                 )
             }
 
