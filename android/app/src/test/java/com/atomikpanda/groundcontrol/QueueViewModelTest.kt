@@ -70,4 +70,57 @@ class QueueViewModelTest {
         assertTrue(c.caughtUp)
         assertNull(c.current)
     }
+
+    // ws-a: two needs_approval items -> two cards
+    private fun repo2() = QueueRepository(SpecApi(HttpClient(MockEngine { _ ->
+        respond("""[
+          {"id":"wi1","kind":"feature","title":"A","phase":"ready","spec_id":"s1","updated_at":"2026-01-01T00:00:00Z","attention":{"needs_approval":true}},
+          {"id":"wi2","kind":"feature","title":"B","phase":"ready","spec_id":"s2","updated_at":"2026-02-01T00:00:00Z","attention":{"needs_approval":true}}
+        ]""", HttpStatusCode.OK, jsonHdr)
+    }) { mshipDefaults() }))
+    private val one = listOf(WorkspaceConnection("a", "http://a:47100", null, "ws-a"))
+
+    @Test fun approve_removes_head_and_advances() = runTest {
+        val vm = QueueViewModel(repo2(), { one }, this)
+        vm.refresh()?.join()
+        val firstKey = (vm.state.value as QueueUiState.Content).current!!.key
+        vm.approveCurrent()?.join()
+        val c = vm.state.value as QueueUiState.Content
+        assertEquals("wi2", c.current!!.workItemId)   // advanced to the older-tier-equal next
+        assertEquals(2, c.total)                       // resolved(1) + remaining(1)
+        assertEquals(2, c.position)                    // now on 2 of 2
+        assertEquals(firstKey, c.undo!!.key)           // undo armed with the acted card
+    }
+
+    @Test fun undo_restores_the_acted_card_at_head() = runTest {
+        val vm = QueueViewModel(repo2(), { one }, this)
+        vm.refresh()?.join()
+        val firstKey = (vm.state.value as QueueUiState.Content).current!!.key
+        vm.approveCurrent()?.join()
+        vm.undo()
+        val c = vm.state.value as QueueUiState.Content
+        assertEquals(firstKey, c.current!!.key)
+        assertEquals(1, c.position)
+        assertNull(c.undo)
+    }
+
+    @Test fun defer_sends_head_to_back_without_resolving() = runTest {
+        val vm = QueueViewModel(repo2(), { one }, this)
+        vm.refresh()?.join()
+        val firstKey = (vm.state.value as QueueUiState.Content).current!!.key
+        vm.defer()
+        val c = vm.state.value as QueueUiState.Content
+        assertEquals("wi2", c.current!!.workItemId)          // next is now current
+        assertEquals(firstKey, c.cards.last().key)            // deferred card moved to back
+        assertEquals(2, c.total)                              // nothing resolved
+    }
+
+    @Test fun open_advances_without_arming_undo_or_resolving_key() = runTest {
+        val vm = QueueViewModel(repo2(), { one }, this)
+        vm.refresh()?.join()
+        vm.openCurrent()
+        val c = vm.state.value as QueueUiState.Content
+        assertEquals("wi2", c.current!!.workItemId)
+        assertNull(c.undo)
+    }
 }

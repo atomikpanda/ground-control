@@ -75,6 +75,69 @@ class QueueViewModel(
     private fun mergeKeepingHead(head: QueueCard?, fresh: List<QueueCard>): List<QueueCard> =
         listOfNotNull(head) + sortQueue(fresh.filter { it.key != head?.key })
 
-    // --- decision loading, act/defer/undo added in Tasks 4 & 5 ---
+    /** Approve the current spec card, then advance (optimistic). Arms undo. */
+    fun approveCurrent(): Job? {
+        val c = content() ?: return null
+        val card = c.current ?: return null
+        if (card.kind != QueueKind.NEEDS_APPROVAL || card.specId == null) return null
+        resolvedKeys.add(card.key)
+        _state.value = c.copy(inFlight = true)
+        return scope().launch {
+            runCatching { repo.approve(conn(card), card.specId) }
+            advancePast(card, armUndo = true)
+        }
+    }
+
+    /** Answer the current decision card with the tapped option text, then advance. Arms undo. */
+    fun answerDecision(optionText: String): Job? {
+        val c = content() ?: return null
+        val card = c.current ?: return null
+        if (card.kind != QueueKind.NEEDS_DECISION) return null
+        resolvedKeys.add(card.key)
+        _state.value = c.copy(inFlight = true)
+        return scope().launch {
+            runCatching { repo.answerDecision(conn(card), card.workItemId, optionText) }
+            advancePast(card, armUndo = true)
+        }
+    }
+
+    /** Risky cards (blocked / needs_review): screen navigates; we just advance past the head.
+     *  Not added to resolvedKeys, so it returns on the next refresh if still pending. */
+    fun openCurrent() {
+        val c = content() ?: return
+        val card = c.current ?: return
+        _state.value = c.copy(cards = c.cards.drop(1), resolved = c.resolved + 1, undo = null, focusedDecision = null)
+        maybeLoadDecision(content()?.current)
+    }
+
+    /** Send the current card to the back of the queue (reorder, never dismiss). */
+    fun defer() {
+        val c = content() ?: return
+        val card = c.current ?: return
+        _state.value = c.copy(cards = c.cards.drop(1) + card, undo = null, focusedDecision = null)
+        maybeLoadDecision(content()?.current)
+    }
+
+    /** Undo the last inline approve/decision: re-insert the card at the head. */
+    fun undo() {
+        val c = content() ?: return
+        val card = c.undo ?: return
+        resolvedKeys.remove(card.key)
+        _state.value = c.copy(cards = listOf(card) + c.cards, resolved = (c.resolved - 1).coerceAtLeast(0), undo = null, focusedDecision = null)
+        maybeLoadDecision(card)
+    }
+
+    private fun advancePast(card: QueueCard, armUndo: Boolean) {
+        val c = content() ?: return
+        // guard: only advance if the head is still this card (no interleaving refresh moved it)
+        if (c.current?.key != card.key) { _state.value = c.copy(inFlight = false); return }
+        val remaining = c.cards.drop(1)
+        _state.value = c.copy(
+            cards = remaining, resolved = c.resolved + 1,
+            undo = if (armUndo) card else null, inFlight = false, focusedDecision = null,
+        )
+        maybeLoadDecision(remaining.firstOrNull())
+    }
+
     private fun maybeLoadDecision(card: QueueCard?) { /* Task 5 */ }
 }
