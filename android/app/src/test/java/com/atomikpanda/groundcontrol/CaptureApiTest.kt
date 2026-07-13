@@ -37,6 +37,6 @@ class CaptureApiTest {
         assertEquals("t1", thread.id)
         assertTrue(url!!.endsWith("/capture"))
         assertEquals("Bearer secret", auth)
-        assertTrue(body!!.contains("a queue tab"))
+        assertTrue(body!!.contains("\"idea\":\"a queue tab\""))
     }
 }

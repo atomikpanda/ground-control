@@ -75,7 +75,7 @@ class NewThreadViewModel(
             runCatching {
                 when (s.kind) {
                     CaptureKind.QUICK_NOTE -> repo.createThread(conn, s.text.trim(), subject)
-                    CaptureKind.BRAINSTORM_SPEC -> repo.captureBrainstorm(conn, s.text.trim(), subject)
+                    CaptureKind.BRAINSTORM_SPEC -> repo.captureBrainstorm(conn, s.text.trim(), subject, java.util.UUID.randomUUID().toString())
                 }
             }
                 .onSuccess { thread ->

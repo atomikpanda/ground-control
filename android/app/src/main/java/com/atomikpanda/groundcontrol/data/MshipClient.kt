@@ -188,8 +188,8 @@ class SpecApi(private val client: HttpClient) {
     suspend fun createThread(conn: WorkspaceConnection, text: String, subject: String?): Thread =
         client.post("${conn.baseUrl}/threads") { auth(conn); jsonBody(NewThreadBody(text, subject)) }.body()
 
-    suspend fun captureBrainstorm(conn: WorkspaceConnection, idea: String, title: String? = null): Thread =
-        client.post("${conn.baseUrl}/capture") { auth(conn); jsonBody(CaptureBody(idea, title)) }.body()
+    suspend fun captureBrainstorm(conn: WorkspaceConnection, idea: String, title: String? = null, idempotencyKey: String? = null): Thread =
+        client.post("${conn.baseUrl}/capture") { auth(conn); jsonBody(CaptureBody(idea, title, idempotencyKey)) }.body()
 
     suspend fun postMessage(conn: WorkspaceConnection, id: String, text: String): Thread =
         client.post("${conn.baseUrl}/threads/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.body()
