@@ -182,6 +182,40 @@ class QueueViewModelTest {
         assertEquals(listOf("X", "Y"), c.focusedDecision!!.decision.options)
     }
 
+    // A decision living in a LATER thread id is still found — loadDecision iterates all threads,
+    // not just the first (t0 has no structured decision; t1 does).
+    @Test fun focused_decision_is_found_in_a_later_thread() = runTest {
+        val engine = MockEngine { req ->
+            when {
+                req.url.encodedPath.endsWith("/items") -> respond(
+                    """[{"id":"wi1","kind":"feature","title":"Q","phase":"in_flight","thread_ids":["t0","t1"],"attention":{"needs_decision":true}}]""",
+                    HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t0") -> respond(
+                    """{"id":"t0","subject":"Q","messages":[{"id":"m0","role":"agent","text":"just a note","kind":"note"}]}""",
+                    HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1") -> respond(
+                    """{"id":"t1","subject":"Q","messages":[
+                       {"id":"m1","role":"agent","text":"Pick one","kind":"decision","decision":{"options":["X","Y"],"recommended":0}}]}""",
+                    HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = QueueViewModel(QueueRepository(SpecApi(HttpClient(engine) { mshipDefaults() })), { one }, this)
+        vm.refresh()?.join()
+        // Same deterministic real-time pump as the single-thread case (GC MockEngine fire-and-forget
+        // flake: the off-clock Ktor call races advanceUntilIdle alone).
+        var loaded = (vm.state.value as? QueueUiState.Content)?.focusedDecision
+        var tries = 0
+        while (loaded == null && tries < 300) {
+            advanceUntilIdle()
+            loaded = (vm.state.value as? QueueUiState.Content)?.focusedDecision
+            if (loaded == null) { Thread.sleep(10); tries++ }
+        }
+        val c = vm.state.value as QueueUiState.Content
+        assertEquals("Pick one", c.focusedDecision!!.text)          // found in the second thread
+        assertEquals(listOf("X", "Y"), c.focusedDecision!!.decision.options)
+    }
+
     // C1: a FAILED approve must not silently hide the card — it stays put and surfaces actionError.
     @Test fun approve_failure_keeps_card_and_sets_action_error() = runTest {
         val engine = MockEngine { req ->

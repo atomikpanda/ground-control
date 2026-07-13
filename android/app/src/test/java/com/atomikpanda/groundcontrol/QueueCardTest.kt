@@ -10,6 +10,7 @@ import com.atomikpanda.groundcontrol.ui.queue.QueueTier
 import com.atomikpanda.groundcontrol.ui.queue.cardsFrom
 import com.atomikpanda.groundcontrol.ui.queue.sortQueue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class QueueCardTest {
@@ -38,6 +39,17 @@ class QueueCardTest {
         assertEquals("ws-a", approval.workspaceName)
         assertEquals("s1", approval.specId)
         assertEquals("https://gh/pr/1", review.prUrl)
+    }
+
+    @Test fun review_pr_url_only_accepts_web_schemes() {
+        val web = item("web", Attention(needsReview = true))
+            .copy(externalLinks = listOf(ExternalLink(provider = "github", url = "https://gh/pr/1")))
+        val nonWeb = item("intent", Attention(needsReview = true))
+            .copy(externalLinks = listOf(ExternalLink(provider = "github", url = "intent://x")))
+        val webCard = cardsFrom(conn, listOf(web)).first { it.kind == QueueKind.NEEDS_REVIEW }
+        val nonWebCard = cardsFrom(conn, listOf(nonWeb)).first { it.kind == QueueKind.NEEDS_REVIEW }
+        assertEquals("https://gh/pr/1", webCard.prUrl)   // a normal web link is kept
+        assertNull(nonWebCard.prUrl)                     // a non-web scheme is dropped (never opened)
     }
 
     @Test fun tiers_rank_blocked_and_decision_above_approval_above_review() {

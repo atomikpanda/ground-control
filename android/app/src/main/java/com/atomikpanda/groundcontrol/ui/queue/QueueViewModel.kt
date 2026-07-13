@@ -70,6 +70,7 @@ class QueueViewModel(
                 val head = prev.current
                 val merged = mergeKeepingHead(head, fresh)
                 _state.value = prev.copy(cards = merged, errors = feed.errors)
+                maybeLoadDecision(merged.firstOrNull(), silent = true)
             }
         }
     }
@@ -163,15 +164,15 @@ class QueueViewModel(
      *  Distinguishes "still loading" (`decisionLoaded = false`) from "loaded, no structured
      *  decision" (`decisionLoaded = true, focusedDecision = null`) so the UI can show a spinner
      *  vs. a fallback. Applies the result only if that card is still the head (no stale overwrite). */
-    private fun maybeLoadDecision(card: QueueCard?) {
+    private fun maybeLoadDecision(card: QueueCard?, silent: Boolean = false) {
         val c = content() ?: return
-        if (card?.kind != QueueKind.NEEDS_DECISION || card.threadId == null) {
+        if (card?.kind != QueueKind.NEEDS_DECISION || card.threadIds.isEmpty()) {
             _state.value = c.copy(focusedDecision = null, decisionLoaded = true)
             return
         }
-        _state.value = c.copy(focusedDecision = null, decisionLoaded = false)
+        if (!silent) _state.value = c.copy(focusedDecision = null, decisionLoaded = false)
         scope().launch {
-            val prompt = runCatching { repo.loadDecision(conn(card), card.threadId) }.getOrNull()
+            val prompt = runCatching { repo.loadDecision(conn(card), card.threadIds) }.getOrNull()
             val cc = content() ?: return@launch
             if (cc.current?.key == card.key) _state.value = cc.copy(focusedDecision = prompt, decisionLoaded = true)
         }

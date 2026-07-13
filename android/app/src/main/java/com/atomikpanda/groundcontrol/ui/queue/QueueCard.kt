@@ -26,7 +26,7 @@ data class QueueCard(
     val kind: QueueKind,
     val title: String,
     val specId: String? = null,     // NEEDS_APPROVAL: the spec to approve
-    val threadId: String? = null,   // NEEDS_DECISION: the thread carrying the decision
+    val threadIds: List<String> = emptyList(), // NEEDS_DECISION: threads that may carry the decision
     val prUrl: String? = null,      // NEEDS_REVIEW: the PR to open (github external link)
     val blockedTasks: Int = 0,      // BLOCKED: how many tasks are blocked
     val waitingSince: String = "",  // updatedAt proxy; ascending == oldest-waiting first
@@ -50,16 +50,19 @@ fun cardsFrom(conn: WorkspaceConnection, items: List<WorkItemSummary>): List<Que
                     blockedTasks = wi.attention.blockedTasks, waitingSince = since))
             if (wi.attention.needsDecision) add(
                 QueueCard(conn.id, ws, wi.id, QueueKind.NEEDS_DECISION, wi.title,
-                    threadId = wi.threadIds.firstOrNull(), waitingSince = since))
+                    threadIds = wi.threadIds, waitingSince = since))
             if (wi.attention.needsApproval) add(
                 QueueCard(conn.id, ws, wi.id, QueueKind.NEEDS_APPROVAL, wi.title,
                     specId = wi.specId, waitingSince = since))
             if (wi.attention.needsReview) add(
                 QueueCard(conn.id, ws, wi.id, QueueKind.NEEDS_REVIEW, wi.title,
-                    prUrl = wi.externalLinks.firstOrNull { it.provider == "github" }?.url,
+                    prUrl = wi.externalLinks.firstOrNull { it.provider == "github" && it.url.isWebUrl() }?.url,
                     waitingSince = since))
         }
     }
+
+/** Only web URLs are safe to hand to an external browser open — never intent:/file:/etc. */
+private fun String.isWebUrl(): Boolean = startsWith("https://") || startsWith("http://")
 
 /** The latest message carrying a decision is the current prompt (attention gates existence). */
 fun pendingDecision(thread: Thread): DecisionPrompt? =

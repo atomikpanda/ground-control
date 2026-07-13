@@ -49,7 +49,12 @@ class QueueRepository(private val api: SpecApi) {
     suspend fun answerDecision(conn: WorkspaceConnection, itemId: String, text: String) =
         api.postItemMessage(conn, itemId, text)
 
-    /** Load the pending decision for a focused decision card. Null if none. */
-    suspend fun loadDecision(conn: WorkspaceConnection, threadId: String): DecisionPrompt? =
-        pendingDecision(api.getThread(conn, threadId))
+    /** Load the first pending decision across the card's threads. Null if none. */
+    suspend fun loadDecision(conn: WorkspaceConnection, threadIds: List<String>): DecisionPrompt? {
+        for (tid in threadIds) {
+            val p = runCatching { pendingDecision(api.getThread(conn, tid)) }.getOrNull()
+            if (p != null) return p
+        }
+        return null
+    }
 }
