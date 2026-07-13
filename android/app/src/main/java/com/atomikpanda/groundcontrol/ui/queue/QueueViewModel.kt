@@ -139,5 +139,17 @@ class QueueViewModel(
         maybeLoadDecision(remaining.firstOrNull())
     }
 
-    private fun maybeLoadDecision(card: QueueCard?) { /* Task 5 */ }
+    /** When the head is a decision card, fetch its thread's pending decision into state.
+     *  Applies only if that card is still the head when the fetch returns (no stale overwrite). */
+    private fun maybeLoadDecision(card: QueueCard?) {
+        if (card?.kind != QueueKind.NEEDS_DECISION || card.threadId == null) {
+            content()?.let { if (it.focusedDecision != null) _state.value = it.copy(focusedDecision = null) }
+            return
+        }
+        scope().launch {
+            val prompt = runCatching { repo.loadDecision(conn(card), card.threadId) }.getOrNull()
+            val c = content() ?: return@launch
+            if (c.current?.key == card.key) _state.value = c.copy(focusedDecision = prompt)
+        }
+    }
 }
