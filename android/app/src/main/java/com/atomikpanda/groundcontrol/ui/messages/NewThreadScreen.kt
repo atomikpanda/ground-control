@@ -44,6 +44,7 @@ fun NewThreadScreen(
     showSubject: Boolean = true,
     bodyLabel: String = "Message",
     submitLabel: String = "Create",
+    showKindPicker: Boolean = false,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
@@ -105,6 +106,21 @@ fun NewThreadScreen(
                 )
             }
 
+            if (showKindPicker) {
+                WorkspacePickerDropdown(
+                    label = when (state.kind) {
+                        CaptureKind.QUICK_NOTE -> "Quick note"
+                        CaptureKind.BRAINSTORM_SPEC -> "Brainstorm into a spec"
+                    },
+                    options = listOf(
+                        CaptureKind.QUICK_NOTE.name to "Quick note",
+                        CaptureKind.BRAINSTORM_SPEC.name to "Brainstorm into a spec",
+                    ),
+                    onPick = { vm.onSelectKind(CaptureKind.valueOf(it)) },
+                    prefix = "",
+                )
+            }
+
             if (showSubject) {
                 OutlinedTextField(
                     value = state.subject,
@@ -153,11 +169,12 @@ private fun WorkspacePickerDropdown(
     label: String,
     options: List<Pair<String, String>>,
     onPick: (String) -> Unit,
+    prefix: String = "Workspace",
 ) {
     var open by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
-            Text("Workspace: $label")
+            Text(if (prefix.isBlank()) label else "$prefix: $label")
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEach { (id, name) ->

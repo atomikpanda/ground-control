@@ -380,6 +380,7 @@ fun GroundControlApp(
                     showSubject = false,
                     bodyLabel = "What's up?",
                     submitLabel = "Send",
+                    showKindPicker = true,
                     onCreated = { connId, id ->
                         nav.navigate("thread/$connId/$id") {
                             popUpTo("capture") { inclusive = true }

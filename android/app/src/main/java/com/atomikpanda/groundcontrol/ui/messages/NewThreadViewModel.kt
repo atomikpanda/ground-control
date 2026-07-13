@@ -17,11 +17,14 @@ sealed interface NewThreadMessage {
     data class Error(val text: String) : NewThreadMessage
 }
 
+enum class CaptureKind { QUICK_NOTE, BRAINSTORM_SPEC }
+
 data class NewThreadUiState(
     val connections: List<WorkspaceConnection> = emptyList(),
     val selectedConnectionId: String? = null,
     val subject: String = "",
     val text: String = "",
+    val kind: CaptureKind = CaptureKind.QUICK_NOTE,
     val inFlight: Boolean = false,
     val isLoading: Boolean = true,
     val message: NewThreadMessage? = null,
@@ -59,6 +62,7 @@ class NewThreadViewModel(
     fun onSubjectChange(s: String) { _state.value = _state.value.copy(subject = s) }
     fun onTextChange(t: String) { _state.value = _state.value.copy(text = t) }
     fun onSelectConnection(id: String) { _state.value = _state.value.copy(selectedConnectionId = id) }
+    fun onSelectKind(k: CaptureKind) { _state.value = _state.value.copy(kind = k) }
     fun dismissMessage() { _state.value = _state.value.copy(message = null) }
 
     fun create(): Job? {
@@ -68,7 +72,12 @@ class NewThreadViewModel(
         _state.value = s.copy(inFlight = true, message = null)
         val subject = s.subject.trim().ifBlank { null }
         return scope().launch {
-            runCatching { repo.createThread(conn, s.text.trim(), subject) }
+            runCatching {
+                when (s.kind) {
+                    CaptureKind.QUICK_NOTE -> repo.createThread(conn, s.text.trim(), subject)
+                    CaptureKind.BRAINSTORM_SPEC -> repo.captureBrainstorm(conn, s.text.trim(), subject, java.util.UUID.randomUUID().toString())
+                }
+            }
                 .onSuccess { thread ->
                     _state.value = _state.value.copy(
                         inFlight = false,

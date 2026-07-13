@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
+import com.atomikpanda.groundcontrol.ui.messages.CaptureKind
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadViewModel
 import com.atomikpanda.groundcontrol.ui.messages.NewThreadMessage
 import com.atomikpanda.groundcontrol.ui.messages.canCreate
@@ -179,5 +180,33 @@ class NewThreadViewModelTest {
         vm.onSelectConnection("1")
         assertTrue(canCreate(vm.state.value.copy(text = "hi")))
         assertFalse(canCreate(vm.state.value.copy(text = "  ")))
+    }
+
+    @Test fun quick_note_posts_to_threads() = runTest {
+        var path: String? = null
+        val vm = vm(
+            this, listOf(conn("1")),
+            {
+                path = it.url.encodedPath
+                respond("""{"id":"t1","subject":"s","messages":[]}""", HttpStatusCode.OK, jsonHdr)
+            },
+        )
+        vm.load(); vm.onSelectKind(CaptureKind.QUICK_NOTE); vm.onTextChange("hi")
+        vm.create()?.join()
+        assertTrue(path!!.endsWith("/threads"))
+    }
+
+    @Test fun brainstorm_spec_posts_to_capture() = runTest {
+        var path: String? = null
+        val vm = vm(
+            this, listOf(conn("1")),
+            {
+                path = it.url.encodedPath
+                respond("""{"id":"t1","subject":"s","messages":[]}""", HttpStatusCode.OK, jsonHdr)
+            },
+        )
+        vm.load(); vm.onSelectKind(CaptureKind.BRAINSTORM_SPEC); vm.onTextChange("an idea")
+        vm.create()?.join()
+        assertTrue(path!!.endsWith("/capture"))
     }
 }
