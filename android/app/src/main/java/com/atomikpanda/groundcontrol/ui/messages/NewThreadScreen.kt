@@ -117,6 +117,7 @@ fun NewThreadScreen(
                         CaptureKind.BRAINSTORM_SPEC.name to "Brainstorm into a spec",
                     ),
                     onPick = { vm.onSelectKind(CaptureKind.valueOf(it)) },
+                    prefix = "",
                 )
             }
 
@@ -168,11 +169,12 @@ private fun WorkspacePickerDropdown(
     label: String,
     options: List<Pair<String, String>>,
     onPick: (String) -> Unit,
+    prefix: String = "Workspace",
 ) {
     var open by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
-            Text("Workspace: $label")
+            Text(if (prefix.isBlank()) label else "$prefix: $label")
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEach { (id, name) ->
