@@ -8,6 +8,15 @@ data class ReviewCriterion(
     val id: String,
     val text: String,
     val verdict: String,            // "unreviewed" | "approved" | "flagged"
+    val comment: String? = null,    // MOS-217: flag-with-comment note
+)
+
+/** A prose section's verdict + optional flag note (MOS-172). Mirrors serve's
+ *  `ProseVerdict` model as surfaced in `prose_verdicts` maps. */
+@Serializable
+data class ProseVerdictDto(
+    val verdict: String,            // "unreviewed" | "approved" | "flagged"
+    val comment: String? = null,
 )
 
 @Serializable
@@ -29,6 +38,8 @@ data class SpecRecord(
     val risks: List<String> = emptyList(),
     @SerialName("task_slug") val taskSlug: String? = null,
     val body: String = "",
+    @SerialName("prose_verdicts") val proseVerdicts: Map<String, ProseVerdictDto> = emptyMap(),
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 @Serializable
@@ -48,6 +59,7 @@ data class SpecReview(
     val status: String,
     @SerialName("acceptance_criteria") val acceptanceCriteria: List<ReviewCriterion> = emptyList(),
     @SerialName("open_questions") val openQuestions: List<ReviewQuestion> = emptyList(),
+    @SerialName("prose_verdicts") val proseVerdicts: Map<String, ProseVerdictDto> = emptyMap(),
     val summary: ReviewSummary = ReviewSummary(),
 )
 
@@ -59,7 +71,8 @@ data class DispatchResult(
     val handoff: String = "",
 )
 
-@Serializable data class VerdictBody(@SerialName("criterion_id") val criterionId: String, val verdict: String)
+@Serializable data class VerdictBody(@SerialName("criterion_id") val criterionId: String, val verdict: String, val comment: String? = null)
+@Serializable data class ProseVerdictBody(@SerialName("section_id") val sectionId: String, val verdict: String, val comment: String? = null)
 @Serializable data class AnswerBody(val answer: String)
 @Serializable data class QuestionBody(val text: String)
 @Serializable data class ApproveBody(@SerialName("bypass_gate") val bypassGate: Boolean = false)

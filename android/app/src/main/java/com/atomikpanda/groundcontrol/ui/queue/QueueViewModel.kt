@@ -3,10 +3,11 @@ package com.atomikpanda.groundcontrol.ui.queue
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.atomikpanda.groundcontrol.data.QueueFeed
+import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,22 +19,36 @@ sealed interface QueueUiState {
     data object Loading : QueueUiState
     data object EmptyConfig : QueueUiState
     data class Content(
-        val cards: List<QueueCard>,               // live queue; head = current card
+        val cards: List<QueueV2Card>,             // live queue; head = current card
         val resolved: Int,                        // acted-count, for the position indicator
-        val focusedDecision: DecisionPrompt?,     // loaded lazily when the head is a decision
         val errors: List<WorkspaceError>,
-        val undo: QueueCard?,                      // last acted card, re-insertable at head
+        val undo: QueueV2Card?,                    // last acted card, re-insertable at head
         val inFlight: Boolean,
-        val decisionLoaded: Boolean = true,   // has the focused decision finished loading?
-        val actionError: String? = null,      // last inline-action failure (transient), shown as a snackbar
+        val actionError: String? = null,          // last inline-action failure (transient), shown as a snackbar
     ) : QueueUiState {
-        val current: QueueCard? get() = cards.firstOrNull()
+        val current: QueueV2Card? get() = cards.firstOrNull()
         val total: Int get() = resolved + cards.size
         val position: Int get() = if (cards.isEmpty()) total else resolved + 1
         val caughtUp: Boolean get() = cards.isEmpty()
     }
 }
 
+/**
+ * Queue v2 head-stable card stack. PR2 wired the sourcing (specs+threads → cards)
+ * and the generic stack machinery (head-stable refresh / defer-to-back / undo /
+ * position). PR3 (this file) lands the full v2 transitions on top of that machinery:
+ *
+ *  - [approveAllCurrent] — approve every item on the head Prose/Criteria card, and
+ *    auto-approve the spec only when this was its LAST queued chunk; otherwise advance
+ *    past the head and leave the siblings in the queue (any 409 on approve resolves the
+ *    head — the spec is likely already approved server-side).
+ *  - [rejectCurrent] — flag the head card's item(s) + request changes on the spec;
+ *    on success every one of that spec's cards leaves the queue.
+ *  - [setItemVerdict] / [answerQuestion] — per-item edits inside a multi-item card,
+ *    applied in place (no advance).
+ *  - [answerDecision] — post the chosen option to the thread and advance (from PR2).
+ *  - [skip] — send the head to the back (the PR2 `defer`).
+ */
 class QueueViewModel(
     private val repo: QueueRepository,
     private val connectionsProvider: () -> List<WorkspaceConnection>,
@@ -48,7 +63,15 @@ class QueueViewModel(
 
     private fun scope(): CoroutineScope = testScope ?: viewModelScope
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
-    private fun conn(card: QueueCard): WorkspaceConnection = connById.getValue(card.connectionId)
+    private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
+
+    /** The spec a chunk card belongs to (null for a decision card). */
+    private fun QueueV2Card.specId(): String? = when (this) {
+        is ProseCard -> specId
+        is CriteriaCard -> specId
+        is QuestionsCard -> specId
+        is DecisionCard -> null
+    }
 
     fun refresh(): Job? {
         val connections = connectionsProvider()
@@ -61,45 +84,175 @@ class QueueViewModel(
             val fresh = feed.cards.filterNot { it.key in resolvedKeys }
             if (prev == null) {
                 _state.value = QueueUiState.Content(
-                    cards = fresh, resolved = 0, focusedDecision = null,
+                    cards = fresh, resolved = 0,
                     errors = feed.errors, undo = null, inFlight = false,
                 )
-                maybeLoadDecision(fresh.firstOrNull())
             } else {
                 // live refresh: keep the current head stable, merge the rest by urgency
                 val head = prev.current
                 val merged = mergeKeepingHead(head, fresh)
                 _state.value = prev.copy(cards = merged, errors = feed.errors)
-                maybeLoadDecision(merged.firstOrNull(), silent = true)
             }
         }
     }
 
     /** Keep [head] at position 0 (don't yank focus); urgency-sort the active rest of [fresh] behind
      *  it, and keep any deferred cards pinned to the back in their original defer order. */
-    private fun mergeKeepingHead(head: QueueCard?, fresh: List<QueueCard>): List<QueueCard> {
+    private fun mergeKeepingHead(head: QueueV2Card?, fresh: List<QueueV2Card>): List<QueueV2Card> {
         val rest = fresh.filter { it.key != head?.key }
         val (deferred, active) = rest.partition { it.key in deferredKeys }
         val order = deferredKeys.toList()
         return listOfNotNull(head) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
     }
 
-    /** Approve the current spec card, then advance. On success arms undo; on failure the card
-     *  stays put and [Content.actionError] surfaces the failure (no silent dismiss). */
-    fun approveCurrent(): Job? {
+    // --- v2 transitions -----------------------------------------------------
+
+    /**
+     * Approve every item on the head Prose/Criteria card. CriteriaCard →
+     * `setCriterionVerdict(approved)` per item; ProseCard → `setProseVerdict(approved)`.
+     * Auto-approve the spec only when this card was its LAST queued chunk (no other
+     * chunk-card of the same (connectionId, specId) remains) — otherwise a still-queued
+     * sibling (e.g. one the operator Skipped) would be swept away unreviewed, since serve
+     * treats an unreviewed prose section as non-blocking:
+     *  - last chunk + approve success ⇒ the spec is fully approved: every one of its cards
+     *    leaves the queue (undo is NOT armed — the approve can't be reversed server-side).
+     *  - not the last chunk ⇒ don't approve; advance past this card, siblings stay in the
+     *    queue (the spec auto-approves later when its last chunk is approved).
+     *  - any 409 on approve ⇒ ambiguous (already approved elsewhere, or genuinely blocked):
+     *    [reconcileApproveConflict] reloads and only drops the card when the spec is truly gone.
+     *  - any other failure ⇒ the card stays put and [Content.actionError] surfaces it.
+     * Approve-all does not apply to Questions (answer, not approve) or Decision cards.
+     */
+    fun approveAllCurrent(): Job? {
         val c = content() ?: return null
+        if (c.inFlight) return null                 // re-entrancy guard: ignore while an action is in flight
         val card = c.current ?: return null
-        if (card.kind != QueueKind.NEEDS_APPROVAL || card.specId == null) return null
+        if (card !is ProseCard && card !is CriteriaCard) return null
+        val specId = card.specId() ?: return null
+        val connectionId = card.connectionId
+        // Only auto-approve when this is the spec's LAST un-acted chunk. If sibling chunk-cards
+        // of this spec are still queued, approving now could sweep them away unreviewed (serve
+        // treats an unreviewed prose section as non-blocking, so a Skipped card would resolve
+        // silently). In that case just advance past this card; the spec auto-approves later when
+        // its last chunk is approved.
+        val isLastChunk = c.cards.none { it.key != card.key && it.connectionId == connectionId && it.specId() == specId }
         _state.value = c.copy(inFlight = true, actionError = null)
         return scope().launch {
-            runCatching { repo.approve(conn(card), card.specId) }
-                .onSuccess {
+            val conn = conn(card)
+            runCatching {
+                when (card) {
+                    is CriteriaCard -> card.items.forEach { repo.setCriterionVerdict(conn, specId, it.id, "approved") }
+                    is ProseCard -> repo.setProseVerdict(conn, specId, card.sectionId, "approved")
+                    else -> {}
+                }
+                if (isLastChunk) repo.approve(conn, specId)   // auto-approve only when nothing else of this spec remains
+            }.onSuccess {
+                if (isLastChunk) {
+                    // whole spec approved — all its cards leave the queue. Do NOT arm undo: the
+                    // approve can't be reversed server-side (a restored card re-acts into a 409).
+                    resolveSpec(connectionId, specId)
+                    removeSpecCardsAdvancing(specId, card, armUndo = false)
+                } else {
+                    // this card's items ARE approved; its siblings still await review — advance past it only
                     resolvedKeys.add(card.key); deferredKeys.remove(card.key)
                     advancePast(card, armUndo = true)
                 }
+            }.onFailure { t ->
+                if (t is ApiConflictException) {
+                    // A 409 on the approve is ambiguous — already approved by a concurrent device, or
+                    // genuinely blocked by a server-side blocker we have no card for. Reconcile against
+                    // a fresh load rather than blindly resolving a still-`needs_review` spec.
+                    reconcileApproveConflict(card, connectionId, specId)
+                } else {
+                    val c2 = content() ?: return@launch
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+                }
+            }
+        }
+    }
+
+    /**
+     * Flag the head card's item(s) with [comment] and request changes on its spec.
+     * On success every one of that spec's cards leaves the queue (its chunks are no
+     * longer under review). On failure the card stays put and surfaces [actionError].
+     */
+    fun rejectCurrent(comment: String): Job? {
+        val c = content() ?: return null
+        if (c.inFlight) return null                 // re-entrancy guard: ignore while an action is in flight
+        val card = c.current ?: return null
+        val specId = card.specId() ?: return null
+        val connectionId = card.connectionId
+        _state.value = c.copy(inFlight = true, actionError = null)
+        return scope().launch {
+            val conn = conn(card)
+            runCatching {
+                when (card) {
+                    is CriteriaCard -> card.items.forEach { repo.setCriterionVerdict(conn, specId, it.id, "flagged", comment) }
+                    is ProseCard -> repo.setProseVerdict(conn, specId, card.sectionId, "flagged", comment)
+                    else -> {}
+                }
+                repo.requestChanges(conn, specId, comment)
+            }.onSuccess {
+                resolveSpec(connectionId, specId)
+                removeSpecCardsAdvancing(specId, card, armUndo = false)
+            }.onFailure {
+                val c2 = content() ?: return@launch
+                _state.value = c2.copy(inFlight = false, actionError = "Couldn't request changes — try again.")
+            }
+        }
+    }
+
+    /** Per-item approve/flag inside a multi-item CriteriaCard: update the card in place. When the
+     *  write leaves EVERY criterion approved, the card is fully acted, so it completes like approve-all
+     *  ([finalizeInPlaceCard]) rather than lingering forever — otherwise it just updates in place, no
+     *  advance. Scoped to (connectionId, specId) — spec ids are workspace-local, so the same id can
+     *  appear in two workspaces' cards. */
+    fun setItemVerdict(connectionId: String, specId: String, itemId: String, verdict: String, comment: String? = null): Job? {
+        val c = content() ?: return null
+        val conn = connById[connectionId] ?: return null
+        c.cards.filterIsInstance<CriteriaCard>().firstOrNull { it.connectionId == connectionId && it.specId == specId } ?: return null
+        _state.value = c.copy(inFlight = true, actionError = null)
+        return scope().launch {
+            runCatching { repo.setCriterionVerdict(conn, specId, itemId, verdict, comment) }
+                .onSuccess { rev ->
+                    val allApproved = rev.acceptanceCriteria.isNotEmpty() && rev.acceptanceCriteria.all { it.verdict == "approved" }
+                    val card = if (allApproved)
+                        content()?.cards?.firstOrNull { it is CriteriaCard && it.connectionId == connectionId && it.specId == specId }
+                    else null
+                    if (card != null) finalizeInPlaceCard(card, connectionId, specId)   // every criterion approved → complete
+                    else updateCriteriaCard(connectionId, specId, rev)                  // mixed verdicts → stay in place
+                }
                 .onFailure {
                     val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — workspace unreachable. Try again.")
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't update — try again.")
+                }
+        }
+    }
+
+    /** Per-item answer inside a QuestionsCard. While unanswered questions remain, the card updates in
+     *  place (showing only the still-unanswered ones). When the LAST question is answered the card is
+     *  done, so it completes like a fully-acted chunk ([finalizeInPlaceCard]) instead of lingering with
+     *  answered items (which would also starve the spec's last-chunk auto-approve). Scoped to
+     *  (connectionId, specId) — spec ids are workspace-local, not globally unique. */
+    fun answerQuestion(connectionId: String, specId: String, questionId: String, answer: String): Job? {
+        val c = content() ?: return null
+        val conn = connById[connectionId] ?: return null
+        c.cards.filterIsInstance<QuestionsCard>().firstOrNull { it.connectionId == connectionId && it.specId == specId } ?: return null
+        _state.value = c.copy(inFlight = true, actionError = null)
+        return scope().launch {
+            runCatching { repo.answerQuestion(conn, specId, questionId, answer) }
+                .onSuccess { rev ->
+                    if (rev.openQuestions.any { it.answer.isNullOrBlank() }) {
+                        updateQuestionsCard(connectionId, specId, rev)             // unanswered remain → rebuild with them
+                    } else {
+                        val card = content()?.cards?.firstOrNull { it is QuestionsCard && it.connectionId == connectionId && it.specId == specId }
+                        if (card != null) finalizeInPlaceCard(card, connectionId, specId)   // all answered → complete
+                        else { val c2 = content() ?: return@launch; _state.value = c2.copy(inFlight = false) }
+                    }
+                }
+                .onFailure {
+                    val c2 = content() ?: return@launch
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't answer — try again.")
                 }
         }
     }
@@ -108,30 +261,23 @@ class QueueViewModel(
      *  undo; on failure the card stays put and [Content.actionError] surfaces the failure. */
     fun answerDecision(optionText: String): Job? {
         val c = content() ?: return null
-        val card = c.current ?: return null
-        if (card.kind != QueueKind.NEEDS_DECISION) return null
+        val card = c.current as? DecisionCard ?: return null
         _state.value = c.copy(inFlight = true, actionError = null)
         return scope().launch {
-            runCatching { repo.answerDecision(conn(card), card.workItemId, optionText) }
+            runCatching { repo.answerDecision(conn(card), card.threadId, optionText) }
                 .onSuccess {
                     resolvedKeys.add(card.key); deferredKeys.remove(card.key)
                     advancePast(card, armUndo = true)
                 }
                 .onFailure {
                     val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't send — workspace unreachable. Try again.")
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't send — try again.")
                 }
         }
     }
 
-    /** Risky cards (blocked / needs_review): screen navigates; we just advance past the head.
-     *  Not added to resolvedKeys, so it returns on the next refresh if still pending. */
-    fun openCurrent() {
-        val c = content() ?: return
-        c.current ?: return
-        _state.value = c.copy(cards = c.cards.drop(1), resolved = c.resolved + 1, undo = null, actionError = null)
-        maybeLoadDecision(content()?.current)
-    }
+    /** Send the current card to the back of the queue (reorder, never dismiss). */
+    fun skip() = defer()
 
     /** Send the current card to the back of the queue (reorder, never dismiss). */
     fun defer() {
@@ -139,7 +285,6 @@ class QueueViewModel(
         val card = c.current ?: return
         deferredKeys.add(card.key)
         _state.value = c.copy(cards = c.cards.drop(1) + card, undo = null, actionError = null)
-        maybeLoadDecision(content()?.current)
     }
 
     /** Undo the last inline approve/decision: re-insert the card at the head. */
@@ -148,33 +293,139 @@ class QueueViewModel(
         val card = c.undo ?: return
         resolvedKeys.remove(card.key)
         _state.value = c.copy(cards = listOf(card) + c.cards, resolved = (c.resolved - 1).coerceAtLeast(0), undo = null, actionError = null)
-        maybeLoadDecision(card)
     }
 
-    private fun advancePast(card: QueueCard, armUndo: Boolean) {
+    // --- helpers ------------------------------------------------------------
+
+    /** Mark every currently-queued card of ([connectionId], [specId]) resolved (so it stays gone across
+     *  refreshes). Scoped to the connection: spec ids are workspace-local, so acting on one workspace's
+     *  spec must not resolve another workspace's same-id cards. */
+    private fun resolveSpec(connectionId: String, specId: String) {
+        val keys = content()?.cards?.filter { it.connectionId == connectionId && it.specId() == specId }?.map { it.key }.orEmpty()
+        resolvedKeys.addAll(keys); deferredKeys.removeAll(keys.toSet())
+    }
+
+    /** Drop every card of the acting [head]'s spec from the live queue in one step (advancing past a
+     *  resolved spec). Scoped to (head.connectionId, [specId]) so a same-id spec in another workspace is
+     *  untouched. Guarded on the head still being [head] so an interleaving refresh can't advance the
+     *  wrong card. */
+    private fun removeSpecCardsAdvancing(specId: String, head: QueueV2Card, armUndo: Boolean) {
         val c = content() ?: return
-        // guard: only advance if the head is still this card (no interleaving refresh moved it)
+        if (c.current?.key != head.key) { _state.value = c.copy(inFlight = false); return }
+        val remaining = c.cards.filterNot { it.connectionId == head.connectionId && it.specId() == specId }
+        val removed = c.cards.size - remaining.size
+        _state.value = c.copy(
+            cards = remaining,
+            resolved = c.resolved + removed,
+            undo = if (armUndo) head else null,
+            inFlight = false,
+            actionError = null,
+        )
+    }
+
+    /** Advance past the head [card] (drop it), arming undo when asked. Guarded on the head not
+     *  having moved under an interleaving refresh. */
+    private fun advancePast(card: QueueV2Card, armUndo: Boolean) {
+        val c = content() ?: return
         if (c.current?.key != card.key) { _state.value = c.copy(inFlight = false); return }
         val remaining = c.cards.drop(1)
         _state.value = c.copy(cards = remaining, resolved = c.resolved + 1, undo = if (armUndo) card else null, inFlight = false, actionError = null)
-        maybeLoadDecision(remaining.firstOrNull())
     }
 
-    /** When the head is a decision card, fetch its thread's pending decision into state.
-     *  Distinguishes "still loading" (`decisionLoaded = false`) from "loaded, no structured
-     *  decision" (`decisionLoaded = true, focusedDecision = null`) so the UI can show a spinner
-     *  vs. a fallback. Applies the result only if that card is still the head (no stale overwrite). */
-    private fun maybeLoadDecision(card: QueueCard?, silent: Boolean = false) {
+    /** Rebuild the queued CriteriaCard for ([connectionId], [specId]) from a write's returned review.
+     *  Scoped to the connection so a same-id spec in another workspace isn't rewritten. */
+    private fun updateCriteriaCard(connectionId: String, specId: String, rev: SpecReview) {
         val c = content() ?: return
-        if (card?.kind != QueueKind.NEEDS_DECISION || card.threadIds.isEmpty()) {
-            _state.value = c.copy(focusedDecision = null, decisionLoaded = true)
+        val cards = c.cards.map { card ->
+            if (card is CriteriaCard && card.connectionId == connectionId && card.specId == specId)
+                card.copy(items = rev.acceptanceCriteria.map { CriterionItem(it.id, it.text, it.verdict, it.comment) })
+            else card
+        }
+        _state.value = c.copy(cards = cards, inFlight = false, actionError = null)
+    }
+
+    /** Rebuild the queued QuestionsCard for ([connectionId], [specId]) from a write's returned review,
+     *  keeping only the still-unanswered questions (mirrors `cardsFromSpec`, which cards only unanswered
+     *  ones) — a card whose every question is answered is completed by the caller, not shown here.
+     *  Scoped to the connection so a same-id spec in another workspace isn't rewritten. */
+    private fun updateQuestionsCard(connectionId: String, specId: String, rev: SpecReview) {
+        val c = content() ?: return
+        val unanswered = rev.openQuestions.filter { it.answer.isNullOrBlank() }
+        val cards = c.cards.map { card ->
+            if (card is QuestionsCard && card.connectionId == connectionId && card.specId == specId)
+                card.copy(items = unanswered.map { QuestionItem(it.id, it.text, it.answer) })
+            else card
+        }
+        _state.value = c.copy(cards = cards, inFlight = false, actionError = null)
+    }
+
+    /**
+     * A multi-item card ([card], of [connectionId]/[specId]) became fully resolved in place — every
+     * criterion approved, or every question answered. Finalize it exactly like approve-all: if it was
+     * the spec's LAST queued chunk, approve the whole spec and drop all its cards; otherwise resolve +
+     * remove just this card (head-agnostic — the completing card can sit behind another spec's card).
+     * A 409 on the spec approve is reconciled via [reconcileApproveConflict]. Undo is not armed: the
+     * underlying writes (verdicts / answers) can't be reversed server-side.
+     */
+    private suspend fun finalizeInPlaceCard(card: QueueV2Card, connectionId: String, specId: String) {
+        val c = content() ?: return
+        val isLastChunk = c.cards.none { it.key != card.key && it.connectionId == connectionId && it.specId() == specId }
+        if (!isLastChunk) {
+            resolvedKeys.add(card.key); deferredKeys.remove(card.key)
+            removeCard(card)
             return
         }
-        if (!silent) _state.value = c.copy(focusedDecision = null, decisionLoaded = false)
-        scope().launch {
-            val prompt = runCatching { repo.loadDecision(conn(card), card.threadIds) }.getOrNull()
-            val cc = content() ?: return@launch
-            if (cc.current?.key == card.key) _state.value = cc.copy(focusedDecision = prompt, decisionLoaded = true)
+        runCatching { repo.approve(conn(card), specId) }
+            .onSuccess {
+                resolveSpec(connectionId, specId)
+                removeSpecCards(connectionId, specId)
+            }
+            .onFailure { t ->
+                if (t is ApiConflictException) {
+                    reconcileApproveConflict(card, connectionId, specId)
+                } else {
+                    val c2 = content() ?: return
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+                }
+            }
+    }
+
+    /**
+     * A 409 from a spec /approve is ambiguous: the spec may already be approved server-side (a
+     * concurrent device) OR the approve is genuinely blocked by a server-side blocker we have no card
+     * for. Reconcile against a fresh load — if the spec is gone from the feed it's truly approved (drop
+     * the ghost); if it's still under review the approve was blocked, so keep the card and surface it
+     * rather than silently resolving a still-`needs_review` spec. A failed reload defaults to keeping
+     * the card (never lose it on a network blip).
+     */
+    private suspend fun reconcileApproveConflict(card: QueueV2Card, connectionId: String, specId: String) {
+        val feed = runCatching { repo.load(connectionsProvider()) }.getOrNull()
+        val stillUnderReview = feed?.cards?.any { it.connectionId == connectionId && it.specId() == specId } ?: true
+        if (stillUnderReview) {
+            val c2 = content() ?: return
+            _state.value = c2.copy(inFlight = false, actionError = "Approve blocked — this spec still needs review.")
+        } else {
+            resolveSpec(connectionId, specId)
+            removeSpecCards(connectionId, specId)
         }
+    }
+
+    /** Remove a specific [card] from the live queue (head-agnostic — a multi-item card can complete
+     *  while another spec's card sits ahead of it). Counts as one resolved; clears in-flight. */
+    private fun removeCard(card: QueueV2Card) {
+        val c = content() ?: return
+        if (c.cards.none { it.key == card.key }) { _state.value = c.copy(inFlight = false); return }
+        val remaining = c.cards.filterNot { it.key == card.key }
+        _state.value = c.copy(cards = remaining, resolved = c.resolved + 1, undo = null, inFlight = false, actionError = null)
+    }
+
+    /** Drop every queued card of ([connectionId], [specId]) from the live queue (the whole spec is
+     *  done). Head-agnostic sibling of [removeSpecCardsAdvancing] for the in-place-completion paths,
+     *  where the finalizing card need not be the head. */
+    private fun removeSpecCards(connectionId: String, specId: String) {
+        val c = content() ?: return
+        val remaining = c.cards.filterNot { it.connectionId == connectionId && it.specId() == specId }
+        val removed = c.cards.size - remaining.size
+        _state.value = c.copy(cards = remaining, resolved = c.resolved + removed, undo = null, inFlight = false, actionError = null)
     }
 }
