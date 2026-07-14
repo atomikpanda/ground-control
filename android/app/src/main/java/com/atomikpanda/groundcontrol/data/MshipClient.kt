@@ -12,6 +12,7 @@ import com.atomikpanda.groundcontrol.data.dto.SeenBody
 import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
 import com.atomikpanda.groundcontrol.data.dto.NewThreadBody
 import com.atomikpanda.groundcontrol.data.dto.PhaseBody
+import com.atomikpanda.groundcontrol.data.dto.ProseVerdictBody
 import com.atomikpanda.groundcontrol.data.dto.QuestionBody
 import com.atomikpanda.groundcontrol.data.dto.ReasonBody
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
@@ -104,8 +105,11 @@ class SpecApi(private val client: HttpClient) {
     suspend fun getReview(conn: WorkspaceConnection, id: String): SpecReview =
         client.get("${conn.baseUrl}/specs/$id/review") { auth(conn) }.body()
 
-    suspend fun setVerdict(conn: WorkspaceConnection, id: String, criterionId: String, verdict: String): SpecReview =
-        client.post("${conn.baseUrl}/specs/$id/verdict") { auth(conn); jsonBody(VerdictBody(criterionId, verdict)) }.body()
+    suspend fun setVerdict(conn: WorkspaceConnection, id: String, criterionId: String, verdict: String, comment: String? = null): SpecReview =
+        client.post("${conn.baseUrl}/specs/$id/verdict") { auth(conn); jsonBody(VerdictBody(criterionId, verdict, comment)) }.body()
+
+    suspend fun setProseVerdict(conn: WorkspaceConnection, id: String, sectionId: String, verdict: String, comment: String? = null): SpecReview =
+        client.post("${conn.baseUrl}/specs/$id/prose-verdict") { auth(conn); jsonBody(ProseVerdictBody(sectionId, verdict, comment)) }.body()
 
     suspend fun answerQuestion(conn: WorkspaceConnection, id: String, qid: String, answer: String): SpecReview =
         client.post("${conn.baseUrl}/specs/$id/questions/$qid/answer") { auth(conn); jsonBody(AnswerBody(answer)) }.body()

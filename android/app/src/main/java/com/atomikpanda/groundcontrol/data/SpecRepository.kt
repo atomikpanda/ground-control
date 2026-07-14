@@ -23,4 +23,8 @@ class SpecRepository(private val api: SpecApi) {
     /** Archive a spec (swipe-to-archive). Thin passthrough so the ViewModel only ever talks
      *  to the repository, matching [listAllSpecs]'s layering. */
     suspend fun archiveSpec(conn: WorkspaceConnection, id: String) = api.archiveSpec(conn, id)
+
+    /** The full spec record (body + prose_verdicts + criteria/questions) for one spec.
+     *  The Queue v2 chunk sourcing fetches this per `needs_review` spec to build its cards. */
+    suspend fun specDetail(conn: WorkspaceConnection, id: String) = api.getSpec(conn, id)
 }
