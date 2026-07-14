@@ -221,8 +221,12 @@ private fun FlingCard(
                 enabled = enabled,
                 onDragStopped = { velocity ->
                     val w = widthPx.toFloat().coerceAtLeast(1f)
-                    val past = abs(offsetX.value) > w * FLING_DISTANCE_FRACTION || abs(velocity) > FLING_VELOCITY_THRESHOLD
-                    val goingRight = offsetX.value > 0f
+                    val velocityPast = abs(velocity) > FLING_VELOCITY_THRESHOLD
+                    val past = abs(offsetX.value) > w * FLING_DISTANCE_FRACTION || velocityPast
+                    // Direction from the flick's velocity when it's a fast fling, else from the resting
+                    // offset — so a fast left flick that lifts at a small positive offset still rejects
+                    // (opens the sheet) rather than approving the card.
+                    val goingRight = if (velocityPast) velocity > 0f else offsetX.value > 0f
                     when {
                         past && goingRight && canFlingRight -> {
                             offsetX.animateTo(w * FLING_THROW_FACTOR, tween(180), initialVelocity = velocity)
