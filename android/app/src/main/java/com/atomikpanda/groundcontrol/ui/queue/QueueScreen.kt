@@ -1,6 +1,7 @@
 // app/src/main/java/com/atomikpanda/groundcontrol/ui/queue/QueueScreen.kt
 package com.atomikpanda.groundcontrol.ui.queue
 
+import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -394,15 +395,11 @@ private fun RejectSheet(onDismiss: () -> Unit, onSend: (String) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Request changes", style = MaterialTheme.typography.titleSmall)
-            OutlinedTextField(
+            // Shared multiline compose input (#282) — the flag-comment consumer (#283).
+            MultilineComposeInput(
                 value = reason,
                 onValueChange = { reason = it },
-                label = { Text("Reason") },
-                minLines = 4,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Button(
-                onClick = {
+                onSend = {
                     val toSend = reason
                     reason = ""
                     onSend(toSend)
@@ -410,9 +407,9 @@ private fun RejectSheet(onDismiss: () -> Unit, onSend: (String) -> Unit) {
                         if (!sheetState.isVisible) onDismiss()
                     }
                 },
-                enabled = reason.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Send") }
+                placeholder = "Reason for changes…",
+                sendDescription = "Send request-changes",
+            )
         }
     }
 }
