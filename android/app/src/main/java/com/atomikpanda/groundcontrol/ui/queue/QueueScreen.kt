@@ -20,7 +20,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,10 +32,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.WorkspaceError
-import com.atomikpanda.groundcontrol.ui.messages.DecisionCard
+import com.atomikpanda.groundcontrol.ui.messages.DecisionCard as DecisionPromptCard
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+// PR2 note: this is the minimal card-stack UI kept compiling against the Queue v2
+// model. The full v2 interactions — directional swipe (approve-all / reject sheet),
+// per-item Check/Flag rows, per-question answer fields — land in PR3; here each
+// card face shows its content plus the thin PR2 actions (approve a spec / answer a
+// decision) with the existing defer / undo / poll machinery intact.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QueueScreen(
@@ -79,16 +83,14 @@ fun QueueScreen(
                             if (s.errors.isNotEmpty()) { WorkspaceErrorLine(s.errors); Spacer(Modifier.height(8.dp)) }
                             Text("${s.position} of ${s.total}")
                             Spacer(Modifier.height(12.dp))
-                            // AC8: swipe defers, then snaps back (confirmValueChange returns false so it
-                            // never actually dismisses). The Defer button below is the guaranteed path.
+                            // Swipe defers, then snaps back (confirmValueChange returns false so it never
+                            // actually dismisses). PR3 makes this directional (approve / reject sheet).
                             val dismissState = rememberSwipeToDismissBoxState(
                                 confirmValueChange = { vm.defer(); false },
                             )
                             SwipeToDismissBox(state = dismissState, backgroundContent = {}) {
                                 CardFace(
                                     card = card,
-                                    decision = s.focusedDecision,
-                                    decisionLoaded = s.decisionLoaded,
                                     enabled = !s.inFlight,
                                     onApprove = {
                                         vm.approveCurrent()
@@ -104,10 +106,6 @@ fun QueueScreen(
                                             if (r == SnackbarResult.ActionPerformed) vm.undo()
                                         }
                                     },
-                                    // AC10: navigate-only deep link (does NOT advance the queue).
-                                    onDetails = { onOpenItem(card.connectionId, card.workItemId) },
-                                    onOpenItem = { vm.openCurrent(); onOpenItem(card.connectionId, card.workItemId) },
-                                    onOpenPr = { vm.openCurrent(); card.prUrl?.let(onOpenPr) ?: onOpenItem(card.connectionId, card.workItemId) },
                                 )
                             }
                             Spacer(Modifier.height(8.dp))
@@ -133,52 +131,49 @@ private fun WorkspaceErrorLine(errors: List<WorkspaceError>) {
 
 @Composable
 private fun CardFace(
-    card: QueueCard,
-    decision: DecisionPrompt?,
-    decisionLoaded: Boolean,
+    card: QueueV2Card,
     enabled: Boolean,
     onApprove: () -> Unit,
     onOption: (String) -> Unit,
-    onDetails: () -> Unit,
-    onOpenItem: () -> Unit,
-    onOpenPr: () -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Text(card.workspaceName, textAlign = TextAlign.Start)
             Spacer(Modifier.height(4.dp))
-            // AC4: surface the pending-action kind as a readable label.
-            Text(kindLabel(card.kind), style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.height(4.dp))
-            Text(card.title)
-            Spacer(Modifier.height(12.dp))
-            when (card.kind) {
-                QueueKind.NEEDS_APPROVAL -> {
-                    Button(onClick = onApprove, enabled = enabled && card.specId != null) { Text("Approve") }
-                    TextButton(onClick = onDetails) { Text("Details") }
+            Text(cardLabel(card), style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(8.dp))
+            when (card) {
+                is ProseCard -> {
+                    Text(card.sectionLabel, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(card.text)
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = onApprove, enabled = enabled) { Text("Approve") }
                 }
-                QueueKind.NEEDS_DECISION -> {
-                    when {
-                        !decisionLoaded -> CircularProgressIndicator()
-                        decision == null -> Text("No structured options — open the thread to respond")
-                        else -> DecisionCard(text = decision.text, decision = decision.decision, enabled = enabled, onOption = onOption)
-                    }
-                    TextButton(onClick = onDetails) { Text("Open thread") }
+                is CriteriaCard -> {
+                    card.items.forEach { Text("• ${it.text}", style = MaterialTheme.typography.bodyMedium) }
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = onApprove, enabled = enabled) { Text("Approve") }
                 }
-                QueueKind.BLOCKED -> {
-                    if (card.blockedTasks > 0) { Text("${card.blockedTasks} blocked task(s)"); Spacer(Modifier.height(8.dp)) }
-                    Button(onClick = onOpenItem, enabled = enabled) { Text("Open") }
+                is QuestionsCard -> {
+                    card.items.forEach { Text("• ${it.text}", style = MaterialTheme.typography.bodyMedium) }
                 }
-                QueueKind.NEEDS_REVIEW ->
-                    Button(onClick = onOpenPr, enabled = enabled) { Text("Open PR") }
+                is DecisionCard -> {
+                    DecisionPromptCard(
+                        text = card.text,
+                        decision = card.decision,
+                        enabled = enabled,
+                        onOption = onOption,
+                    )
+                }
             }
         }
     }
 }
 
-private fun kindLabel(kind: QueueKind): String = when (kind) {
-    QueueKind.NEEDS_APPROVAL -> "Needs approval"
-    QueueKind.NEEDS_DECISION -> "Needs decision"
-    QueueKind.BLOCKED -> "Blocked"
-    QueueKind.NEEDS_REVIEW -> "Needs review"
+private fun cardLabel(card: QueueV2Card): String = when (card) {
+    is ProseCard -> "Review prose"
+    is CriteriaCard -> "Review acceptance criteria"
+    is QuestionsCard -> "Open questions"
+    is DecisionCard -> "Needs decision"
 }

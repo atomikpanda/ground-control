@@ -3,7 +3,6 @@ package com.atomikpanda.groundcontrol.ui.queue
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.atomikpanda.groundcontrol.data.QueueFeed
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
@@ -18,22 +17,28 @@ sealed interface QueueUiState {
     data object Loading : QueueUiState
     data object EmptyConfig : QueueUiState
     data class Content(
-        val cards: List<QueueCard>,               // live queue; head = current card
+        val cards: List<QueueV2Card>,             // live queue; head = current card
         val resolved: Int,                        // acted-count, for the position indicator
-        val focusedDecision: DecisionPrompt?,     // loaded lazily when the head is a decision
         val errors: List<WorkspaceError>,
-        val undo: QueueCard?,                      // last acted card, re-insertable at head
+        val undo: QueueV2Card?,                    // last acted card, re-insertable at head
         val inFlight: Boolean,
-        val decisionLoaded: Boolean = true,   // has the focused decision finished loading?
-        val actionError: String? = null,      // last inline-action failure (transient), shown as a snackbar
+        val actionError: String? = null,          // last inline-action failure (transient), shown as a snackbar
     ) : QueueUiState {
-        val current: QueueCard? get() = cards.firstOrNull()
+        val current: QueueV2Card? get() = cards.firstOrNull()
         val total: Int get() = resolved + cards.size
         val position: Int get() = if (cards.isEmpty()) total else resolved + 1
         val caughtUp: Boolean get() = cards.isEmpty()
     }
 }
 
+/**
+ * Queue v2 head-stable card stack. PR2 wires the sourcing (specs+threads → cards)
+ * and the generic stack machinery (head-stable refresh / defer-to-back / undo /
+ * position). The full v2 transitions — approve-all, reject-with-comment, per-item
+ * verdicts, auto-approve — land in PR3; the action methods here are the thin
+ * PR2-level seams (approve a spec / answer a decision) so the card stack is usable
+ * and the branch stays buildable.
+ */
 class QueueViewModel(
     private val repo: QueueRepository,
     private val connectionsProvider: () -> List<WorkspaceConnection>,
@@ -48,7 +53,15 @@ class QueueViewModel(
 
     private fun scope(): CoroutineScope = testScope ?: viewModelScope
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
-    private fun conn(card: QueueCard): WorkspaceConnection = connById.getValue(card.connectionId)
+    private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
+
+    /** The spec a chunk card belongs to (null for a decision card). */
+    private fun QueueV2Card.specId(): String? = when (this) {
+        is ProseCard -> specId
+        is CriteriaCard -> specId
+        is QuestionsCard -> specId
+        is DecisionCard -> null
+    }
 
     fun refresh(): Job? {
         val connections = connectionsProvider()
@@ -61,45 +74,44 @@ class QueueViewModel(
             val fresh = feed.cards.filterNot { it.key in resolvedKeys }
             if (prev == null) {
                 _state.value = QueueUiState.Content(
-                    cards = fresh, resolved = 0, focusedDecision = null,
+                    cards = fresh, resolved = 0,
                     errors = feed.errors, undo = null, inFlight = false,
                 )
-                maybeLoadDecision(fresh.firstOrNull())
             } else {
                 // live refresh: keep the current head stable, merge the rest by urgency
                 val head = prev.current
                 val merged = mergeKeepingHead(head, fresh)
                 _state.value = prev.copy(cards = merged, errors = feed.errors)
-                maybeLoadDecision(merged.firstOrNull(), silent = true)
             }
         }
     }
 
     /** Keep [head] at position 0 (don't yank focus); urgency-sort the active rest of [fresh] behind
      *  it, and keep any deferred cards pinned to the back in their original defer order. */
-    private fun mergeKeepingHead(head: QueueCard?, fresh: List<QueueCard>): List<QueueCard> {
+    private fun mergeKeepingHead(head: QueueV2Card?, fresh: List<QueueV2Card>): List<QueueV2Card> {
         val rest = fresh.filter { it.key != head?.key }
         val (deferred, active) = rest.partition { it.key in deferredKeys }
         val order = deferredKeys.toList()
         return listOfNotNull(head) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
     }
 
-    /** Approve the current spec card, then advance. On success arms undo; on failure the card
-     *  stays put and [Content.actionError] surfaces the failure (no silent dismiss). */
+    /** Approve the current spec chunk's spec, then advance. On success arms undo; on failure the
+     *  card stays put and [Content.actionError] surfaces the failure (no silent dismiss). PR3
+     *  generalizes this to approve-all / auto-approve. */
     fun approveCurrent(): Job? {
         val c = content() ?: return null
         val card = c.current ?: return null
-        if (card.kind != QueueKind.NEEDS_APPROVAL || card.specId == null) return null
+        val specId = card.specId() ?: return null
         _state.value = c.copy(inFlight = true, actionError = null)
         return scope().launch {
-            runCatching { repo.approve(conn(card), card.specId) }
+            runCatching { repo.approve(conn(card), specId) }
                 .onSuccess {
                     resolvedKeys.add(card.key); deferredKeys.remove(card.key)
                     advancePast(card, armUndo = true)
                 }
                 .onFailure {
                     val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — workspace unreachable. Try again.")
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — try again.")
                 }
         }
     }
@@ -108,29 +120,27 @@ class QueueViewModel(
      *  undo; on failure the card stays put and [Content.actionError] surfaces the failure. */
     fun answerDecision(optionText: String): Job? {
         val c = content() ?: return null
-        val card = c.current ?: return null
-        if (card.kind != QueueKind.NEEDS_DECISION) return null
+        val card = c.current as? DecisionCard ?: return null
         _state.value = c.copy(inFlight = true, actionError = null)
         return scope().launch {
-            runCatching { repo.answerDecision(conn(card), card.workItemId, optionText) }
+            runCatching { repo.answerDecision(conn(card), card.threadId, optionText) }
                 .onSuccess {
                     resolvedKeys.add(card.key); deferredKeys.remove(card.key)
                     advancePast(card, armUndo = true)
                 }
                 .onFailure {
                     val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't send — workspace unreachable. Try again.")
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't send — try again.")
                 }
         }
     }
 
-    /** Risky cards (blocked / needs_review): screen navigates; we just advance past the head.
-     *  Not added to resolvedKeys, so it returns on the next refresh if still pending. */
+    /** Advance past the head without resolving it (navigate-only). Not added to resolvedKeys,
+     *  so it returns on the next refresh if still pending. */
     fun openCurrent() {
         val c = content() ?: return
         c.current ?: return
         _state.value = c.copy(cards = c.cards.drop(1), resolved = c.resolved + 1, undo = null, actionError = null)
-        maybeLoadDecision(content()?.current)
     }
 
     /** Send the current card to the back of the queue (reorder, never dismiss). */
@@ -139,7 +149,6 @@ class QueueViewModel(
         val card = c.current ?: return
         deferredKeys.add(card.key)
         _state.value = c.copy(cards = c.cards.drop(1) + card, undo = null, actionError = null)
-        maybeLoadDecision(content()?.current)
     }
 
     /** Undo the last inline approve/decision: re-insert the card at the head. */
@@ -148,33 +157,13 @@ class QueueViewModel(
         val card = c.undo ?: return
         resolvedKeys.remove(card.key)
         _state.value = c.copy(cards = listOf(card) + c.cards, resolved = (c.resolved - 1).coerceAtLeast(0), undo = null, actionError = null)
-        maybeLoadDecision(card)
     }
 
-    private fun advancePast(card: QueueCard, armUndo: Boolean) {
+    private fun advancePast(card: QueueV2Card, armUndo: Boolean) {
         val c = content() ?: return
         // guard: only advance if the head is still this card (no interleaving refresh moved it)
         if (c.current?.key != card.key) { _state.value = c.copy(inFlight = false); return }
         val remaining = c.cards.drop(1)
         _state.value = c.copy(cards = remaining, resolved = c.resolved + 1, undo = if (armUndo) card else null, inFlight = false, actionError = null)
-        maybeLoadDecision(remaining.firstOrNull())
-    }
-
-    /** When the head is a decision card, fetch its thread's pending decision into state.
-     *  Distinguishes "still loading" (`decisionLoaded = false`) from "loaded, no structured
-     *  decision" (`decisionLoaded = true, focusedDecision = null`) so the UI can show a spinner
-     *  vs. a fallback. Applies the result only if that card is still the head (no stale overwrite). */
-    private fun maybeLoadDecision(card: QueueCard?, silent: Boolean = false) {
-        val c = content() ?: return
-        if (card?.kind != QueueKind.NEEDS_DECISION || card.threadIds.isEmpty()) {
-            _state.value = c.copy(focusedDecision = null, decisionLoaded = true)
-            return
-        }
-        if (!silent) _state.value = c.copy(focusedDecision = null, decisionLoaded = false)
-        scope().launch {
-            val prompt = runCatching { repo.loadDecision(conn(card), card.threadIds) }.getOrNull()
-            val cc = content() ?: return@launch
-            if (cc.current?.key == card.key) _state.value = cc.copy(focusedDecision = prompt, decisionLoaded = true)
-        }
     }
 }
