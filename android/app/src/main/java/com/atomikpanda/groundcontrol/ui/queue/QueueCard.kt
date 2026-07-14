@@ -8,7 +8,7 @@ import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.home.displayName
 
 /** Urgency tiers for the Queue. Lower ordinal = higher urgency. */
-enum class QueueTier { URGENT, APPROVAL, REVIEW }
+enum class QueueTier { URGENT, APPROVAL }
 
 /**
  * One review/decision card in the Queue v2 feed. The Queue sources `needs_review`

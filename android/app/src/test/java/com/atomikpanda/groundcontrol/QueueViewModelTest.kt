@@ -12,7 +12,6 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.queue.CriteriaCard
 import com.atomikpanda.groundcontrol.ui.queue.ProseCard
-import com.atomikpanda.groundcontrol.ui.queue.QuestionsCard
 import com.atomikpanda.groundcontrol.ui.queue.QueueUiState
 import com.atomikpanda.groundcontrol.ui.queue.QueueViewModel
 import io.ktor.client.HttpClient
@@ -31,6 +30,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -105,61 +105,130 @@ class QueueViewModelTest {
     }
 
     // ws-a spec s1 with only acceptance criteria (no prose/questions) → a single CriteriaCard.
-    // verdict POSTs succeed and approve returns approved, so approve-all auto-approves the whole spec.
-    @Test fun approve_all_marks_items_and_auto_approves_when_fully_approved() = runTest {
-        val handler: MockRequestHandler = { req ->
-            val path = req.url.encodedPath
-            val body = when {
-                path.endsWith("/approve") -> """{"id":"s1","status":"approved"}"""
-                path.endsWith("/verdict") ->
-                    """{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"},{"id":"ac2","text":"b","verdict":"approved"}],"open_questions":[]}"""
-                path.endsWith("/specs") -> if (req.url.host == "a")
-                    """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
-                path.endsWith("/threads") -> "[]"
-                path.contains("/specs/") ->
-                    """{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
-                else -> "{}"
-            }
-            respond(body, HttpStatusCode.OK, jsonHdr)
-        }
-        val vm = vm(this, connsA, handler)
-        vm.refresh()?.join()
-        assertTrue(vm.stateContent().current is CriteriaCard)
-        vm.approveAllCurrent()?.join()
-        val c = vm.stateContent()
-        assertTrue(c.caughtUp)            // the fully-approved spec's card left the queue
-        assertEquals(1, c.resolved)
-        assertNull(c.actionError)
-    }
-
-    // ws-a spec s1 with one criterion AND one open question → CriteriaCard (head) + QuestionsCard.
-    // approve-all approves the criterion but /approve 409s (the question is unanswered): the head
-    // advances, the QuestionsCard chunk stays in the queue.
-    @Test fun approve_all_409_leaves_other_chunks_in_queue() = runTest {
+    // That card IS the spec's last chunk, so verdict POSTs + /approve run and the whole spec
+    // auto-approves. On approve success undo is NOT armed (can't un-approve server-side).
+    @Test fun approve_all_marks_items_and_auto_approves_when_last_chunk() = runTest {
+        var approveCalled = false
         val handler: MockRequestHandler = { req ->
             val path = req.url.encodedPath
             when {
-                path.endsWith("/approve") ->
-                    respond("""{"detail":"cannot approve: q1 unanswered"}""", HttpStatusCode.Conflict, jsonHdr)
+                path.endsWith("/approve") -> { approveCalled = true; respond("""{"id":"s1","status":"approved"}""", HttpStatusCode.OK, jsonHdr) }
                 path.endsWith("/verdict") ->
-                    respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[{"id":"q1","text":"q","answer":null}]}""", HttpStatusCode.OK, jsonHdr)
+                    respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"},{"id":"ac2","text":"b","verdict":"approved"}],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
-                    respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[{"id":"q1","text":"q","answer":null}],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                    respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
         val vm = vm(this, connsA, handler)
         vm.refresh()?.join()
-        assertEquals(2, vm.stateContent().cards.size)
         assertTrue(vm.stateContent().current is CriteriaCard)
         vm.approveAllCurrent()?.join()
         val c = vm.stateContent()
-        assertEquals(1, c.resolved)                         // the criteria head advanced
-        assertTrue(c.current is QuestionsCard)              // the still-un-approved chunk stays
+        assertTrue(approveCalled)         // last chunk → auto-approve fired
+        assertTrue(c.caughtUp)            // the fully-approved spec's card left the queue
+        assertEquals(1, c.resolved)
         assertNull(c.actionError)
+        assertNull(c.undo)                // approve success does NOT arm undo (can't be reversed server-side)
+    }
+
+    // FIX 2: approving one chunk of a MULTI-chunk spec must NOT auto-approve while siblings remain
+    // (else a skipped/unreviewed sibling is silently swept away). ws-a spec s1 has two prose sections →
+    // two ProseCards. Approving the head advances past it WITHOUT calling /approve (arming undo); only
+    // when the last chunk is approved does the spec auto-approve.
+    @Test fun approve_all_does_not_auto_approve_while_other_chunks_remain() = runTest {
+        var approveCalled = false
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/approve") -> { approveCalled = true; respond("""{"id":"s1","status":"approved"}""", HttpStatusCode.OK, jsonHdr) }
+                path.endsWith("/prose-verdict") -> respond("""{"id":"s1","status":"needs_review"}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/specs") ->
+                    respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") ->
+                    respond("""{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        assertEquals(2, vm.stateContent().cards.size)       // two prose sections
+        vm.approveAllCurrent()?.join()
+        var c = vm.stateContent()
+        assertFalse(approveCalled)                          // FIX 2: not the last chunk → no auto-approve
+        assertEquals(1, c.resolved)                         // head advanced past 'problem'
+        assertEquals("approach", (c.current as ProseCard).sectionId)  // the sibling chunk stays
+        assertTrue(c.undo != null)                          // advance-without-approve arms undo
+        // approve the last remaining chunk → now the whole spec auto-approves
+        vm.approveAllCurrent()?.join()
+        c = vm.stateContent()
+        assertTrue(approveCalled)                           // last chunk → auto-approve fired
+        assertTrue(c.caughtUp)
+        assertEquals(2, c.resolved)
+        assertNull(c.undo)                                  // approve success does NOT arm undo
+    }
+
+    // FIX 6: any 409 on the approve path (not just "cannot approve") must resolve + advance the head
+    // rather than leave a stuck ghost — the spec is likely already approved server-side. Single-chunk
+    // criteria spec whose /approve 409s with an invalid-transition detail (no "cannot approve" text).
+    @Test fun approve_all_any_conflict_resolves_head() = runTest {
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/approve") ->
+                    respond("""{"detail":"invalid transition: spec already approved"}""", HttpStatusCode.Conflict, jsonHdr)
+                path.endsWith("/verdict") ->
+                    respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/specs") ->
+                    respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") ->
+                    respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        assertTrue(vm.stateContent().current is CriteriaCard)
+        vm.approveAllCurrent()?.join()
+        val c = vm.stateContent()
+        assertTrue(c.caughtUp)             // head resolved + advanced despite the non-"cannot approve" 409
+        assertEquals(1, c.resolved)
+        assertNull(c.actionError)          // NOT surfaced as a generic error
+    }
+
+    // FIX 1: spec ids are workspace-local slugs. Two workspaces each expose a needs_review spec "s1"
+    // (single-chunk). Approving ws-a's must resolve/remove ONLY ws-a's card, leaving ws-b's same-id
+    // card untouched in the queue.
+    @Test fun spec_ops_are_scoped_to_workspace() = runTest {
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            val body = when {
+                path.endsWith("/approve") -> """{"id":"s1","status":"approved"}"""
+                path.endsWith("/verdict") ->
+                    """{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}"""
+                path.endsWith("/specs") -> """[{"id":"s1","title":"S1","status":"needs_review"}]"""  // BOTH hosts
+                path.endsWith("/threads") -> "[]"
+                path.contains("/specs/") ->
+                    """{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
+                else -> "{}"
+            }
+            respond(body, HttpStatusCode.OK, jsonHdr)
+        }
+        val vm = vm(this, connsAB, handler)
+        vm.refresh()?.join()
+        assertEquals(2, vm.stateContent().cards.size)                       // ws-a/s1 + ws-b/s1
+        assertEquals("a", (vm.stateContent().current as CriteriaCard).connectionId)
+        vm.approveAllCurrent()?.join()
+        val c = vm.stateContent()
+        assertEquals(1, c.cards.size)                                       // only ws-a's card left the queue
+        assertEquals("b", (c.current as CriteriaCard).connectionId)         // ws-b's same-id spec untouched
+        assertEquals("s1", (c.current as CriteriaCard).specId)
+        assertEquals(1, c.resolved)
     }
 
     // ws-a spec s1 with two prose sections + one criterion → 3 cards. Rejecting the head flags it
@@ -208,7 +277,7 @@ class QueueViewModelTest {
         }
         val vm = vm(this, connsA, handler)
         vm.refresh()?.join()
-        vm.setItemVerdict("s1", "ac1", "approved")?.join()
+        vm.setItemVerdict("a", "s1", "ac1", "approved")?.join()
         val c = vm.stateContent()
         assertEquals(1, c.cards.size)                       // no advance
         val head = c.current as CriteriaCard

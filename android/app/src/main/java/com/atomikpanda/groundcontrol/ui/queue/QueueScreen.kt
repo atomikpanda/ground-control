@@ -78,21 +78,28 @@ fun QueueScreen(
     }
 
     val snackbar = remember { SnackbarHostState() }
-    val cs = rememberCoroutineScope()
     var rejectSheet by remember { mutableStateOf(false) }
 
     // Surface a failed inline action (approve/reject/answer/decision) — the card is NOT dismissed on failure.
     val actionError = (state as? QueueUiState.Content)?.actionError
     LaunchedEffect(actionError) { if (actionError != null) snackbar.showSnackbar(actionError) }
 
-    // Approve-all the head + arm an undo snackbar (shared by swipe-right and the Prose Check toggle).
-    val approveAll: () -> Unit = {
-        vm.approveAllCurrent()
-        cs.launch {
-            val r = snackbar.showSnackbar("Approved", actionLabel = "Undo")
+    // Reactive undo snackbar: only shows once an action has actually armed undo (dropped exactly one
+    // card) — never optimistically at the call site, so a failed action can't flash a false "Approved".
+    // Keyed to the armed card so each new undo re-triggers; a null undo (approve success / skip / undone)
+    // shows nothing. Decision cards report "Sent", chunk approvals "Approved".
+    val undo = (state as? QueueUiState.Content)?.undo
+    LaunchedEffect(undo?.key) {
+        if (undo != null) {
+            val label = if (undo is DecisionCard) "Sent" else "Approved"
+            val r = snackbar.showSnackbar(label, actionLabel = "Undo")
             if (r == SnackbarResult.ActionPerformed) vm.undo()
         }
     }
+
+    // Approve-all the head (shared by swipe-right and the Prose Check toggle). The undo snackbar is
+    // driven reactively above — do NOT show one here.
+    val approveAll: () -> Unit = { vm.approveAllCurrent() }
 
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -119,7 +126,8 @@ fun QueueScreen(
                                 val canApprove = card is ProseCard || card is CriteriaCard
                                 val hasSpec = card !is DecisionCard
                                 val dismissState = rememberSwipeToDismissBoxState(
-                                    confirmValueChange = { target ->
+                                    confirmValueChange = confirm@{ target ->
+                                        if (s.inFlight) return@confirm false  // ignore swipes while an action is in flight
                                         when (target) {
                                             SwipeToDismissBoxValue.StartToEnd -> if (canApprove) approveAll()  // right = approve-all
                                             SwipeToDismissBoxValue.EndToStart -> if (hasSpec) rejectSheet = true  // left = reject sheet
@@ -135,13 +143,8 @@ fun QueueScreen(
                                         enabled = !s.inFlight,
                                         onApproveAll = approveAll,
                                         onReject = { rejectSheet = true },
-                                        onOption = { text ->
-                                            vm.answerDecision(text)
-                                            cs.launch {
-                                                val r = snackbar.showSnackbar("Sent", actionLabel = "Undo")
-                                                if (r == SnackbarResult.ActionPerformed) vm.undo()
-                                            }
-                                        },
+                                        // Undo snackbar is driven reactively (see LaunchedEffect above); don't show one here.
+                                        onOption = { text -> vm.answerDecision(text) },
                                     )
                                 }
                             }
@@ -213,10 +216,10 @@ private fun CardFace(
                                 flagged = item.verdict == "flagged",
                                 enabled = enabled,
                                 onApprove = {
-                                    vm.setItemVerdict(card.specId, item.id, if (item.verdict == "approved") "unreviewed" else "approved")
+                                    vm.setItemVerdict(card.connectionId, card.specId, item.id, if (item.verdict == "approved") "unreviewed" else "approved")
                                 },
                                 onFlag = {
-                                    vm.setItemVerdict(card.specId, item.id, if (item.verdict == "flagged") "unreviewed" else "flagged")
+                                    vm.setItemVerdict(card.connectionId, card.specId, item.id, if (item.verdict == "flagged") "unreviewed" else "flagged")
                                 },
                             )
                             Text(item.text, Modifier.padding(start = 4.dp))
@@ -225,7 +228,7 @@ private fun CardFace(
                 }
                 is QuestionsCard -> {
                     card.items.forEach { item ->
-                        QuestionAnswerRow(item, enabled) { answer -> vm.answerQuestion(card.specId, item.id, answer) }
+                        QuestionAnswerRow(item, enabled) { answer -> vm.answerQuestion(card.connectionId, card.specId, item.id, answer) }
                     }
                 }
                 is DecisionCard -> {
