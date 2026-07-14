@@ -3,9 +3,11 @@ package com.atomikpanda.groundcontrol.ui.queue
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,12 +34,20 @@ sealed interface QueueUiState {
 }
 
 /**
- * Queue v2 head-stable card stack. PR2 wires the sourcing (specs+threads → cards)
+ * Queue v2 head-stable card stack. PR2 wired the sourcing (specs+threads → cards)
  * and the generic stack machinery (head-stable refresh / defer-to-back / undo /
- * position). The full v2 transitions — approve-all, reject-with-comment, per-item
- * verdicts, auto-approve — land in PR3; the action methods here are the thin
- * PR2-level seams (approve a spec / answer a decision) so the card stack is usable
- * and the branch stays buildable.
+ * position). PR3 (this file) lands the full v2 transitions on top of that machinery:
+ *
+ *  - [approveAllCurrent] — approve every item on the head Prose/Criteria card, then
+ *    auto-approve the spec when it's fully approvable (409 "cannot approve" ⇒ the
+ *    spec's other chunks are still un-approved, so we advance past the head only and
+ *    leave them in the queue).
+ *  - [rejectCurrent] — flag the head card's item(s) + request changes on the spec;
+ *    on success every one of that spec's cards leaves the queue.
+ *  - [setItemVerdict] / [answerQuestion] — per-item edits inside a multi-item card,
+ *    applied in place (no advance).
+ *  - [answerDecision] — post the chosen option to the thread and advance (from PR2).
+ *  - [skip] — send the head to the back (the PR2 `defer`).
  */
 class QueueViewModel(
     private val repo: QueueRepository,
@@ -95,23 +105,107 @@ class QueueViewModel(
         return listOfNotNull(head) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
     }
 
-    /** Approve the current spec chunk's spec, then advance. On success arms undo; on failure the
-     *  card stays put and [Content.actionError] surfaces the failure (no silent dismiss). PR3
-     *  generalizes this to approve-all / auto-approve. */
-    fun approveCurrent(): Job? {
+    // --- v2 transitions -----------------------------------------------------
+
+    /**
+     * Approve every item on the head Prose/Criteria card, then auto-approve the spec.
+     * CriteriaCard → `setCriterionVerdict(approved)` per item; ProseCard →
+     * `setProseVerdict(approved)`. Then attempt `approve(bypass=false)`:
+     *  - success ⇒ the spec is fully approved: every one of its cards leaves the queue.
+     *  - 409 "cannot approve" ⇒ other chunks are still un-approved: advance past the
+     *    head only, its siblings stay in the queue (they'll be reviewed in turn).
+     *  - any other failure ⇒ the card stays put and [Content.actionError] surfaces it.
+     * Approve-all does not apply to Questions (answer, not approve) or Decision cards.
+     */
+    fun approveAllCurrent(): Job? {
+        val c = content() ?: return null
+        val card = c.current ?: return null
+        if (card !is ProseCard && card !is CriteriaCard) return null
+        val specId = card.specId() ?: return null
+        _state.value = c.copy(inFlight = true, actionError = null)
+        return scope().launch {
+            val conn = conn(card)
+            runCatching {
+                when (card) {
+                    is CriteriaCard -> card.items.forEach { repo.setCriterionVerdict(conn, specId, it.id, "approved") }
+                    is ProseCard -> repo.setProseVerdict(conn, specId, card.sectionId, "approved")
+                    else -> {}
+                }
+                repo.approve(conn, specId)          // auto-approve; 409 when other chunks remain
+            }.onSuccess {
+                // whole spec approved — all its cards leave the queue
+                resolveSpec(specId)
+                removeSpecCardsAdvancing(specId, card, armUndo = true)
+            }.onFailure { t ->
+                if (t is ApiConflictException && t.detail.contains("cannot approve")) {
+                    // other chunks still un-approved: this card's items ARE approved, so advance past it only
+                    resolvedKeys.add(card.key); deferredKeys.remove(card.key)
+                    advancePast(card, armUndo = true)
+                } else {
+                    val c2 = content() ?: return@launch
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+                }
+            }
+        }
+    }
+
+    /**
+     * Flag the head card's item(s) with [comment] and request changes on its spec.
+     * On success every one of that spec's cards leaves the queue (its chunks are no
+     * longer under review). On failure the card stays put and surfaces [actionError].
+     */
+    fun rejectCurrent(comment: String): Job? {
         val c = content() ?: return null
         val card = c.current ?: return null
         val specId = card.specId() ?: return null
         _state.value = c.copy(inFlight = true, actionError = null)
         return scope().launch {
-            runCatching { repo.approve(conn(card), specId) }
-                .onSuccess {
-                    resolvedKeys.add(card.key); deferredKeys.remove(card.key)
-                    advancePast(card, armUndo = true)
+            val conn = conn(card)
+            runCatching {
+                when (card) {
+                    is CriteriaCard -> card.items.forEach { repo.setCriterionVerdict(conn, specId, it.id, "flagged", comment) }
+                    is ProseCard -> repo.setProseVerdict(conn, specId, card.sectionId, "flagged", comment)
+                    else -> {}
                 }
+                repo.requestChanges(conn, specId, comment)
+            }.onSuccess {
+                resolveSpec(specId)
+                removeSpecCardsAdvancing(specId, card, armUndo = false)
+            }.onFailure {
+                val c2 = content() ?: return@launch
+                _state.value = c2.copy(inFlight = false, actionError = "Couldn't request changes — try again.")
+            }
+        }
+    }
+
+    /** Per-item approve/flag inside a multi-item CriteriaCard: update the card in place, no advance. */
+    fun setItemVerdict(specId: String, itemId: String, verdict: String, comment: String? = null): Job? {
+        val c = content() ?: return null
+        val card = c.cards.filterIsInstance<CriteriaCard>().firstOrNull { it.specId == specId } ?: return null
+        val conn = connById[card.connectionId] ?: return null
+        _state.value = c.copy(inFlight = true, actionError = null)
+        return scope().launch {
+            runCatching { repo.setCriterionVerdict(conn, specId, itemId, verdict, comment) }
+                .onSuccess { rev -> updateCriteriaCard(specId, rev) }
                 .onFailure {
                     val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't update — try again.")
+                }
+        }
+    }
+
+    /** Per-item answer inside a QuestionsCard: update the card in place, no advance. */
+    fun answerQuestion(specId: String, questionId: String, answer: String): Job? {
+        val c = content() ?: return null
+        val card = c.cards.filterIsInstance<QuestionsCard>().firstOrNull { it.specId == specId } ?: return null
+        val conn = connById[card.connectionId] ?: return null
+        _state.value = c.copy(inFlight = true, actionError = null)
+        return scope().launch {
+            runCatching { repo.answerQuestion(conn, specId, questionId, answer) }
+                .onSuccess { rev -> updateQuestionsCard(specId, rev) }
+                .onFailure {
+                    val c2 = content() ?: return@launch
+                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't answer — try again.")
                 }
         }
     }
@@ -135,13 +229,8 @@ class QueueViewModel(
         }
     }
 
-    /** Advance past the head without resolving it (navigate-only). Not added to resolvedKeys,
-     *  so it returns on the next refresh if still pending. */
-    fun openCurrent() {
-        val c = content() ?: return
-        c.current ?: return
-        _state.value = c.copy(cards = c.cards.drop(1), resolved = c.resolved + 1, undo = null, actionError = null)
-    }
+    /** Send the current card to the back of the queue (reorder, never dismiss). */
+    fun skip() = defer()
 
     /** Send the current card to the back of the queue (reorder, never dismiss). */
     fun defer() {
@@ -159,11 +248,59 @@ class QueueViewModel(
         _state.value = c.copy(cards = listOf(card) + c.cards, resolved = (c.resolved - 1).coerceAtLeast(0), undo = null, actionError = null)
     }
 
+    // --- helpers ------------------------------------------------------------
+
+    /** Mark every currently-queued card of [specId] resolved (so it stays gone across refreshes). */
+    private fun resolveSpec(specId: String) {
+        val keys = content()?.cards?.filter { it.specId() == specId }?.map { it.key }.orEmpty()
+        resolvedKeys.addAll(keys); deferredKeys.removeAll(keys.toSet())
+    }
+
+    /** Drop every card of [specId] from the live queue in one step (advancing past a resolved spec).
+     *  Guarded on the head still being [head] so an interleaving refresh can't advance the wrong card. */
+    private fun removeSpecCardsAdvancing(specId: String, head: QueueV2Card, armUndo: Boolean) {
+        val c = content() ?: return
+        if (c.current?.key != head.key) { _state.value = c.copy(inFlight = false); return }
+        val remaining = c.cards.filterNot { it.specId() == specId }
+        val removed = c.cards.size - remaining.size
+        _state.value = c.copy(
+            cards = remaining,
+            resolved = c.resolved + removed,
+            undo = if (armUndo) head else null,
+            inFlight = false,
+            actionError = null,
+        )
+    }
+
+    /** Advance past the head [card] (drop it), arming undo when asked. Guarded on the head not
+     *  having moved under an interleaving refresh. */
     private fun advancePast(card: QueueV2Card, armUndo: Boolean) {
         val c = content() ?: return
-        // guard: only advance if the head is still this card (no interleaving refresh moved it)
         if (c.current?.key != card.key) { _state.value = c.copy(inFlight = false); return }
         val remaining = c.cards.drop(1)
         _state.value = c.copy(cards = remaining, resolved = c.resolved + 1, undo = if (armUndo) card else null, inFlight = false, actionError = null)
+    }
+
+    /** Rebuild the queued CriteriaCard for [specId] from a write's returned review. */
+    private fun updateCriteriaCard(specId: String, rev: SpecReview) {
+        val c = content() ?: return
+        val cards = c.cards.map { card ->
+            if (card is CriteriaCard && card.specId == specId)
+                card.copy(items = rev.acceptanceCriteria.map { CriterionItem(it.id, it.text, it.verdict, it.comment) })
+            else card
+        }
+        _state.value = c.copy(cards = cards, inFlight = false, actionError = null)
+    }
+
+    /** Rebuild the queued QuestionsCard for [specId] from a write's returned review (keeps every
+     *  question so a just-entered answer stays visible in its field). */
+    private fun updateQuestionsCard(specId: String, rev: SpecReview) {
+        val c = content() ?: return
+        val cards = c.cards.map { card ->
+            if (card is QuestionsCard && card.specId == specId)
+                card.copy(items = rev.openQuestions.map { QuestionItem(it.id, it.text, it.answer) })
+            else card
+        }
+        _state.value = c.copy(cards = cards, inFlight = false, actionError = null)
     }
 }
