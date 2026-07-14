@@ -5,6 +5,7 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.ProseVerdictDto
+import com.atomikpanda.groundcontrol.data.dto.Evidence
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewQuestion
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
@@ -83,6 +84,23 @@ class QueueCardTest {
 
         val questions = cards.filterIsInstance<QuestionsCard>().single()
         assertEquals(listOf("q2"), questions.items.map { it.id })   // only the unanswered one
+    }
+
+    @Test fun criteria_card_items_carry_each_criterions_evidence() {
+        val cards = cardsFromSpec(
+            conn,
+            spec(criteria = listOf(
+                ReviewCriterion("ac1", "backed", "approved", evidence = listOf(
+                    Evidence("test", "pytest -q", "18 passed"),
+                    Evidence("commit", "abc123"),
+                )),
+                ReviewCriterion("ac2", "bare", "unreviewed"),
+            )),
+        )
+        val items = cards.filterIsInstance<CriteriaCard>().single().items
+        assertEquals(2, items.first { it.id == "ac1" }.evidence.size)
+        assertEquals("pytest -q", items.first { it.id == "ac1" }.evidence.first().ref)
+        assertTrue(items.first { it.id == "ac2" }.evidence.isEmpty())
     }
 
     @Test fun spec_review_cards_carry_title_kind_and_affected_repos_metadata() {

@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.SpecAction
@@ -176,7 +177,7 @@ private fun CriterionRow(
     vm: SpecDetailViewModel,
 ) {
     val busy = inFlight is ActionRef.Verdict && inFlight.criterionId == c.id
-    Row(Modifier.fillMaxWidth().padding(12.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(12.dp, 4.dp), verticalAlignment = Alignment.Top) {
         if (busy) {
             CircularProgressIndicator(Modifier.padding(8.dp))
         } else if (interactive) {
@@ -203,7 +204,28 @@ private fun CriterionRow(
         } else {
             Text(verdictGlyph(c.verdict), Modifier.padding(8.dp))
         }
-        Text(c.text, Modifier.padding(start = 4.dp))
+        // Criterion text, then its evidence (AC-evidence loop): each backing ref on a muted line, or a
+        // single muted "unverified" when nothing backs it. Long refs cap at 2 lines so they can't run away.
+        Column(Modifier.padding(start = 4.dp, top = 8.dp)) {
+            Text(c.text)
+            if (isUnverified(c.evidence)) {
+                Text(
+                    "unverified",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                evidenceLabels(c.evidence).forEach { line ->
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }
 

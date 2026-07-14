@@ -57,10 +57,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.WorkspaceError
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard as DecisionPromptCard
+import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
+import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -313,7 +316,7 @@ private fun CardFace(
                 }
                 is CriteriaCard -> {
                     card.items.forEach { item ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
                             VerdictToggles(
                                 approved = item.verdict == "approved",
                                 flagged = item.verdict == "flagged",
@@ -325,7 +328,18 @@ private fun CardFace(
                                     vm.setItemVerdict(card.connectionId, card.specId, item.id, if (item.verdict == "flagged") "unreviewed" else "flagged")
                                 },
                             )
-                            Text(item.text, Modifier.padding(start = 4.dp), color = MaterialTheme.colorScheme.onSurface)
+                            // Criterion text + its evidence, so the operator sees what backs each one while
+                            // approving from the stack: labeled refs, or a muted "unverified" when nothing does.
+                            Column(Modifier.padding(start = 4.dp, top = 8.dp)) {
+                                Text(item.text, color = MaterialTheme.colorScheme.onSurface)
+                                if (isUnverified(item.evidence)) {
+                                    Text("unverified", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                } else {
+                                    evidenceLabels(item.evidence).forEach { line ->
+                                        Text(line, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -359,6 +373,8 @@ private fun QueueCardMeta(meta: SpecCardMeta) {
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
     val bits = buildList {
@@ -367,10 +383,14 @@ private fun QueueCardMeta(meta: SpecCardMeta) {
     }
     if (bits.isNotEmpty()) {
         Spacer(Modifier.height(2.dp))
+        // Cap the kind · repos line so a spec touching many repos can't wrap into a wall of text
+        // that shoves the review body down the scrollable card (Greptile #50 P2).
         Text(
             bits.joinToString("  ·  "),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

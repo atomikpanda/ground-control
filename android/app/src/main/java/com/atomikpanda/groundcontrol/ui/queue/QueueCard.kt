@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.ui.queue
 
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.Decision
+import com.atomikpanda.groundcontrol.data.dto.Evidence
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.home.displayName
@@ -68,6 +69,7 @@ data class CriterionItem(
     val text: String,
     val verdict: String,
     val comment: String? = null,
+    val evidence: List<Evidence> = emptyList(),
 )
 
 /** All acceptance criteria of a spec under review, gathered into one multi-item card. */
@@ -176,7 +178,7 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
             add(
                 CriteriaCard(
                     connectionId = conn.id, workspaceName = ws, specId = spec.id,
-                    items = spec.acceptanceCriteria.map { CriterionItem(it.id, it.text, it.verdict, it.comment) },
+                    items = spec.acceptanceCriteria.map { CriterionItem(it.id, it.text, it.verdict, it.comment, it.evidence) },
                     meta = meta, waitingSince = since,
                 )
             )

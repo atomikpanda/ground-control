@@ -3,12 +3,23 @@ package com.atomikpanda.groundcontrol.data.dto
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
+/** One piece of evidence backing an acceptance criterion (the AC-evidence loop). Mirrors serve's
+ *  `AcceptanceEvidence`: a typed [kind] (test | commit | artifact), the [ref] it points at, and an
+ *  optional human [note]. Surfaced per-criterion by `build_review` / `GET /specs/{id}`. */
+@Serializable
+data class Evidence(
+    val kind: String,               // "test" | "commit" | "artifact"
+    val ref: String,
+    val note: String? = null,
+)
+
 @Serializable
 data class ReviewCriterion(
     val id: String,
     val text: String,
     val verdict: String,            // "unreviewed" | "approved" | "flagged"
     val comment: String? = null,    // MOS-217: flag-with-comment note
+    val evidence: List<Evidence> = emptyList(),  // AC-evidence loop: refs that satisfy this criterion
 )
 
 /** A prose section's verdict + optional flag note (MOS-172). Mirrors serve's
@@ -49,6 +60,7 @@ data class ReviewSummary(
     val approved: Int = 0,
     val flagged: Int = 0,
     val unreviewed: Int = 0,
+    val unverified: Int = 0,        // AC-evidence loop: criteria with no evidence attached
     @SerialName("open_questions_unanswered") val openQuestionsUnanswered: Int = 0,
 )
 
