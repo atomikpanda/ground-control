@@ -127,11 +127,12 @@ internal fun parseBodySections(body: String): Map<String, String> {
     return sections
 }
 
-/** Explode one `needs_review` spec into its review cards: one [ProseCard] per non-empty
- *  prose section (problem/user_story/approach from the body, non_goals/risks from lists),
- *  one [CriteriaCard] when it has acceptance criteria, and one [QuestionsCard] only when
- *  unanswered questions remain. Verdicts/comments come from the spec's `prose_verdicts`
- *  map + each criterion's `comment`. */
+/** Explode one `needs_review` spec into the review cards that STILL NEED the operator: one
+ *  [ProseCard] per non-empty prose section that isn't already approved, one [CriteriaCard] when
+ *  any acceptance criterion isn't yet approved, and one [QuestionsCard] only when unanswered
+ *  questions remain. Cards off the SAVED verdicts (not just in-memory session state), so an
+ *  already-approved chunk doesn't reappear when the ViewModel is recreated — the approval sticks.
+ *  Verdicts/comments come from the spec's `prose_verdicts` map + each criterion's `comment`. */
 fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card> {
     val ws = conn.displayName()
     val since = spec.updatedAt ?: ""
@@ -145,6 +146,7 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
             }.trim()
             if (text.isBlank()) continue
             val pv = spec.proseVerdicts[sec.id]
+            if (pv?.verdict == "approved") continue   // already reviewed → don't re-card it
             add(
                 ProseCard(
                     connectionId = conn.id, workspaceName = ws, specId = spec.id,
@@ -153,7 +155,8 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
                 )
             )
         }
-        if (spec.acceptanceCriteria.isNotEmpty()) {
+        // Only card the criteria while at least one isn't approved (a fully-approved set is done).
+        if (spec.acceptanceCriteria.any { it.verdict != "approved" }) {
             add(
                 CriteriaCard(
                     connectionId = conn.id, workspaceName = ws, specId = spec.id,

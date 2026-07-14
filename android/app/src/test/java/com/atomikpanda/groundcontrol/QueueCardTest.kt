@@ -111,6 +111,31 @@ class QueueCardTest {
         assertEquals("unreviewed", cards.filterIsInstance<ProseCard>().first { it.sectionId == "problem" }.verdict)
     }
 
+    @Test fun approved_prose_sections_are_not_re_carded() {
+        val cards = cardsFromSpec(
+            conn,
+            spec(proseVerdicts = mapOf(
+                "problem" to ProseVerdictDto("approved", null),
+                "approach" to ProseVerdictDto("flagged", "unclear"),
+            )),
+        )
+        val prose = cards.filterIsInstance<ProseCard>().map { it.sectionId }
+        assertTrue(prose.none { it == "problem" })   // approved → skipped (sticks across sessions)
+        assertTrue(prose.contains("approach"))       // flagged → still needs the operator
+        assertTrue(prose.contains("user_story"))     // unreviewed → still shown
+    }
+
+    @Test fun criteria_card_is_skipped_once_all_criteria_approved() {
+        val allApproved = listOf(
+            ReviewCriterion("ac1", "AC one", "approved"),
+            ReviewCriterion("ac2", "AC two", "approved"),
+        )
+        assertTrue(cardsFromSpec(conn, spec(criteria = allApproved)).none { it is CriteriaCard })
+        // a single not-yet-approved criterion keeps the card
+        val mixed = spec(criteria = allApproved + ReviewCriterion("ac3", "AC three", "unreviewed"))
+        assertTrue(cardsFromSpec(conn, mixed).any { it is CriteriaCard })
+    }
+
     private fun threadWithDecision() = Thread(
         id = "t1", updatedAt = "2026-06-02T00:00:00Z",
         messages = listOf(
