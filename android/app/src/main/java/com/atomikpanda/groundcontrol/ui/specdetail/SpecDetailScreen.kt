@@ -290,15 +290,15 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                 }
             }
             if (SpecAction.DISPATCH in actions)
-                Button(enabled = !busy, onClick = { showDispatch = true }) { Text("Dispatch") }
+                Button(enabled = !busy, onClick = { showDispatch = true }) { Text("Plan implementation") }
         }
     }
 
     if (showReason) ReasonDialog(onDismiss = { showReason = false }) { showReason = false; vm.requestChanges(it) }
     if (showDispatch) ConfirmDialog(
-        title = "Dispatch this spec?",
-        body = "This binds/spawns a task and starts work on the host.",
-        confirm = "Dispatch",
+        title = "Plan the implementation?",
+        body = "This spawns a task and starts writing the implementation plan on the host.",
+        confirm = "Plan implementation",
         onDismiss = { showDispatch = false },
     ) { showDispatch = false; vm.dispatch() }
 }
