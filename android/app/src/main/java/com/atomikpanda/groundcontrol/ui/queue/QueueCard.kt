@@ -38,6 +38,14 @@ enum class ProseSection(val id: String, val label: String, val bodyHeading: Stri
 
 /** One prose section of a spec under review. [verdict] is the reviewer's current
  *  call ("unreviewed" | "approved" | "flagged"); [comment] is an optional flag note. */
+/** Per-spec review-card metadata shown on every review card of a spec (#B on the Queue): the spec
+ *  title, the linked WorkItem's kind (feature/bug/chore), and the repos the work touches. */
+data class SpecCardMeta(
+    val title: String = "",
+    val workItemKind: String? = null,
+    val affectedRepos: List<String> = emptyList(),
+)
+
 data class ProseCard(
     override val connectionId: String,
     override val workspaceName: String,
@@ -47,6 +55,7 @@ data class ProseCard(
     val text: String,
     val verdict: String,
     val comment: String? = null,
+    val meta: SpecCardMeta = SpecCardMeta(),
     override val waitingSince: String = "",
 ) : QueueV2Card {
     override val tier: QueueTier get() = QueueTier.APPROVAL
@@ -67,6 +76,7 @@ data class CriteriaCard(
     override val workspaceName: String,
     val specId: String,
     val items: List<CriterionItem>,
+    val meta: SpecCardMeta = SpecCardMeta(),
     override val waitingSince: String = "",
 ) : QueueV2Card {
     override val tier: QueueTier get() = QueueTier.APPROVAL
@@ -86,6 +96,7 @@ data class QuestionsCard(
     override val workspaceName: String,
     val specId: String,
     val items: List<QuestionItem>,
+    val meta: SpecCardMeta = SpecCardMeta(),
     override val waitingSince: String = "",
 ) : QueueV2Card {
     override val tier: QueueTier get() = QueueTier.APPROVAL
@@ -137,6 +148,11 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
     val ws = conn.displayName()
     val since = spec.updatedAt ?: ""
     val sections = parseBodySections(spec.body)
+    val meta = SpecCardMeta(
+        title = spec.title,
+        workItemKind = spec.workItemKind,
+        affectedRepos = spec.affectedRepos,
+    )
     return buildList {
         for (sec in ProseSection.entries) {
             val text = when (sec) {
@@ -151,7 +167,7 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
                 ProseCard(
                     connectionId = conn.id, workspaceName = ws, specId = spec.id,
                     sectionId = sec.id, sectionLabel = sec.label, text = text,
-                    verdict = pv?.verdict ?: "unreviewed", comment = pv?.comment, waitingSince = since,
+                    verdict = pv?.verdict ?: "unreviewed", comment = pv?.comment, meta = meta, waitingSince = since,
                 )
             )
         }
@@ -161,7 +177,7 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
                 CriteriaCard(
                     connectionId = conn.id, workspaceName = ws, specId = spec.id,
                     items = spec.acceptanceCriteria.map { CriterionItem(it.id, it.text, it.verdict, it.comment) },
-                    waitingSince = since,
+                    meta = meta, waitingSince = since,
                 )
             )
         }
@@ -171,7 +187,7 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
                 QuestionsCard(
                     connectionId = conn.id, workspaceName = ws, specId = spec.id,
                     items = unanswered.map { QuestionItem(it.id, it.text, it.answer) },
-                    waitingSince = since,
+                    meta = meta, waitingSince = since,
                 )
             )
         }

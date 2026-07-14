@@ -279,6 +279,18 @@ private fun CardFace(
         // Content scrolls inside the (bounded) card so overflow never pushes the pinned Skip off-screen.
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
             Text(card.workspaceName, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // Spec-review cards (#B) carry their WorkItem context: title + kind + the repos it touches,
+            // so an approver knows *what* they're approving without opening the spec detail.
+            val specMeta = when (card) {
+                is ProseCard -> card.meta
+                is CriteriaCard -> card.meta
+                is QuestionsCard -> card.meta
+                else -> null
+            }
+            if (specMeta != null) {
+                Spacer(Modifier.height(4.dp))
+                QueueCardMeta(specMeta)
+            }
             Spacer(Modifier.height(4.dp))
             Text(cardLabel(card), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
@@ -332,6 +344,34 @@ private fun CardFace(
                 }
             }
         }
+    }
+}
+
+/** The WorkItem context line on a spec-review card (#B): the spec/WorkItem title in prominent
+ *  weight, then a muted `kind · repo, repo` line so the approver sees the item's kind and the repos
+ *  the change touches at a glance. Blank fields are simply omitted. */
+@Composable
+private fun QueueCardMeta(meta: SpecCardMeta) {
+    if (meta.title.isNotBlank()) {
+        Spacer(Modifier.height(2.dp))
+        Text(
+            meta.title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+    val bits = buildList {
+        meta.workItemKind?.takeIf { it.isNotBlank() }?.let { add(it) }
+        if (meta.affectedRepos.isNotEmpty()) add(meta.affectedRepos.joinToString(", "))
+    }
+    if (bits.isNotEmpty()) {
+        Spacer(Modifier.height(2.dp))
+        Text(
+            bits.joinToString("  ·  "),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

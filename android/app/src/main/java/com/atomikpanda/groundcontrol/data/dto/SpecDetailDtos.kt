@@ -32,6 +32,7 @@ data class SpecRecord(
     val title: String,
     val status: String,
     @SerialName("affected_repos") val affectedRepos: List<String> = emptyList(),
+    @SerialName("work_item_kind") val workItemKind: String? = null,
     @SerialName("acceptance_criteria") val acceptanceCriteria: List<ReviewCriterion> = emptyList(),
     @SerialName("open_questions") val openQuestions: List<ReviewQuestion> = emptyList(),
     @SerialName("non_goals") val nonGoals: List<String> = emptyList(),

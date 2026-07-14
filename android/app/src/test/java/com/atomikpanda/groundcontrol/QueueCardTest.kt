@@ -14,6 +14,7 @@ import com.atomikpanda.groundcontrol.ui.queue.DecisionCard
 import com.atomikpanda.groundcontrol.ui.queue.ProseCard
 import com.atomikpanda.groundcontrol.ui.queue.QuestionsCard
 import com.atomikpanda.groundcontrol.ui.queue.QueueTier
+import com.atomikpanda.groundcontrol.ui.queue.SpecCardMeta
 import com.atomikpanda.groundcontrol.ui.queue.cardsFromSpec
 import com.atomikpanda.groundcontrol.ui.queue.decisionCardFrom
 import com.atomikpanda.groundcontrol.ui.queue.sortQueue
@@ -41,6 +42,9 @@ class QueueCardTest {
 
     private fun spec(
         id: String = "s1",
+        title: String = "T",
+        affectedRepos: List<String> = emptyList(),
+        workItemKind: String? = null,
         body: String = this.body,
         criteria: List<ReviewCriterion> = listOf(
             ReviewCriterion("ac1", "AC one", "approved"),
@@ -56,7 +60,8 @@ class QueueCardTest {
         proseVerdicts: Map<String, ProseVerdictDto> = emptyMap(),
         updatedAt: String? = "2026-06-01T00:00:00Z",
     ) = SpecRecord(
-        id = id, title = "T", status = "needs_review", body = body,
+        id = id, title = title, status = "needs_review", body = body,
+        affectedRepos = affectedRepos, workItemKind = workItemKind,
         acceptanceCriteria = criteria, openQuestions = questions,
         nonGoals = nonGoals, risks = risks, proseVerdicts = proseVerdicts, updatedAt = updatedAt,
     )
@@ -78,6 +83,22 @@ class QueueCardTest {
 
         val questions = cards.filterIsInstance<QuestionsCard>().single()
         assertEquals(listOf("q2"), questions.items.map { it.id })   // only the unanswered one
+    }
+
+    @Test fun spec_review_cards_carry_title_kind_and_affected_repos_metadata() {
+        val cards = cardsFromSpec(
+            conn,
+            spec(title = "Add read indicator", workItemKind = "feature",
+                affectedRepos = listOf("ground-control", "mothership")),
+        )
+        val expected = SpecCardMeta(
+            title = "Add read indicator",
+            workItemKind = "feature",
+            affectedRepos = listOf("ground-control", "mothership"),
+        )
+        assertEquals(expected, cards.filterIsInstance<ProseCard>().first().meta)
+        assertEquals(expected, cards.filterIsInstance<CriteriaCard>().single().meta)
+        assertEquals(expected, cards.filterIsInstance<QuestionsCard>().single().meta)
     }
 
     @Test fun empty_prose_sections_and_absent_lists_are_skipped() {
