@@ -11,6 +11,7 @@ data class ThreadSummary(
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
     @SerialName("needs_you") val needsYou: Boolean = false,
     @SerialName("unseen") val unseen: Boolean = false,
+    @SerialName("agent_seen_at") val agentSeenAt: String? = null,
     @SerialName("last_message") val lastMessage: String = "",
     @SerialName("message_count") val messageCount: Int = 0,
     @SerialName("needs_decision") val needsDecision: Boolean = false,
@@ -45,6 +46,9 @@ data class Thread(
     @SerialName("spec_id") val specId: String? = null,
     val messages: List<Message> = emptyList(),
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
+    // Agent read cursor (#345): drives the per-message "Read" indicator — a human message reads
+    // as Read once this is at/after its created_at. Null when the agent hasn't consumed anything.
+    @SerialName("agent_seen_at") val agentSeenAt: String? = null,
     @SerialName("work_item_id") val workItemId: String? = null,
     @SerialName("work_item") val workItem: WorkItemRef? = null,
 )

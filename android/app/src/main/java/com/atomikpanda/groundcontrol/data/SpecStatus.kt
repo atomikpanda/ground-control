@@ -3,7 +3,7 @@ package com.atomikpanda.groundcontrol.data
 /** Display groups for the inbox, in actionable-first order. */
 enum class SpecGroup(val label: String) {
     NEEDS_REVIEW("Needs review"),
-    READY_TO_DISPATCH("Ready to dispatch"),
+    READY_TO_DISPATCH("Ready to plan"),
     IN_IMPLEMENTATION("In implementation"),
     DRAFTING("Drafting"),
     DONE("Done"),
