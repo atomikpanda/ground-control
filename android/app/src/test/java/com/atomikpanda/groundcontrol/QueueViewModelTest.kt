@@ -275,6 +275,34 @@ class QueueViewModelTest {
         assertNull(c.actionError)
     }
 
+    // Regression (Greptile #51 P1): toggling a criterion rebuilds the CriteriaCard from the write
+    // response; evidence must survive that in-place rebuild, or a backed criterion flashes as
+    // unverified until the next full reload. s1 has ac1 (with evidence) + ac2; toggling ac1 keeps the
+    // card (ac2 still unreviewed), and ac1 must still carry its evidence afterwards.
+    @Test fun toggling_a_criterion_preserves_evidence_on_the_card() = runTest {
+        val ev = """"evidence":[{"kind":"test","ref":"pytest -q","note":"18 passed"}]"""
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/verdict") ->
+                    respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved",$ev},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/specs") ->
+                    respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") ->
+                    respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed",$ev},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        vm.setItemVerdict("a", "s1", "ac1", "approved")?.join()
+        val card = vm.stateContent().current as CriteriaCard   // still the head (ac2 unreviewed)
+        val ac1 = card.items.first { it.id == "ac1" }
+        assertEquals(1, ac1.evidence.size)
+        assertEquals("pytest -q", ac1.evidence.first().ref)
+    }
+
     // FINDING 2: a fully-answered QuestionsCard must leave the queue (not linger showing answered items),
     // so it neither strands the operator nor blocks the spec's auto-approve. Spec s1 has one criterion +
     // one open question → 2 cards. Answering the question completes its card; approving the criterion is

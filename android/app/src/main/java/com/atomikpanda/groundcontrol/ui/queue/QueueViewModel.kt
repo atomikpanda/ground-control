@@ -338,7 +338,9 @@ class QueueViewModel(
         val c = content() ?: return
         val cards = c.cards.map { card ->
             if (card is CriteriaCard && card.connectionId == connectionId && card.specId == specId)
-                card.copy(items = rev.acceptanceCriteria.map { CriterionItem(it.id, it.text, it.verdict, it.comment) })
+                // Carry evidence through the in-place rebuild too (the write response includes it) — else
+                // toggling a criterion would drop the refs and show backed criteria as unverified until reload.
+                card.copy(items = rev.acceptanceCriteria.map { CriterionItem(it.id, it.text, it.verdict, it.comment, it.evidence) })
             else card
         }
         _state.value = c.copy(cards = cards, inFlight = false, actionError = null)
