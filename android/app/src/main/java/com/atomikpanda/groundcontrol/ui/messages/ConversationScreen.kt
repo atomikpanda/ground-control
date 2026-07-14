@@ -64,6 +64,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -268,6 +269,9 @@ private fun ConversationContentView(
                         message,
                         inFlight = s.inFlight,
                         answered = answered,
+                        // Only the operator's LATEST outbound message carries the Sent/Read/Replied
+                        // indicator (standard messaging convention — avoids a label on every bubble).
+                        readState = if (index == lastHumanIndex) messageReadState(message, thread) else null,
                         onOption = { vm.send(it) },
                         onOpenEntity = onOpenEntity,
                     )
@@ -395,12 +399,28 @@ internal fun relativeTimeAgo(iso: String, nowMillis: Long): String? {
     }
 }
 
+/** Delivery state to show under the operator's own (human) message (#345): REPLIED if an agent
+ *  message follows it, else READ if the agent's read cursor covers it, else SENT. */
+enum class MessageReadState { SENT, READ, REPLIED }
+
+/** Compute the delivery state of a human message from the thread's agent read cursor. Returns null
+ *  for non-human messages (the operator's inbound agent messages get no indicator). Pure + tested. */
+internal fun messageReadState(message: Message, thread: Thread): MessageReadState? {
+    if (message.role != "human") return null
+    val idx = thread.messages.indexOfFirst { it.id == message.id }
+    if (idx >= 0 && thread.messages.drop(idx + 1).any { it.role == "agent" }) return MessageReadState.REPLIED
+    val seen = parseTimestampMillis(thread.agentSeenAt)
+    val created = parseTimestampMillis(message.createdAt)
+    return if (seen != null && created != null && seen >= created) MessageReadState.READ else MessageReadState.SENT
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageRow(
     message: Message,
     inFlight: Boolean = false,
     answered: Boolean = false,
+    readState: MessageReadState? = null,
     onOption: (String) -> Unit = {},
     onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
 ) {
@@ -422,21 +442,37 @@ private fun MessageRow(
         horizontalArrangement = if (isHuman) Arrangement.End else Arrangement.Start,
     ) {
         if (isHuman) {
-            // Plain-text bubble: native long-press-to-select + copy via
-            // SelectionContainer works cleanly here — there's no competing
-            // tap-gesture handling for SelectionContainer's own long-press
-            // recognizer to conflict with (unlike the markdown bubble below).
-            SelectionContainer {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(4.dp),
-                ) {
+            // Plain-text bubble + a small delivery indicator underneath (#345). Wrapped in an
+            // end-aligned Column so "Sent / Read / Replied" sits under the right-aligned bubble.
+            Column(horizontalAlignment = Alignment.End) {
+                // Plain-text bubble: native long-press-to-select + copy via
+                // SelectionContainer works cleanly here — there's no competing
+                // tap-gesture handling for SelectionContainer's own long-press
+                // recognizer to conflict with (unlike the markdown bubble below).
+                SelectionContainer {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(4.dp),
+                    ) {
+                        Text(
+                            text = message.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+                if (readState != null) {
                     Text(
-                        text = message.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        text = when (readState) {
+                            MessageReadState.SENT -> "Sent"
+                            MessageReadState.READ -> "Read"
+                            MessageReadState.REPLIED -> "Replied"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 8.dp, bottom = 2.dp),
                     )
                 }
             }
