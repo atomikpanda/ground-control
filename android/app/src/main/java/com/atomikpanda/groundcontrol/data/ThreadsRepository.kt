@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol.data
 
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
+import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -17,6 +18,16 @@ class ThreadsRepository(private val api: SpecApi) {
             connections.map { conn ->
                 async { WorkspaceThreads(conn, runCatching { api.listThreads(conn) }) }
             }.awaitAll()
+        }
+
+    /** WorkItems per connection (connectionId -> items), fetched concurrently, for labeling the
+     *  messages-surface groups. Best-effort: a workspace whose /items call fails contributes an
+     *  empty list (its threads fall into "Other") rather than failing the whole load. */
+    suspend fun listAllItems(connections: List<WorkspaceConnection>): Map<String, List<WorkItemSummary>> =
+        coroutineScope {
+            connections.map { conn ->
+                async { conn.id to runCatching { api.listItems(conn) }.getOrDefault(emptyList()) }
+            }.awaitAll().toMap()
         }
 
     suspend fun getThread(conn: WorkspaceConnection, id: String) = api.getThread(conn, id)

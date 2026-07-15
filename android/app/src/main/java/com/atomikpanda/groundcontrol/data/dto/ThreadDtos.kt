@@ -9,12 +9,19 @@ data class ThreadSummary(
     val subject: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
+    // Unhandled agent `event` (e.g. a PR merge) on the thread — feeds the WorkItem group
+    // attention rollup on the messages surface.
+    @SerialName("awaiting_agent_event") val awaitingAgentEvent: Boolean = false,
     @SerialName("needs_you") val needsYou: Boolean = false,
     @SerialName("unseen") val unseen: Boolean = false,
     @SerialName("agent_seen_at") val agentSeenAt: String? = null,
     @SerialName("last_message") val lastMessage: String = "",
     @SerialName("message_count") val messageCount: Int = 0,
     @SerialName("needs_decision") val needsDecision: Boolean = false,
+    // The single WorkItem that owns this thread (server-resolved: direct thread_ids
+    // membership, else indirect via spec_id/task_slug), or null when unowned. Drives the
+    // messages-surface grouping (null -> the "Other" group).
+    @SerialName("work_item_id") val workItemId: String? = null,
 )
 
 @Serializable
