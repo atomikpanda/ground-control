@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -133,6 +134,60 @@ class QueueViewModelTest {
         assertEquals(1, c.resolved)
         assertNull(c.actionError)
         assertNull(c.undo)                // approve success does NOT arm undo (can't be reversed server-side)
+    }
+
+    // AC4: swiping to finalize the LAST remaining chunk of a spec surfaces an explicit whole-spec
+    // confirmation naming the spec (the operator just shipped it) — distinct from the single-chunk
+    // 'Approved / Undo'. Server-side undo isn't possible, so it confirms by name instead. Single
+    // criteria card = the spec's last chunk, so /approve fires and the notice carries the spec title.
+    @Test fun approving_last_chunk_surfaces_whole_spec_confirmation_with_title() = runTest {
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/approve") -> respond("""{"id":"s1","status":"approved"}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/verdict") ->
+                    respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/specs") ->
+                    respond(if (req.url.host == "a") """[{"id":"s1","title":"Ship it","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") ->
+                    respond("""{"id":"s1","title":"Ship it","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        vm.approveAllCurrent()?.join()
+        val c = vm.stateContent()
+        assertTrue(c.caughtUp)                       // whole spec approved → its card left the queue
+        assertNotNull(c.specApproved)                // explicit whole-spec confirmation
+        assertEquals("Ship it", c.specApproved!!.title)
+        assertNull(c.undo)                           // a whole-spec approve is NOT undoable
+    }
+
+    // AC4 (the other branch): approving a NON-final chunk keeps the existing 'Approved / Undo' and
+    // does NOT surface a whole-spec confirmation (the spec isn't shipped yet). Two prose sections →
+    // approving the head advances past it without approving the spec.
+    @Test fun approving_non_final_chunk_keeps_undo_and_no_spec_confirmation() = runTest {
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/prose-verdict") -> respond("""{"id":"s1","status":"needs_review"}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/specs") ->
+                    respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") ->
+                    respond("""{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        assertEquals(2, vm.stateContent().cards.size)
+        vm.approveAllCurrent()?.join()
+        val c = vm.stateContent()
+        assertNull(c.specApproved)                   // spec not finalized → no whole-spec confirmation
+        assertNotNull(c.undo)                        // non-final chunk keeps 'Approved / Undo'
     }
 
     // FIX 2: approving one chunk of a MULTI-chunk spec must NOT auto-approve while siblings remain

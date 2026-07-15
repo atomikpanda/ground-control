@@ -29,6 +29,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.DataStoreCoachMarkStore
 import com.atomikpanda.groundcontrol.data.DataStoreNotificationsSetting
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.QueueRepository
@@ -87,6 +88,7 @@ fun GroundControlApp(
     // stateIn collector across Activity recreations.
     val appScope = rememberCoroutineScope()
     val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
+    val coachMark = remember { DataStoreCoachMarkStore(context.applicationContext, appScope) }
     // Activity-scoped (not per-NavBackStackEntry): shared by the Home sticky threads card and the
     // "threads" drill-in list so the loaded sections + live-poll loop survive navigating between
     // them (spec: ground-control-thread-findability).
@@ -130,6 +132,7 @@ fun GroundControlApp(
                 val uriHandler = LocalUriHandler.current
                 QueueScreen(
                     vm,
+                    coachMark = coachMark,
                     onOpenItem = { connId, itemId -> nav.navigate("item/$connId/$itemId") },
                     onOpenPr = { url -> uriHandler.openUri(url) },
                 )
