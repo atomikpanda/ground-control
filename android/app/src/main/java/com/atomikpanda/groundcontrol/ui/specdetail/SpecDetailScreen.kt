@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.SpecAction
+import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.data.availableActions
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewQuestion
@@ -188,7 +189,7 @@ private fun CriterionRow(
                 Icon(
                     Icons.Filled.Check,
                     "approve",
-                    tint = if (c.verdict == "approved") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    tint = if (c.verdict == "approved") LocalSemanticColors.current.approval else MaterialTheme.colorScheme.outline,
                 )
             }
             IconToggleButton(

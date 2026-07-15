@@ -279,6 +279,13 @@ private fun NeedsYouRow(
 ) {
     val colors = LocalSemanticColors.current
     val accent = accentFor(item.tier, colors)
+    // Tier is otherwise signaled by accent color alone; surface it as a word (visible label + icon
+    // contentDescription) so it survives color-blindness and screen readers.
+    val tierLabel = when (item) {
+        is NeedsYouItem.Blocker -> "Blocked"
+        is NeedsYouItem.Question -> "Question"
+        is NeedsYouItem.Approval -> "Review"
+    }
     val (icon, title, supporting, onClick) = when (item) {
         is NeedsYouItem.Blocker -> RowSpec(Icons.Filled.Block, "Blocked: ${item.taskSlug}", item.reason) {
             onBlocker(item.connectionId, item.taskSlug)
@@ -291,10 +298,11 @@ private fun NeedsYouRow(
         }
     }
     ListItem(
-        leadingContent = { Icon(icon, contentDescription = null, tint = accent) },
+        leadingContent = { Icon(icon, contentDescription = tierLabel, tint = accent) },
         overlineContent = { Text(item.workspaceName, style = MonoStyle, color = chipHue(item.connectionId, colors)) },
         headlineContent = { Text(title) },
         supportingContent = { Text(supporting) },
+        trailingContent = { Text(tierLabel, style = MaterialTheme.typography.labelSmall, color = accent) },
         modifier = Modifier.clickable { onClick() },
     )
 }
@@ -302,7 +310,7 @@ private fun NeedsYouRow(
 @Composable
 private fun NewMessageRow(note: NewMessageNote, onQuestion: (String, String) -> Unit) {
     ListItem(
-        leadingContent = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+        leadingContent = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "New message") },
         overlineContent = { Text(note.workspaceName, style = MonoStyle) },
         headlineContent = { Text(note.subject) },
         supportingContent = { Text(note.lastMessage) },

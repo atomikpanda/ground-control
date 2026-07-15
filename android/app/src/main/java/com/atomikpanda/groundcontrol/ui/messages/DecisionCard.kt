@@ -8,7 +8,11 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.filled.AddComment
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -189,7 +193,12 @@ private fun DecisionOptionRow(
                     enabled = enabled,
                     colors = ButtonDefaults.buttonColors(containerColor = colors.question),
                     modifier = Modifier.weight(1f),
-                ) { Text(label) }
+                ) {
+                    // "Recommended" as a glyph + screen-reader label, not color alone.
+                    Icon(Icons.Filled.Star, contentDescription = "Recommended", modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(label)
+                }
             }
             else -> {
                 // OutlinedButton + explicit onSurface content color rather

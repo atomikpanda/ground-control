@@ -10,7 +10,9 @@ object Palette {
     val darkElevated = Color(0xFF1A1F2B)
     val darkDivider = Color(0xFF2A2F3C)
     val darkText = Color(0xFFF8F8F2)
-    val darkMuted = Color(0xFF6272A4)
+    // Muted secondary text. Lightened from 0xFF6272A4 (~3.85:1 on darkSurface, below WCAG AA) to
+    // clear the 4.5:1 minimum — it carries a lot of real content (card meta, timestamps, read-state).
+    val darkMuted = Color(0xFF7A88BE)
     val darkApproval = Color(0xFF50FA7B)
     val darkQuestion = Color(0xFF8BE9FD)
     val darkBlocker = Color(0xFFFFB86C)
