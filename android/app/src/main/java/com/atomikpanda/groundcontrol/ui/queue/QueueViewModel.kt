@@ -15,6 +15,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * A swipe finalized an ENTIRE spec — its last remaining chunk was approved, so the whole spec shipped.
+ * Distinct from the undoable single-chunk 'Approved / Undo': a whole-spec approve can't be reversed
+ * server-side, so instead of pretending it's undoable we confirm it by name ('Approved spec: <title>').
+ * [key] re-triggers the reactive confirmation once per finalized spec (mirrors the undo card's key).
+ */
+data class SpecApprovedNotice(val title: String, val key: String)
+
 sealed interface QueueUiState {
     data object Loading : QueueUiState
     data object EmptyConfig : QueueUiState
@@ -25,6 +33,7 @@ sealed interface QueueUiState {
         val undo: QueueV2Card?,                    // last acted card, re-insertable at head
         val inFlight: Boolean,
         val actionError: String? = null,          // last inline-action failure (transient), shown as a snackbar
+        val specApproved: SpecApprovedNotice? = null,  // last whole-spec finalize, shown as a longer confirmation
     ) : QueueUiState {
         val current: QueueV2Card? get() = cards.firstOrNull()
         val total: Int get() = resolved + cards.size
@@ -71,6 +80,14 @@ class QueueViewModel(
         is CriteriaCard -> specId
         is QuestionsCard -> specId
         is DecisionCard -> null
+    }
+
+    /** The spec title carried on a chunk card's review metadata (blank for a decision card). */
+    private fun QueueV2Card.specTitle(): String = when (this) {
+        is ProseCard -> meta.title
+        is CriteriaCard -> meta.title
+        is QuestionsCard -> meta.title
+        is DecisionCard -> ""
     }
 
     fun refresh(): Job? {
@@ -150,8 +167,9 @@ class QueueViewModel(
                 if (isLastChunk) {
                     // whole spec approved — all its cards leave the queue. Do NOT arm undo: the
                     // approve can't be reversed server-side (a restored card re-acts into a 409).
+                    // Surface an explicit whole-spec confirmation instead (AC4), naming what shipped.
                     resolveSpec(connectionId, specId)
-                    removeSpecCardsAdvancing(specId, card, armUndo = false)
+                    removeSpecCardsAdvancing(specId, card, armUndo = false, approvedTitle = card.specTitle().ifBlank { specId })
                 } else {
                     // this card's items ARE approved; its siblings still await review — advance past it only
                     resolvedKeys.add(card.key); deferredKeys.remove(card.key)
@@ -309,7 +327,7 @@ class QueueViewModel(
      *  resolved spec). Scoped to (head.connectionId, [specId]) so a same-id spec in another workspace is
      *  untouched. Guarded on the head still being [head] so an interleaving refresh can't advance the
      *  wrong card. */
-    private fun removeSpecCardsAdvancing(specId: String, head: QueueV2Card, armUndo: Boolean) {
+    private fun removeSpecCardsAdvancing(specId: String, head: QueueV2Card, armUndo: Boolean, approvedTitle: String? = null) {
         val c = content() ?: return
         if (c.current?.key != head.key) { _state.value = c.copy(inFlight = false); return }
         val remaining = c.cards.filterNot { it.connectionId == head.connectionId && it.specId() == specId }
@@ -318,6 +336,8 @@ class QueueViewModel(
             cards = remaining,
             resolved = c.resolved + removed,
             undo = if (armUndo) head else null,
+            // A whole-spec finalize (approve path) carries a title → confirm by name; reject passes none.
+            specApproved = approvedTitle?.let { SpecApprovedNotice(it, "${head.connectionId}:$specId") },
             inFlight = false,
             actionError = null,
         )

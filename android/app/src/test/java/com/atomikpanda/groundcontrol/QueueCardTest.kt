@@ -10,16 +10,22 @@ import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewQuestion
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.data.InMemoryCoachMarkStore
 import com.atomikpanda.groundcontrol.ui.queue.CriteriaCard
 import com.atomikpanda.groundcontrol.ui.queue.DecisionCard
 import com.atomikpanda.groundcontrol.ui.queue.ProseCard
+import com.atomikpanda.groundcontrol.ui.queue.QueueHints
 import com.atomikpanda.groundcontrol.ui.queue.QuestionsCard
 import com.atomikpanda.groundcontrol.ui.queue.QueueTier
 import com.atomikpanda.groundcontrol.ui.queue.SpecCardMeta
 import com.atomikpanda.groundcontrol.ui.queue.cardsFromSpec
+import com.atomikpanda.groundcontrol.ui.queue.canApprove
 import com.atomikpanda.groundcontrol.ui.queue.decisionCardFrom
+import com.atomikpanda.groundcontrol.ui.queue.queueCardHint
 import com.atomikpanda.groundcontrol.ui.queue.sortQueue
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -204,5 +210,34 @@ class QueueCardTest {
         assertEquals(QueueTier.URGENT, sorted.first().tier)
         assertTrue(sorted.first() is DecisionCard)
         assertTrue(sorted.drop(1).all { it.tier == QueueTier.APPROVAL })
+    }
+
+    // Swipe-discoverability hints: approve-capable chunk cards teach both swipe directions; a
+    // QuestionsCard/DecisionCard instead states what's needed so swipe-right never implies an approve.
+    @Test fun card_hint_teaches_swipe_for_approve_capable_and_states_needs_for_others() {
+        val cards = cardsFromSpec(conn, spec())
+        val prose = cards.filterIsInstance<ProseCard>().first()
+        val criteria = cards.filterIsInstance<CriteriaCard>().single()
+        val questions = cards.filterIsInstance<QuestionsCard>().single()
+        val decision = decisionCardFrom(conn, threadWithDecision())!!
+
+        assertEquals(QueueHints.SWIPE_RESTING, queueCardHint(prose))
+        assertEquals(QueueHints.SWIPE_RESTING, queueCardHint(criteria))
+        assertEquals(QueueHints.ANSWER, queueCardHint(questions))
+        assertEquals(QueueHints.DECIDE, queueCardHint(decision))
+
+        assertTrue(canApprove(prose))
+        assertTrue(canApprove(criteria))
+        assertFalse(canApprove(questions))
+        assertFalse(canApprove(decision))
+    }
+
+    // The one-time onboarding coach mark's persisted "seen" flag: null while loading, false when
+    // never seen, true once dismissed (never reappears).
+    @Test fun coach_mark_seen_flag_round_trips_through_the_store() = runTest {
+        val store = InMemoryCoachMarkStore()
+        assertEquals(false, store.seen.value)   // never seen → onboarding shows
+        store.markSeen()
+        assertEquals(true, store.seen.value)     // dismissed → never reappears
     }
 }
