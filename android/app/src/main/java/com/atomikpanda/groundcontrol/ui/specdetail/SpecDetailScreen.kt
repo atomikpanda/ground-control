@@ -122,10 +122,7 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                         "repos: ${d.affectedRepos.joinToString().ifBlank { "—" }}",
                         style = MonoStyle,
                     )
-                    Text(
-                        "${sum.approved}/${sum.criteriaTotal} approved · ${sum.flagged} flagged · ${sum.unansweredQuestions} unanswered Q",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    ReadinessChipsRow(sum, Modifier.padding(top = 6.dp))
                 }
             }
             item { SpecBodyMarkdown(d.bodyMarkdown, Modifier.padding(16.dp, 4.dp)) }
