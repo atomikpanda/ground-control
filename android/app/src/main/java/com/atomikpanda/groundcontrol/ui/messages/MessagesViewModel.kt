@@ -8,6 +8,8 @@ import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -104,8 +106,13 @@ class MessagesViewModel(
         if (connections.isEmpty()) { _state.value = MessagesUiState.EmptyConfig; return null }
         _state.value = MessagesUiState.Loading
         return scope().launch {
-            val results = repo.listAllThreads(connections)
-            val itemsByConn = repo.listAllItems(connections)
+            // Fetch threads + items concurrently so the spinner isn't blocked on both round-trips
+            // end-to-end (items are best-effort and shouldn't serialize the primary load).
+            val (results, itemsByConn) = coroutineScope {
+                val threadsDeferred = async { repo.listAllThreads(connections) }
+                val itemsDeferred = async { repo.listAllItems(connections) }
+                threadsDeferred.await() to itemsDeferred.await()
+            }
             sections = results.map { ws ->
                 ThreadsSection(
                     workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },

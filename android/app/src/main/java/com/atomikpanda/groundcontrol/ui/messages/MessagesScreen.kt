@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.ui.messages
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -124,7 +125,11 @@ fun MessagesScreen(
                             item(key = "hdr-${group.workItemId ?: "other"}") { WorkItemGroupHeader(group) }
                             items(group.threads, key = { it.id }) { thread ->
                                 ThreadRow(thread) {
-                                    connByThread[thread.id]?.let { onThreadClick(it, thread.id) }
+                                    val conn = connByThread[thread.id]
+                                    if (conn != null) onThreadClick(conn, thread.id)
+                                    // Shouldn't happen (groups + connByThread derive from one render pass),
+                                    // but make an invariant break observable instead of a silent dead tap.
+                                    else Log.w("MessagesScreen", "no connection for thread ${thread.id}; tap dropped")
                                 }
                             }
                         }
