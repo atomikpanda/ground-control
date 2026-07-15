@@ -6,11 +6,13 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,22 +22,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
@@ -53,6 +60,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
@@ -60,10 +68,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.CoachMarkStore
 import com.atomikpanda.groundcontrol.data.WorkspaceError
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard as DecisionPromptCard
 import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
 import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
+import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -86,6 +96,7 @@ private const val FLING_THROW_FACTOR = 1.6f        // × card width
 @Composable
 fun QueueScreen(
     vm: QueueViewModel,
+    coachMark: CoachMarkStore,
     onOpenItem: (connectionId: String, itemId: String) -> Unit,
     onOpenPr: (url: String) -> Unit,
 ) {
@@ -101,7 +112,18 @@ fun QueueScreen(
     }
 
     val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var rejectSheet by remember { mutableStateOf(false) }
+
+    // First-run onboarding coach mark (AC3): show once when the persisted seen flag is a definite
+    // false (null = still loading → don't flash it for a returning user). The header info affordance
+    // re-opens it on demand; "Got it" persists the flag so it never reappears.
+    val seen by coachMark.seen.collectAsStateWithLifecycle()
+    var showCoach by remember { mutableStateOf(false) }
+    var autoShown by remember { mutableStateOf(false) }
+    LaunchedEffect(seen) {
+        if (seen == false && !autoShown) { showCoach = true; autoShown = true }
+    }
 
     // Surface a failed inline action (approve/reject/answer/decision) — the card is NOT dismissed on failure.
     val actionError = (state as? QueueUiState.Content)?.actionError
@@ -117,6 +139,16 @@ fun QueueScreen(
             val label = if (undo is DecisionCard) "Sent" else "Approved"
             val r = snackbar.showSnackbar(label, actionLabel = "Undo")
             if (r == SnackbarResult.ActionPerformed) vm.undo()
+        }
+    }
+
+    // Whole-spec confirmation (AC4): a swipe that finalized an entire spec shows a longer-duration
+    // 'Approved spec: <title>' — no Undo, because a whole-spec approve can't be reversed server-side.
+    // Keyed per finalized spec so each ship re-triggers.
+    val specApproved = (state as? QueueUiState.Content)?.specApproved
+    LaunchedEffect(specApproved?.key) {
+        if (specApproved != null) {
+            snackbar.showSnackbar("Approved spec: ${specApproved.title}", duration = SnackbarDuration.Long)
         }
     }
 
@@ -141,7 +173,18 @@ fun QueueScreen(
                         // card content scrolls inside the card and Skip is never pushed off-screen.
                         Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             if (s.errors.isNotEmpty()) { WorkspaceErrorLine(s.errors); Spacer(Modifier.height(8.dp)) }
-                            Text("${s.position} of ${s.total}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            // Header: position indicator + a small info affordance that re-opens the swipe
+                            // coach mark on demand (AC3) — always reachable once onboarding is dismissed.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("${s.position} of ${s.total}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                IconButton(onClick = { showCoach = true }) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.HelpOutline,
+                                        contentDescription = "How swiping works",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                             Spacer(Modifier.height(12.dp))
                             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                                 // Keyed to the card so each head gets a fresh fling offset + scroll state.
@@ -188,6 +231,60 @@ fun QueueScreen(
             onSend = { reason -> vm.rejectCurrent(reason) },
         )
     }
+
+    if (showCoach) {
+        SwipeCoachMark(onDismiss = {
+            showCoach = false
+            scope.launch { coachMark.markSeen() }   // persist: never reappears on later launches
+        })
+    }
+}
+
+/**
+ * First-run onboarding for the Queue's swipe model (AC3): a one-time, dismissible overlay that
+ * demonstrates swipe-right = approve and swipe-left = request changes. "Got it" persists the seen flag
+ * (via the caller) so it never reappears; the header info affordance re-opens it on demand.
+ */
+@Composable
+private fun SwipeCoachMark(onDismiss: () -> Unit) {
+    val approval = LocalSemanticColors.current.approval
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Swipe to review") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "This is where you clear the queue. Swipe each card:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Check, contentDescription = null, tint = approval)
+                    Text(
+                        "  Swipe right to approve",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = approval,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    Text(
+                        "  Swipe left to request changes",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Text(
+                    "Questions and decisions ask you to answer or choose instead. Skip sends a card to the back.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Got it") } },
+    )
 }
 
 /**
@@ -245,7 +342,48 @@ private fun FlingCard(
                     }
                 },
             ),
-    ) { content() }
+    ) {
+        content()
+        // Drag directional stamps (AC1): as the card is dragged, a cue fades in whose alpha grows with
+        // drag distance toward the fling threshold — green Approve toward the right, red Request changes
+        // toward the left — and clears on release / spring-back (offset → 0). Shown only for the direction
+        // that's a valid action on this card. Driven by a graphicsLayer lambda so a drag never recomposes.
+        val approval = LocalSemanticColors.current.approval
+        val error = MaterialTheme.colorScheme.error
+        if (canFlingRight) {
+            DragStamp("✓ ${QueueHints.APPROVE}", approval, Alignment.TopEnd) {
+                (offsetX.value / (widthPx.toFloat() * FLING_DISTANCE_FRACTION)).coerceIn(0f, 1f)
+            }
+        }
+        if (canFlingLeft) {
+            DragStamp("⚑ ${QueueHints.REQUEST_CHANGES}", error, Alignment.TopStart) {
+                (-offsetX.value / (widthPx.toFloat() * FLING_DISTANCE_FRACTION)).coerceIn(0f, 1f)
+            }
+        }
+    }
+}
+
+/** A directional drag cue stamped over a corner of the flung card. [alpha] is read in the draw phase
+ *  (a lambda) so following the finger never triggers recomposition. */
+@Composable
+private fun BoxScope.DragStamp(
+    text: String,
+    color: Color,
+    alignment: Alignment,
+    alpha: () -> Float,
+) {
+    Text(
+        text,
+        color = color,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier
+            .align(alignment)
+            .padding(16.dp)
+            .graphicsLayer { this.alpha = alpha() }
+            .border(BorderStroke(2.dp, color), RoundedCornerShape(6.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
 }
 
 /** AC11: a compact per-workspace error banner (mirrors HomeScreen's error chips). */
@@ -357,6 +495,17 @@ private fun CardFace(
                     )
                 }
             }
+            Spacer(Modifier.height(12.dp))
+            // Always-visible resting hint (AC2/AC5): a subtle, non-tappable line teaching what a swipe
+            // does before the operator tries it — both directions for approve-capable cards, or what's
+            // needed for questions/decisions. Muted + centered so it never reads as a tappable button.
+            Text(
+                queueCardHint(card),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
