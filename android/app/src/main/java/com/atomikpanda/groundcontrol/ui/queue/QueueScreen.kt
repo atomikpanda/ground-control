@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard as DecisionPromptCard
 import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
 import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
@@ -409,7 +410,7 @@ private fun VerdictToggles(
         Icon(
             Icons.Filled.Check,
             "approve",
-            tint = if (approved) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+            tint = if (approved) LocalSemanticColors.current.approval else MaterialTheme.colorScheme.outline,
         )
     }
     IconToggleButton(checked = flagged, enabled = enabled, onCheckedChange = { onFlag() }) {

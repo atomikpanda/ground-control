@@ -210,7 +210,8 @@ private fun ThreadRow(thread: ThreadSummary, onClick: () -> Unit) {
     val supporting = buildString {
         if (thread.lastMessage.isNotBlank()) append(thread.lastMessage)
         append(" · $replyMarker")
-        if (thread.updatedAt != null) append(" · ${thread.updatedAt}")
+        // Human relative time ("3m ago") instead of a raw ISO string; omit on an unparseable value.
+        thread.updatedAt?.let { relativeTimeAgo(it, System.currentTimeMillis()) }?.let { append(" · $it") }
     }
     ListItem(
         leadingContent = if (thread.unseen) {
