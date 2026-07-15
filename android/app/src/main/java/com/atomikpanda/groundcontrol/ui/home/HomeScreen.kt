@@ -9,10 +9,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Block
@@ -59,6 +61,7 @@ fun HomeScreen(
     onBrowseWorkspace: (connectionId: String) -> Unit,
     onCapture: () -> Unit,
     onOpenThreads: () -> Unit,
+    onReviewInQueue: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val messagesState by messagesVm.state.collectAsStateWithLifecycle()
@@ -147,6 +150,18 @@ fun HomeScreen(
                         }
                     }
                 }
+                // Needs-you leads the content (spec gc-uiux-finish; operator ordering: rail stays on
+                // top, needs-you sits just above the threads card). Header + count + one-tap funnel
+                // into the Queue tab; zero items shows a calm caught-up state with no funnel.
+                item {
+                    NeedsYouHeader(
+                        count = s.items.size,
+                        onReviewInQueue = onReviewInQueue,
+                    )
+                }
+                items(s.items, key = { it.key }) { item ->
+                    NeedsYouRow(item, onApproval, onQuestion, onBlocker)
+                }
                 // Sticky threads card — slim entry point into the full threads list, pinned above
                 // the needs-you queue. Home otherwise stays needs-you-only (spec: thread-findability).
                 if (messagesState is MessagesUiState.Content) {
@@ -164,23 +179,6 @@ fun HomeScreen(
                             onSelect = { messagesVm.selectStateFilter(it) },
                         )
                     }
-                }
-                // Empty state
-                if (s.items.isEmpty() && s.notes.isEmpty() && s.errors.isEmpty()) {
-                    item {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .padding(32.dp),
-                            Alignment.Center,
-                        ) {
-                            Text("Nothing needs you right now.", style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                }
-                // The "Needs you" queue
-                items(s.items, key = { it.key }) { item ->
-                    NeedsYouRow(item, onApproval, onQuestion, onBlocker)
                 }
                 // Quiet "New messages" section for unseen plain notes
                 if (s.notes.isNotEmpty()) {
@@ -265,6 +263,30 @@ private fun ThreadsStickyCard(unreadCount: Int, peek: List<ThreadSummary>, onCli
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NeedsYouHeader(count: Int, onReviewInQueue: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(16.dp, 12.dp, 16.dp, 4.dp)) {
+        Text(
+            needsYouHeader(count),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        reviewInQueueCta(count)?.let { cta ->
+            TextButton(
+                onClick = onReviewInQueue,
+                modifier = Modifier.padding(top = 4.dp),
+            ) {
+                Text(cta)
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    modifier = Modifier.padding(start = 4.dp).size(18.dp),
+                )
             }
         }
     }
