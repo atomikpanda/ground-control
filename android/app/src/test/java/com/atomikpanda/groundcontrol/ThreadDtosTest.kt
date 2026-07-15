@@ -101,6 +101,28 @@ class ThreadDtosTest {
         assertFalse(s.needsDecision)
     }
 
+    @Test fun summary_parses_work_item_id() {
+        val raw = """{"id":"t1","subject":"s","work_item_id":"wi-abc"}"""
+        val s = buildJson().decodeFromString<ThreadSummary>(raw)
+        assertEquals("wi-abc", s.workItemId)
+    }
+
+    @Test fun summary_work_item_id_defaults_null_when_omitted() {
+        val s = buildJson().decodeFromString<ThreadSummary>("""{"id":"t1","subject":"s"}""")
+        assertNull(s.workItemId)
+    }
+
+    @Test fun summary_parses_awaiting_agent_event() {
+        val raw = """{"id":"t1","subject":"s","awaiting_agent_event":true}"""
+        val s = buildJson().decodeFromString<ThreadSummary>(raw)
+        assertTrue(s.awaitingAgentEvent)
+    }
+
+    @Test fun summary_awaiting_agent_event_defaults_false_when_omitted() {
+        val s = buildJson().decodeFromString<ThreadSummary>("""{"id":"t1","subject":"s"}""")
+        assertFalse(s.awaitingAgentEvent)
+    }
+
     @Test fun parses_work_item_fields() {
         val raw = """{"id":"t1","subject":"Idea","work_item_id":"wi-1",
             "work_item":{"id":"wi-1","title":"Make capture conversational","kind":"feature","phase":"in_flight"}}"""

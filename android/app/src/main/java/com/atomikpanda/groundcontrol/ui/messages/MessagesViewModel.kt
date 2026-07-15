@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
+import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -18,6 +19,9 @@ data class ThreadsSection(
     val workspaceName: String,
     val connectionId: String,
     val threads: Result<List<ThreadSummary>>,
+    // WorkItems for this workspace, used only to label the by-WorkItem groups (title + kind).
+    // Empty until the first successful /items fetch; threads then fall into "Other".
+    val items: List<WorkItemSummary> = emptyList(),
 )
 
 /** A thread paired with the connectionId of the workspace it came from. Built directly from
@@ -40,6 +44,8 @@ sealed interface MessagesUiState {
      * @param filteredThreads workspace-AND-state filtered threads, newest-first, each paired with its
      *   owning connectionId — what the drill-in list renders and navigates from directly (no
      *   re-lookup against [sections], which can transiently race during a live-merge).
+     * @param groups the same [filteredThreads] bucketed by owning WorkItem (null -> "Other"),
+     *   ordered by newest thread — what the messages surface renders as sections.
      * @param unreadCount total unseen-thread count across all workspaces (for the sticky card badge).
      * @param unreadCountsByWorkspace unseen-thread count per connectionId (for per-workspace badges).
      */
@@ -48,6 +54,7 @@ sealed interface MessagesUiState {
         val selectedConnectionId: String? = null,
         val stateFilter: ThreadStateFilter = ThreadStateFilter.ALL,
         val filteredThreads: List<FilteredThread> = emptyList(),
+        val groups: List<WorkItemThreadGroup> = emptyList(),
         val unreadCount: Int = 0,
         val unreadCountsByWorkspace: Map<String, Int> = emptyMap(),
     ) : MessagesUiState
@@ -98,11 +105,13 @@ class MessagesViewModel(
         _state.value = MessagesUiState.Loading
         return scope().launch {
             val results = repo.listAllThreads(connections)
+            val itemsByConn = repo.listAllItems(connections)
             sections = results.map { ws ->
                 ThreadsSection(
                     workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
                     connectionId = ws.connection.id,
                     threads = ws.threads,
+                    items = itemsByConn[ws.connection.id] ?: emptyList(),
                 )
             }
             render()
@@ -172,13 +181,20 @@ class MessagesViewModel(
             .sortedByDescending { it.updatedAt ?: "" }
 
     private fun render() {
-        val filtered = sections
+        val visibleSections = sections
             .filter { selectedConnectionId == null || it.connectionId == selectedConnectionId }
+        val filtered = visibleSections
             .flatMap { section ->
                 (section.threads.getOrNull() ?: emptyList()).map { FilteredThread(section.connectionId, it) }
             }
             .filter { it.thread.matchesStateFilter(stateFilter) }
             .sortedByDescending { it.thread.updatedAt ?: "" }
+        // Bucket the (already workspace+state filtered) threads by owning WorkItem. WorkItem ids
+        // are globally unique, so combining items across the visible workspaces is safe.
+        val groups = groupThreadsByWorkItem(
+            filtered.map { it.thread },
+            visibleSections.flatMap { it.items },
+        )
         val unreadByWorkspace = sections.associate { section ->
             section.connectionId to (section.threads.getOrNull()?.count { it.unseen } ?: 0)
         }
@@ -187,6 +203,7 @@ class MessagesViewModel(
             selectedConnectionId = selectedConnectionId,
             stateFilter = stateFilter,
             filteredThreads = filtered,
+            groups = groups,
             unreadCount = unreadByWorkspace.values.sum(),
             unreadCountsByWorkspace = unreadByWorkspace,
         )

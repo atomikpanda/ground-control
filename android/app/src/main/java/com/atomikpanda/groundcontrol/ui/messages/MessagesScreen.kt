@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -104,19 +105,29 @@ fun MessagesScreen(
                 MessagesUiState.EmptyConfig -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                     Text("Add a workspace in Settings to see messages.")
                 }
-                is MessagesUiState.Content -> LazyColumn(Modifier.fillMaxSize()) {
-                    item { ThreadsWorkspaceRail(s, vm::selectWorkspace) }
-                    item { ThreadStateChipRow(s.stateFilter, vm::selectStateFilter) }
-                    if (s.filteredThreads.isEmpty()) {
-                        item {
-                            Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
-                                Text("No threads here yet.")
+                is MessagesUiState.Content -> {
+                    // Threads are grouped by WorkItem for display; the tap target still needs each
+                    // thread's owning connectionId, which lives on filteredThreads (never re-looked-up
+                    // against sections — that can transiently race during a live-merge).
+                    val connByThread = s.filteredThreads.associate { it.thread.id to it.connectionId }
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        item { ThreadsWorkspaceRail(s, vm::selectWorkspace) }
+                        item { ThreadStateChipRow(s.stateFilter, vm::selectStateFilter) }
+                        if (s.groups.isEmpty()) {
+                            item {
+                                Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
+                                    Text("No threads here yet.")
+                                }
                             }
                         }
-                    }
-                    items(s.filteredThreads.size, key = { s.filteredThreads[it].thread.id }) { i ->
-                        val filtered = s.filteredThreads[i]
-                        ThreadRow(filtered.thread) { onThreadClick(filtered.connectionId, filtered.thread.id) }
+                        s.groups.forEach { group ->
+                            item(key = "hdr-${group.workItemId ?: "other"}") { WorkItemGroupHeader(group) }
+                            items(group.threads, key = { it.id }) { thread ->
+                                ThreadRow(thread) {
+                                    connByThread[thread.id]?.let { onThreadClick(it, thread.id) }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -200,6 +211,40 @@ private fun ThreadStateFilter.chipLabel(): String = when (this) {
     ThreadStateFilter.ALL -> "All"
     ThreadStateFilter.UNREAD -> "Unread"
     ThreadStateFilter.NEEDS_YOU -> "Needs you"
+}
+
+/** Section header for a WorkItem group (or the "Other" bucket): the item's title + kind, plus an
+ *  attention dot when any thread in the group needs the operator (see [WorkItemThreadGroup]). */
+@Composable
+private fun WorkItemGroupHeader(group: WorkItemThreadGroup) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(16.dp, 16.dp, 16.dp, 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            group.title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f),
+        )
+        if (group.kind.isNotBlank()) {
+            Text(
+                group.kind.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (group.hasAttention) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .background(MaterialTheme.colorScheme.error, CircleShape)
+            )
+        }
+    }
 }
 
 /** One thread row. `unseen` threads get a bold headline + a small leading dot — the "unread
