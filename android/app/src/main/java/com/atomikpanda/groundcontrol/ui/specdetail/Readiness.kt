@@ -1,9 +1,11 @@
 package com.atomikpanda.groundcontrol.ui.specdetail
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -23,7 +25,11 @@ fun readinessChips(sum: Summary): List<ReadinessChip> = listOf(
     ReadinessChip("${sum.unansweredQuestions} unanswered", ChipRole.UNANSWERED),
 )
 
-/** Readiness summary as a row of colored counter chips (approved/flagged/unanswered). */
+/**
+ * Readiness summary as a row of non-interactive, per-role colored pills (approved/flagged/unanswered).
+ * Built as tinted [Surface]s rather than a disabled `AssistChip` — a disabled chip renders a flat gray
+ * container for every role (only the label picks up color), which would make the three read identically.
+ */
 @Composable
 fun ReadinessChipsRow(sum: Summary, modifier: Modifier = Modifier) {
     val colors = LocalSemanticColors.current
@@ -34,15 +40,18 @@ fun ReadinessChipsRow(sum: Summary, modifier: Modifier = Modifier) {
                 ChipRole.FLAGGED -> colors.error
                 ChipRole.UNANSWERED -> colors.muted
             }
-            AssistChip(
-                onClick = {},
-                enabled = false,
-                label = { Text(chip.label) },
-                colors = AssistChipDefaults.assistChipColors(
-                    disabledLabelColor = tint,
-                    disabledLeadingIconContentColor = tint,
-                ),
-            )
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = tint.copy(alpha = 0.12f),
+                contentColor = tint,
+                border = BorderStroke(1.dp, tint.copy(alpha = 0.5f)),
+            ) {
+                Text(
+                    chip.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
         }
     }
 }

@@ -162,8 +162,9 @@ fun HomeScreen(
                 items(s.items, key = { it.key }) { item ->
                     NeedsYouRow(item, onApproval, onQuestion, onBlocker)
                 }
-                // Sticky threads card — slim entry point into the full threads list, pinned above
-                // the needs-you queue. Home otherwise stays needs-you-only (spec: thread-findability).
+                // Sticky threads card — slim entry point into the full threads list, shown below the
+                // needs-you queue (spec gc-uiux-finish reordered needs-you above it; the workspace
+                // rail still leads). Home stays needs-you-first for its primary content.
                 if (messagesState is MessagesUiState.Content) {
                     val ms = messagesState as MessagesUiState.Content
                     item {

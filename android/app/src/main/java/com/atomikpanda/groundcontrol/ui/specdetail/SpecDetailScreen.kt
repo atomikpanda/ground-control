@@ -301,8 +301,11 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
             if (SpecAction.REQUEST_CHANGES in actions)
                 OutlinedButton(enabled = !busy, onClick = { showReason = true }) { Text("Request changes") }
             if (SpecAction.APPROVE in actions) {
+                // Approve and its overflow are siblings in the ActionBar Row (spaced), not stacked in a
+                // Box — a Box would place both at TopStart and overlap them. The menu anchors to the
+                // overflow via its own Box.
+                Button(enabled = !busy, onClick = { showApproveConfirm = true }) { Text("Approve") }
                 Box {
-                    Button(enabled = !busy, onClick = { showApproveConfirm = true }) { Text("Approve") }
                     IconButton(enabled = !busy, onClick = { menu = true }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "More approve actions")
                     }
