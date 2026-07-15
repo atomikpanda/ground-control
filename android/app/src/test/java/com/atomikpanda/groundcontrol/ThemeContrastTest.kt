@@ -13,7 +13,8 @@ import kotlin.math.pow
 class ThemeContrastTest {
     private fun channel(v: Float): Double {
         val x = v.toDouble()
-        return if (x <= 0.03928) x / 12.92 else ((x + 0.055) / 1.055).pow(2.4)
+        // WCAG 2.1 sRGB linearization breakpoint is 0.04045 (0.03928 was an earlier IEC draft).
+        return if (x <= 0.04045) x / 12.92 else ((x + 0.055) / 1.055).pow(2.4)
     }
 
     private fun luminance(c: Color): Double =
@@ -28,5 +29,12 @@ class ThemeContrastTest {
     @Test fun muted_text_meets_wcag_aa_on_dark_surface() {
         val ratio = contrast(Palette.darkMuted, Palette.darkSurface)
         assertTrue("darkMuted on darkSurface is $ratio, below WCAG AA 4.5:1", ratio >= 4.5)
+    }
+
+    // onSurfaceVariant (= darkMuted) also renders on the surfaceVariant/elevated tone; check the
+    // tighter pairing too so muted text is legible on both backgrounds it can appear over.
+    @Test fun muted_text_meets_wcag_aa_on_surface_variant() {
+        val ratio = contrast(Palette.darkMuted, Palette.darkElevated)
+        assertTrue("darkMuted on darkElevated is $ratio, below WCAG AA 4.5:1", ratio >= 4.5)
     }
 }
