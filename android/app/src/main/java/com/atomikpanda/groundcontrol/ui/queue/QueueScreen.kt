@@ -235,7 +235,7 @@ fun QueueScreen(
     if (showCoach) {
         SwipeCoachMark(onDismiss = {
             showCoach = false
-            scope.launch { coachMark.markSeen() }   // persist: never reappears on later launches
+            coachMark.markSeenAsync()   // persist on the store's app-level scope: never reappears
         })
     }
 }

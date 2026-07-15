@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +22,11 @@ interface CoachMarkStore {
     /** null = still loading from disk; false = never seen; true = dismissed at least once. */
     val seen: StateFlow<Boolean?>
     suspend fun markSeen()
+
+    /** Fire-and-forget persist on the store's own (app-level) scope, so a caller dismissing the
+     *  overlay doesn't have to hold a stable scope — the write can't be cancelled by the UI leaving
+     *  composition mid-write (which would let the one-time overlay reappear). */
+    fun markSeenAsync()
 }
 
 // Reuses the single app-wide settings DataStore (see SettingsRepository.settingsStore) — a second
@@ -29,7 +35,7 @@ internal val QUEUE_COACH_MARK_SEEN = booleanPreferencesKey("queue_coach_mark_see
 
 class DataStoreCoachMarkStore(
     private val context: Context,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
 ) : CoachMarkStore {
     override val seen: StateFlow<Boolean?> =
         context.settingsStore.data.map { it[QUEUE_COACH_MARK_SEEN] ?: false }
@@ -38,6 +44,8 @@ class DataStoreCoachMarkStore(
     override suspend fun markSeen() {
         context.settingsStore.edit { it[QUEUE_COACH_MARK_SEEN] = true }
     }
+
+    override fun markSeenAsync() { scope.launch { markSeen() } }
 }
 
 /** In-memory [CoachMarkStore] for tests/previews (no DataStore/Context). */
@@ -45,4 +53,5 @@ class InMemoryCoachMarkStore(seen: Boolean = false) : CoachMarkStore {
     private val _seen = MutableStateFlow<Boolean?>(seen)
     override val seen: StateFlow<Boolean?> = _seen.asStateFlow()
     override suspend fun markSeen() { _seen.value = true }
+    override fun markSeenAsync() { _seen.value = true }
 }
