@@ -479,5 +479,33 @@ class QueueViewModelTest {
         assertEquals(0, c.resolved)
     }
 
+    // Whole-spec confirm parity: approving the LAST criterion in place (the per-item finalize path, not a
+    // swipe) approves the whole spec and drops its cards — it must surface the SAME by-name whole-spec
+    // confirmation the swipe path does, not vanish silently. Single-criterion spec → approving ac1 finalizes.
+    @Test fun finalizing_last_criterion_in_place_surfaces_whole_spec_confirmation_with_title() = runTest {
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/approve") -> respond("""{"id":"s1","status":"approved"}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/verdict") ->
+                    respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/specs") ->
+                    respond(if (req.url.host == "a") """[{"id":"s1","title":"Ship it","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") ->
+                    respond("""{"id":"s1","title":"Ship it","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        vm.setItemVerdict("a", "s1", "ac1", "approved")?.join()
+        val c = vm.stateContent()
+        assertTrue(c.caughtUp)                       // whole spec approved → its card left the queue
+        assertNotNull(c.specApproved)                // parity: per-item finalize also confirms by name
+        assertEquals("Ship it", c.specApproved!!.title)
+        assertNull(c.undo)                           // a whole-spec approve is not undoable
+    }
+
     private fun QueueViewModel.stateContent(): QueueUiState.Content = state.value as QueueUiState.Content
 }
