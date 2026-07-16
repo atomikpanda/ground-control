@@ -123,6 +123,7 @@ fun GroundControlApp(
                     onBrowseWorkspace = { connId -> nav.navigate("farm/$connId") },
                     onCapture = { nav.navigate("capture") },
                     onOpenThreads = { nav.navigate("threads") },
+                    onReviewInQueue = { nav.navigate(Section.QUEUE.route) { launchSingleTop = true } },
                 )
             }
             composable(Section.QUEUE.route) {

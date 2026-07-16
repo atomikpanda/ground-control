@@ -13,12 +13,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconToggleButton
@@ -122,10 +124,7 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                         "repos: ${d.affectedRepos.joinToString().ifBlank { "—" }}",
                         style = MonoStyle,
                     )
-                    Text(
-                        "${sum.approved}/${sum.criteriaTotal} approved · ${sum.flagged} flagged · ${sum.unansweredQuestions} unanswered Q",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    ReadinessChipsRow(sum, Modifier.padding(top = 6.dp))
                 }
             }
             item { SpecBodyMarkdown(d.bodyMarkdown, Modifier.padding(16.dp, 4.dp)) }
@@ -291,6 +290,7 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
     var menu by remember { mutableStateOf(false) }
     var showReason by remember { mutableStateOf(false) }
     var showDispatch by remember { mutableStateOf(false) }
+    var showApproveConfirm by remember { mutableStateOf(false) }
     val busy = s.inFlight != null
 
     Surface(tonalElevation = 3.dp) {
@@ -301,9 +301,14 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
             if (SpecAction.REQUEST_CHANGES in actions)
                 OutlinedButton(enabled = !busy, onClick = { showReason = true }) { Text("Request changes") }
             if (SpecAction.APPROVE in actions) {
+                // Approve and its overflow are siblings in the ActionBar Row (spaced), not stacked in a
+                // Box — a Box would place both at TopStart and overlap them. The menu anchors to the
+                // overflow via its own Box.
+                Button(enabled = !busy, onClick = { showApproveConfirm = true }) { Text("Approve") }
                 Box {
-                    Button(enabled = !busy, onClick = { vm.approve(bypass = false) }) { Text("Approve") }
-                    TextButton(enabled = !busy, onClick = { menu = true }) { Text("▾") }
+                    IconButton(enabled = !busy, onClick = { menu = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More approve actions")
+                    }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(
                             text = { Text("Approve anyway") },
@@ -313,11 +318,17 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                 }
             }
             if (SpecAction.DISPATCH in actions)
-                Button(enabled = !busy, onClick = { showDispatch = true }) { Text("Plan implementation") }
+                FilledTonalButton(enabled = !busy, onClick = { showDispatch = true }) { Text("Plan implementation") }
         }
     }
 
     if (showReason) ReasonDialog(onDismiss = { showReason = false }) { showReason = false; vm.requestChanges(it) }
+    if (showApproveConfirm) ConfirmDialog(
+        title = "Approve this spec?",
+        body = "Marks the spec approved and unblocks implementation.",
+        confirm = "Approve",
+        onDismiss = { showApproveConfirm = false },
+    ) { showApproveConfirm = false; vm.approve(bypass = false) }
     if (showDispatch) ConfirmDialog(
         title = "Plan the implementation?",
         body = "This spawns a task and starts writing the implementation plan on the host.",
