@@ -24,7 +24,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -131,6 +130,6 @@ class DoneViewModelTest {
         val c = (vm.state.value as DoneUiState.Content).c
         assertEquals(1, c.criteria.size)
         assertEquals("commit", c.criteria[0].evidence[0].kind)
-        assertTrue(c.prUrls.contains("http://pr/1"))
+        assertEquals(listOf("http://pr/1"), c.prUrls)
     }
 }
