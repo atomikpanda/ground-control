@@ -151,6 +151,16 @@ private fun CriterionEvidenceRow(crit: ReviewCriterion, prUrls: List<String>, co
     val uriHandler = LocalUriHandler.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(crit.text, style = MaterialTheme.typography.bodyMedium)
+        // AC1: show the review verdict — a flagged criterion must not read as approved.
+        Text(
+            crit.verdict,
+            style = MonoStyle,
+            color = when (crit.verdict) {
+                "approved" -> colors.approval
+                "flagged" -> colors.error
+                else -> colors.muted
+            },
+        )
         if (isUnverified(crit.evidence)) {
             Text("unverified", style = MonoStyle, color = colors.muted)
         } else {

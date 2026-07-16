@@ -173,4 +173,24 @@ class ReviewViewModelTest {
         val c = (vm.state.value as ReviewUiState.Content).c
         assertTrue(c.criteria.isEmpty())
     }
+
+    @Test fun load_survives_spec_fetch_error_with_empty_criteria() = runTest {
+        // Best-effort boundary: a spec 500 must NOT degrade the page to Failed —
+        // it stays Content with empty criteria (Greptile #57).
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/specs/spec-1") && req.method == HttpMethod.Get ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        val c = (vm.state.value as ReviewUiState.Content).c   // Content, not Failed
+        assertTrue(c.criteria.isEmpty())
+    }
 }
