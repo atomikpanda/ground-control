@@ -400,7 +400,8 @@ class QueueViewModel(
         runCatching { repo.approve(conn(card), specId) }
             .onSuccess {
                 resolveSpec(connectionId, specId)
-                removeSpecCards(connectionId, specId)
+                // Whole spec just shipped via in-place finalize → confirm by name, matching the swipe path.
+                removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
             }
             .onFailure { t ->
                 if (t is ApiConflictException) {
@@ -428,7 +429,8 @@ class QueueViewModel(
             _state.value = c2.copy(inFlight = false, actionError = "Approve blocked — this spec still needs review.")
         } else {
             resolveSpec(connectionId, specId)
-            removeSpecCards(connectionId, specId)
+            // 409 reconciled to "already approved" → the spec still shipped, so confirm it by name.
+            removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
         }
     }
 
@@ -443,11 +445,20 @@ class QueueViewModel(
 
     /** Drop every queued card of ([connectionId], [specId]) from the live queue (the whole spec is
      *  done). Head-agnostic sibling of [removeSpecCardsAdvancing] for the in-place-completion paths,
-     *  where the finalizing card need not be the head. */
-    private fun removeSpecCards(connectionId: String, specId: String) {
+     *  where the finalizing card need not be the head. When [approvedTitle] is non-null the completion
+     *  was a whole-spec approve, so it surfaces the same by-name confirmation the swipe path does
+     *  ([SpecApprovedNotice]) — the in-place finalize used to drop the cards silently. */
+    private fun removeSpecCards(connectionId: String, specId: String, approvedTitle: String? = null) {
         val c = content() ?: return
         val remaining = c.cards.filterNot { it.connectionId == connectionId && it.specId() == specId }
         val removed = c.cards.size - remaining.size
-        _state.value = c.copy(cards = remaining, resolved = c.resolved + removed, undo = null, inFlight = false, actionError = null)
+        _state.value = c.copy(
+            cards = remaining,
+            resolved = c.resolved + removed,
+            undo = null,
+            specApproved = approvedTitle?.let { SpecApprovedNotice(it, "$connectionId:$specId") },
+            inFlight = false,
+            actionError = null,
+        )
     }
 }
