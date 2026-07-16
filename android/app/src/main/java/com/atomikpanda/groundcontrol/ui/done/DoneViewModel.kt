@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
@@ -24,6 +25,8 @@ data class DoneContent(
     val reposTouched: List<String>,
     val completedAt: String?,      // max task.finishedAt, else item.updatedAt
     val review: ReviewSummary?,    // null when the item has no spec
+    val criteria: List<ReviewCriterion> = emptyList(),
+    val prUrls: List<String> = emptyList(),
 )
 
 sealed interface DoneUiState {
@@ -57,8 +60,17 @@ class DoneViewModel(
                 .awaitAll().filterNotNull()
             val reposTouched = tasks.flatMap { it.affectedRepos }.distinct()
             val completedAt = tasks.mapNotNull { it.finishedAt }.maxOrNull() ?: item.updatedAt
-            val review = item.specId?.let { runCatching { api.getReview(conn, it).summary }.getOrNull() }
-            DoneUiState.Content(DoneContent(item, tasks, reposTouched, completedAt, review))
+            // One review fetch yields both the summary and the acceptance criteria (with evidence).
+            val reviewRecord = item.specId?.let { runCatching { api.getReview(conn, it) }.getOrNull() }
+            val prUrls = tasks.flatMap { it.prUrls.values }.distinct()
+            DoneUiState.Content(
+                DoneContent(
+                    item, tasks, reposTouched, completedAt,
+                    review = reviewRecord?.summary,
+                    criteria = reviewRecord?.acceptanceCriteria ?: emptyList(),
+                    prUrls = prUrls,
+                )
+            )
         }
     } catch (e: CancellationException) {
         throw e

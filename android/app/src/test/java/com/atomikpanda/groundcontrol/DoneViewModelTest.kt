@@ -24,6 +24,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -91,5 +92,45 @@ class DoneViewModelTest {
         vm.load().join()
         val c = vm.state.value as DoneUiState.Content
         assertEquals("2026-07-02T00:00:00Z", c.c.completedAt)
+    }
+
+    private val itemWithSpecJson = """
+        {"id":"wi-1","kind":"feature","title":"T","phase":"done",
+         "task_slugs":["a"],"spec_id":"spec-1","updated_at":"2026-07-02T00:00:00Z"}
+    """.trimIndent()
+
+    private val taskWithPrJson = """
+        {"slug":"a","description":"do the thing","phase":"done","branch":"feat/a",
+         "pr_urls":{"mothership":"http://pr/1"},"test_results":{"mothership":"pass"},
+         "affected_repos":["mothership"],"finished_at":"2026-07-01T12:00:00Z"}
+    """.trimIndent()
+
+    private val reviewJson = """
+        {"id":"spec-1","status":"dispatched",
+         "acceptance_criteria":[
+           {"id":"ac1","text":"does the thing","verdict":"approved",
+            "evidence":[{"kind":"commit","ref":"abc123","note":null}]}
+         ],
+         "summary":{"criteria_total":1,"approved":1}}
+    """.trimIndent()
+
+    @Test fun load_surfaces_acceptance_criteria_and_pr_urls() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskWithPrJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/specs/spec-1/review") && req.method == HttpMethod.Get ->
+                    respond(reviewJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        val c = (vm.state.value as DoneUiState.Content).c
+        assertEquals(1, c.criteria.size)
+        assertEquals("commit", c.criteria[0].evidence[0].kind)
+        assertTrue(c.prUrls.contains("http://pr/1"))
     }
 }
