@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -17,7 +18,13 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
 data class PrRow(val taskSlug: String, val repo: String, val url: String, val testStatus: String?)
-data class ReviewContent(val item: WorkItemSummary, val prs: List<PrRow>, val threadId: String?)
+data class ReviewContent(
+    val item: WorkItemSummary,
+    val prs: List<PrRow>,
+    val threadId: String?,
+    val criteria: List<ReviewCriterion> = emptyList(),
+    val prUrls: List<String> = emptyList(),
+)
 
 sealed interface ReviewUiState {
     data object Loading : ReviewUiState
@@ -65,7 +72,18 @@ class ReviewViewModel(
                     PrRow(taskSlug = t.slug, repo = repo, url = url, testStatus = t.testResults[repo])
                 }
             }
-            ReviewUiState.Content(ReviewContent(item, prs, item.threadIds.firstOrNull()))
+            // Best-effort: a spec-fetch failure (or a no-spec item) never fails the review page.
+            val criteria = item.specId
+                ?.let { runCatching { api.getSpec(conn, it) }.getOrNull() }
+                ?.acceptanceCriteria
+                ?: emptyList()
+            ReviewUiState.Content(
+                ReviewContent(
+                    item, prs, item.threadIds.firstOrNull(),
+                    criteria = criteria,
+                    prUrls = prs.map { it.url }.distinct(),
+                )
+            )
         }
     } catch (e: CancellationException) {
         throw e

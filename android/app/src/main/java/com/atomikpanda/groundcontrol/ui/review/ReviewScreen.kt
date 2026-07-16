@@ -36,8 +36,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import com.atomikpanda.groundcontrol.ui.components.ExternalLinksRow
+import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
+import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 import com.atomikpanda.groundcontrol.ui.theme.SemanticColors
@@ -105,6 +108,19 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
             } else {
                 items(c.prs, key = { "${it.taskSlug}:${it.repo}" }) { pr -> PrRowView(pr, colors) }
             }
+
+            if (c.criteria.isNotEmpty()) {
+                item {
+                    Text(
+                        "Acceptance criteria",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                    )
+                }
+                items(c.criteria, key = { it.id }) { crit ->
+                    CriterionEvidenceRow(crit, c.prUrls, colors)
+                }
+            }
         }
         val sending by vm.sending.collectAsStateWithLifecycle()
         val sendError by vm.sendError.collectAsStateWithLifecycle()
@@ -124,6 +140,46 @@ private fun HeaderSection(item: WorkItemSummary) {
         Text(item.title, style = MaterialTheme.typography.titleLarge)
         Text("Review", style = MonoStyle, color = MaterialTheme.colorScheme.outline)
         ExternalLinksRow(item.externalLinks, Modifier.padding(top = 4.dp))
+    }
+}
+
+/** One acceptance criterion + its evidence. Commit-kind evidence (and artifact URLs) tap through
+ *  to GitHub via [evidenceOpenUrl]; test refs and multi-repo commits render read-only. Labels reuse
+ *  the shared specdetail [evidenceLabels] helper. */
+@Composable
+private fun CriterionEvidenceRow(crit: ReviewCriterion, prUrls: List<String>, colors: SemanticColors) {
+    val uriHandler = LocalUriHandler.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(crit.text, style = MaterialTheme.typography.bodyMedium)
+        // AC1: show the review verdict — a flagged criterion must not read as approved.
+        Text(
+            crit.verdict,
+            style = MonoStyle,
+            color = when (crit.verdict) {
+                "approved" -> colors.approval
+                "flagged" -> colors.error
+                else -> colors.muted
+            },
+        )
+        if (isUnverified(crit.evidence)) {
+            Text("unverified", style = MonoStyle, color = colors.muted)
+        } else {
+            val labels = evidenceLabels(crit.evidence)
+            crit.evidence.forEachIndexed { i, e ->
+                val url = evidenceOpenUrl(e.kind, e.ref, prUrls)
+                val base = Modifier.fillMaxWidth().padding(top = 2.dp)
+                if (url != null) {
+                    Text(
+                        labels[i],
+                        style = MonoStyle,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = base.clickable { runCatching { uriHandler.openUri(url) } },
+                    )
+                } else {
+                    Text(labels[i], style = MonoStyle, color = colors.muted, modifier = base)
+                }
+            }
+        }
     }
 }
 

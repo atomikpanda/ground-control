@@ -52,6 +52,19 @@ class ReviewViewModelTest {
         ]}
     """.trimIndent()
 
+    private val itemWithSpecJson = """
+        {"id":"wi-1","kind":"feature","title":"T","phase":"in_flight",
+         "task_slugs":["a"],"thread_ids":["t1"],"spec_id":"spec-1"}
+    """.trimIndent()
+
+    private val specJson = """
+        {"id":"spec-1","title":"T","status":"dispatched",
+         "acceptance_criteria":[
+           {"id":"ac1","text":"does the thing","verdict":"approved",
+            "evidence":[{"kind":"commit","ref":"abc123","note":null}]}
+         ]}
+    """.trimIndent()
+
     private fun vm(scope: CoroutineScope, handler: MockRequestHandler) = ReviewViewModel(
         SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }),
         conn, "wi-1", testScope = scope,
@@ -130,5 +143,54 @@ class ReviewViewModelTest {
         vm.requestChanges("please fix X").join()
         assertEquals("Couldn't send — check your connection and try again.", vm.sendError.value)
         assertEquals(false, vm.sending.value)
+    }
+
+    @Test fun load_fetches_bound_spec_criteria_and_pr_urls() = runTest {
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/specs/spec-1") && req.method == HttpMethod.Get ->
+                    respond(specJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        val c = (vm.state.value as ReviewUiState.Content).c
+        assertEquals(1, c.criteria.size)
+        assertEquals("commit", c.criteria[0].evidence[0].kind)
+        assertEquals("abc123", c.criteria[0].evidence[0].ref)
+        assertTrue(c.prUrls.contains("http://pr/1"))
+    }
+
+    @Test fun load_without_spec_has_no_criteria() = runTest {
+        // itemJson has spec_id null -> no /specs fetch, empty criteria.
+        val vm = vm(this, defaultHandler())
+        vm.load().join()
+        val c = (vm.state.value as ReviewUiState.Content).c
+        assertTrue(c.criteria.isEmpty())
+    }
+
+    @Test fun load_survives_spec_fetch_error_with_empty_criteria() = runTest {
+        // Best-effort boundary: a spec 500 must NOT degrade the page to Failed —
+        // it stays Content with empty criteria (Greptile #57).
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") && req.method == HttpMethod.Get ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/specs/spec-1") && req.method == HttpMethod.Get ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = vm(this, handler)
+        vm.load().join()
+        val c = (vm.state.value as ReviewUiState.Content).c   // Content, not Failed
+        assertTrue(c.criteria.isEmpty())
     }
 }
