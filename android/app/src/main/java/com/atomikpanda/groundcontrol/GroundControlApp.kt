@@ -12,6 +12,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -59,6 +60,12 @@ import com.atomikpanda.groundcontrol.ui.farm.FarmScreen
 import com.atomikpanda.groundcontrol.ui.farm.FarmViewModel
 import com.atomikpanda.groundcontrol.ui.review.ReviewScreen
 import com.atomikpanda.groundcontrol.ui.review.ReviewViewModel
+import com.atomikpanda.groundcontrol.ui.projects.ProjectsScreen
+import com.atomikpanda.groundcontrol.ui.projects.ProjectsViewModel
+import com.atomikpanda.groundcontrol.ui.theme.LocalWorkspaceIdentityResolver
+import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
+import com.atomikpanda.groundcontrol.ui.theme.autoIdentity
+import com.atomikpanda.groundcontrol.ui.theme.resolveIdentity
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
@@ -109,6 +116,14 @@ fun GroundControlApp(
             }
         }
     }) { padding ->
+        val connsForBadges by connRepo.connections.collectAsStateWithLifecycle(initialValue = emptyList())
+        // remember keyed on the connections so the resolver identity is stable across recompositions;
+        // staticCompositionLocalOf invalidates every badge reader on a by-reference change, so a fresh
+        // lambda each recomposition would needlessly re-render all badge sites (Greptile P2).
+        val identityResolver: (String, String) -> WorkspaceIdentity = remember(connsForBadges) {
+            { id, name -> connsForBadges.firstOrNull { it.id == id }?.let(::resolveIdentity) ?: autoIdentity(name) }
+        }
+        CompositionLocalProvider(LocalWorkspaceIdentityResolver provides identityResolver) {
         NavHost(nav, startDestination = Section.HOME.route, modifier = Modifier.padding(padding)) {
             composable(Section.HOME.route) {
                 val vm = viewModel {
@@ -155,6 +170,10 @@ fun GroundControlApp(
                 }
                 TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
             }
+            composable(Section.PROJECTS.route) {
+                val vm = viewModel { ProjectsViewModel(connRepo) }
+                ProjectsScreen(vm, onOpenWorkspace = { connId -> nav.navigate("workspace/$connId") })
+            }
             composable(Section.SETTINGS.route) {
                 val vm = viewModel { SettingsViewModel(connRepo, api, notificationsSetting) }
                 SettingsScreen(vm)
@@ -178,7 +197,7 @@ fun GroundControlApp(
                     val vm = viewModel(key = "detail-$connectionId-$specId") {
                         SpecDetailViewModel(detailRepo, conn, specId)
                     }
-                    SpecDetailScreen(vm, title = title, onBack = { nav.popBackStack() })
+                    SpecDetailScreen(vm, title = title, identity = LocalWorkspaceIdentityResolver.current(connectionId, conn.workspaceName.ifBlank { conn.baseUrl }), onBack = { nav.popBackStack() })
                 }
             }
             composable(
@@ -278,6 +297,7 @@ fun GroundControlApp(
                     ConsoleScreen(
                         vm,
                         title = conn.workspaceName.ifBlank { conn.baseUrl },
+                        identity = LocalWorkspaceIdentityResolver.current(connectionId, conn.workspaceName.ifBlank { conn.baseUrl }),
                         onBack = { nav.popBackStack() },
                     )
                 }
@@ -435,6 +455,7 @@ fun GroundControlApp(
                     ConversationScreen(
                         vm,
                         title = threadId,
+                        identity = LocalWorkspaceIdentityResolver.current(connectionId, conn.workspaceName.ifBlank { conn.baseUrl }),
                         onBack = { nav.popBackStack() },
                         onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
                         onOpenEntity = { kind, id ->
@@ -448,6 +469,7 @@ fun GroundControlApp(
                     )
                 }
             }
+        }
         }
     }
 

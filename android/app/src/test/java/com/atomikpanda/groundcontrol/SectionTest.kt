@@ -6,14 +6,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SectionTest {
-    @Test fun exactly_four_destinations_home_queue_tasks_settings() {
-        assertEquals(listOf("home", "queue", "tasks", "settings"), Section.entries.map { it.route })
+    @Test fun five_destinations_home_queue_tasks_projects_settings() {
+        assertEquals(
+            listOf("home", "queue", "tasks", "projects", "settings"),
+            Section.entries.map { it.route },
+        )
     }
 
-    @Test fun queue_tab_present_after_home() {
+    @Test fun home_is_start_and_projects_precedes_settings() {
         val routes = Section.entries.map { it.route }
-        assertTrue(routes.contains("queue"))
         assertEquals(0, routes.indexOf("home"))
-        assertEquals(1, routes.indexOf("queue"))   // Queue is the 2nd tab, Home stays start destination
+        assertEquals(1, routes.indexOf("queue"))
+        assertTrue(routes.indexOf("projects") < routes.indexOf("settings"))
     }
 }

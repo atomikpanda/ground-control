@@ -5,6 +5,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
+import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -63,7 +67,7 @@ import com.atomikpanda.groundcontrol.ui.theme.SemanticColors
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConsoleScreen(vm: ConsoleViewModel, title: String, onBack: () -> Unit) {
+fun ConsoleScreen(vm: ConsoleViewModel, title: String, identity: WorkspaceIdentity? = null, onBack: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
 
     DisposableEffect(Unit) {
@@ -77,7 +81,12 @@ fun ConsoleScreen(vm: ConsoleViewModel, title: String, onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(displayTitle, maxLines = 1) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        identity?.let { WorkspaceBadge(it, size = 20.dp); Spacer(Modifier.width(8.dp)) }
+                        Text(displayTitle, maxLines = 1)
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")

@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -48,6 +50,8 @@ import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateChipRow
 import com.atomikpanda.groundcontrol.ui.messages.unreadCountFor
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
+import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
+import com.atomikpanda.groundcontrol.ui.theme.LocalWorkspaceIdentityResolver
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 import com.atomikpanda.groundcontrol.ui.theme.chipHue
 
@@ -320,9 +324,16 @@ private fun NeedsYouRow(
             onApproval(item.connectionId, item.specId)
         }
     }
+    val wsIdentity = LocalWorkspaceIdentityResolver.current(item.connectionId, item.workspaceName)
     ListItem(
         leadingContent = { Icon(icon, contentDescription = tierLabel, tint = accent) },
-        overlineContent = { Text(item.workspaceName, style = MonoStyle, color = chipHue(item.connectionId, colors)) },
+        overlineContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                WorkspaceBadge(wsIdentity, size = 16.dp)
+                Spacer(Modifier.width(6.dp))
+                Text(item.workspaceName, style = MonoStyle)
+            }
+        },
         headlineContent = { Text(title) },
         supportingContent = { Text(supporting) },
         trailingContent = { Text(tierLabel, style = MaterialTheme.typography.labelSmall, color = accent) },

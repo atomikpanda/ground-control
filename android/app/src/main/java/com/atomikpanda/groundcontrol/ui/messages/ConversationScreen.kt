@@ -9,6 +9,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
+import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -71,6 +75,7 @@ import java.time.OffsetDateTime
 fun ConversationScreen(
     vm: ConversationViewModel,
     title: String,
+    identity: WorkspaceIdentity? = null,
     onBack: () -> Unit,
     onViewSpec: (specId: String) -> Unit = {},
     onOpenEntity: (kind: String, id: String) -> Unit = { _, _ -> },
@@ -84,7 +89,12 @@ fun ConversationScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(displayTitle, maxLines = 1) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        identity?.let { WorkspaceBadge(it, size = 20.dp); Spacer(Modifier.width(8.dp)) }
+                        Text(displayTitle, maxLines = 1)
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
