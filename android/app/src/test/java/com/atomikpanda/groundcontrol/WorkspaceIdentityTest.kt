@@ -1,11 +1,13 @@
 package com.atomikpanda.groundcontrol
 
 import androidx.compose.ui.graphics.Color
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.theme.WorkspacePalette
 import com.atomikpanda.groundcontrol.ui.theme.autoColor
 import com.atomikpanda.groundcontrol.ui.theme.autoGlyph
 import com.atomikpanda.groundcontrol.ui.theme.autoIdentity
 import com.atomikpanda.groundcontrol.ui.theme.colorFromHex
+import com.atomikpanda.groundcontrol.ui.theme.resolveIdentity
 import com.atomikpanda.groundcontrol.ui.theme.toHex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -57,5 +59,26 @@ class WorkspaceIdentityTest {
         assertNotNull(colorFromHex("#FF00796B"))
         assertNull(colorFromHex("nope"))
         assertNull(colorFromHex("#12"))
+    }
+
+    @Test fun resolve_uses_overrides_when_present() {
+        val conn = WorkspaceConnection("1", "http://h", null, "acme",
+            colorOverride = "#FFD32F2F", glyphOverride = "★")
+        val id = resolveIdentity(conn)
+        assertEquals(Color(0xFFD32F2F), id.color)
+        assertEquals("★", id.glyph)
+    }
+
+    @Test fun resolve_falls_back_to_auto_when_overrides_null() {
+        val conn = WorkspaceConnection("1", "http://h", null, "acme")
+        val id = resolveIdentity(conn)
+        assertEquals(autoColor("acme"), id.color)
+        assertEquals("A", id.glyph)
+    }
+
+    @Test fun resolve_uses_baseUrl_when_name_blank_and_ignores_unparseable_color() {
+        val conn = WorkspaceConnection("1", "http://host:47100", null, "", colorOverride = "bad-hex")
+        val id = resolveIdentity(conn)
+        assertEquals(autoColor("http://host:47100"), id.color) // bad override → auto by displayName
     }
 }

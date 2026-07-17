@@ -26,4 +26,7 @@ class ConnectionsRepository(private val context: Context) {
         save(upsertConnection(snapshot(), conn))
 
     suspend fun remove(id: String) = save(snapshot().filterNot { it.id == id })
+
+    suspend fun setIdentity(id: String, colorOverride: String?, glyphOverride: String?) =
+        save(applyIdentityOverride(snapshot(), id, colorOverride, glyphOverride))
 }

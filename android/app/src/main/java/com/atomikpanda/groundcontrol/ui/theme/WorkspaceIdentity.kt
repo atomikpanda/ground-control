@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol.ui.theme
 
 import androidx.compose.ui.graphics.Color
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import kotlin.math.roundToInt
 
 /** A workspace's resolved visual identity: a solid badge [color] + a one-glyph [glyph] label. */
@@ -59,4 +60,13 @@ fun colorFromHex(hex: String): Color? {
 fun Color.toHex(): String {
     fun c(v: Float) = (v * 255f).roundToInt().coerceIn(0, 255)
     return "#%02X%02X%02X%02X".format(c(alpha), c(red), c(green), c(blue))
+}
+
+/** Resolve a connection's identity: override-or-auto per field. A blank name falls back to the
+ *  baseUrl (matching displayName conventions); an unparseable colorOverride falls back to auto. */
+fun resolveIdentity(conn: WorkspaceConnection): WorkspaceIdentity {
+    val name = conn.workspaceName.ifBlank { conn.baseUrl }
+    val color = conn.colorOverride?.let(::colorFromHex) ?: autoColor(name)
+    val glyph = conn.glyphOverride?.trim()?.takeIf { it.isNotEmpty() } ?: autoGlyph(name)
+    return WorkspaceIdentity(color, glyph)
 }
