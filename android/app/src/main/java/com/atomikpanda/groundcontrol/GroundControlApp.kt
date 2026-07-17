@@ -59,6 +59,8 @@ import com.atomikpanda.groundcontrol.ui.farm.FarmScreen
 import com.atomikpanda.groundcontrol.ui.farm.FarmViewModel
 import com.atomikpanda.groundcontrol.ui.review.ReviewScreen
 import com.atomikpanda.groundcontrol.ui.review.ReviewViewModel
+import com.atomikpanda.groundcontrol.ui.projects.ProjectsScreen
+import com.atomikpanda.groundcontrol.ui.projects.ProjectsViewModel
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
@@ -154,6 +156,10 @@ fun GroundControlApp(
                     TasksViewModel(tasksRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
                 }
                 TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
+            }
+            composable(Section.PROJECTS.route) {
+                val vm = viewModel { ProjectsViewModel(connRepo) }
+                ProjectsScreen(vm, onOpenWorkspace = { connId -> nav.navigate("workspace/$connId") })
             }
             composable(Section.SETTINGS.route) {
                 val vm = viewModel { SettingsViewModel(connRepo, api, notificationsSetting) }
