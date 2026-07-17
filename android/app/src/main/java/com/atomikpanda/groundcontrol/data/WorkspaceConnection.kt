@@ -10,6 +10,10 @@ data class WorkspaceConnection(
     val baseUrl: String,
     val token: String? = null,
     val workspaceName: String = "",
+    /** Operator override for the identity badge color, "#AARRGGBB"; null = auto-derived. */
+    val colorOverride: String? = null,
+    /** Operator override for the identity badge glyph; null = auto (name's first letter). */
+    val glyphOverride: String? = null,
 )
 
 /** Pure (de)serialization of the connection list stored in DataStore. */

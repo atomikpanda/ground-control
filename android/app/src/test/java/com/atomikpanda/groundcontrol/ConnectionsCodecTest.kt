@@ -62,4 +62,23 @@ class ConnectionsCodecTest {
         assertEquals("new-token", result[0].token)
         assertEquals("ws-new", result[0].workspaceName)
     }
+
+    @Test fun round_trips_color_and_glyph_overrides() {
+        val list = listOf(
+            WorkspaceConnection("1", "http://h:47100", "tok", "ws-a",
+                colorOverride = "#FF1976D2", glyphOverride = "Z"),
+        )
+        val restored = ConnectionsCodec.decode(ConnectionsCodec.encode(list))
+        assertEquals(list, restored)
+        assertEquals("#FF1976D2", restored[0].colorOverride)
+        assertEquals("Z", restored[0].glyphOverride)
+    }
+
+    @Test fun decodes_legacy_json_without_override_fields() {
+        val legacy = """[{"id":"1","baseUrl":"http://h:47100","token":"tok","workspaceName":"ws-a"}]"""
+        val restored = ConnectionsCodec.decode(legacy)
+        assertEquals(1, restored.size)
+        assertNull(restored[0].colorOverride)
+        assertNull(restored[0].glyphOverride)
+    }
 }
