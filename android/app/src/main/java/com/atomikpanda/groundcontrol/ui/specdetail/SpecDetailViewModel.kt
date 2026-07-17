@@ -52,6 +52,14 @@ data class SpecDetail(
     val taskFinished: Boolean = false,
 ) {
     val summary: Summary get() = summaryOf(criteria, questions)
+
+    /** Prominent lead atop the screen when this review-phase spec has unanswered questions (ac1);
+     *  null when there are none (ac5). */
+    val unansweredLead: String? get() = unansweredQuestionsLead(status, summary)
+
+    /** Approve-control guidance when unanswered questions are the sole approval blocker (ac2);
+     *  null otherwise. */
+    val approveGuidance: String? get() = soleBlockerApproveLabel(status, summary)
 }
 
 data class DispatchInfo(val taskSlug: String, val spawned: Boolean, val handoff: String)

@@ -23,6 +23,7 @@ import java.util.ArrayDeque
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -269,5 +270,51 @@ class SpecDetailViewModelTest {
         vm.load()?.join()
         vm.startActivityPolling(intervalMs = 1000).join()
         assertEquals(0, taskCalls) // never polled a non-dispatched (approved) spec
+    }
+
+    @Test fun lead_and_guidance_surface_for_review_spec_with_sole_unanswered_blocker() = runTest {
+        val vm = vm(this) {
+            respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],
+                "open_questions":[{"id":"q1","text":"q","answer":null}]}""", HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        val d = (vm.state.value as SpecDetailUiState.Content).detail
+        assertEquals("1 unanswered question(s) — answer to approve", d.unansweredLead)   // ac1
+        assertEquals("Answer 1 question(s) to approve", d.approveGuidance)               // ac2
+    }
+
+    @Test fun no_lead_or_guidance_when_no_open_questions() = runTest {                    // ac5
+        val vm = vm(this) {
+            respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        val d = (vm.state.value as SpecDetailUiState.Content).detail
+        assertNull(d.unansweredLead)
+        assertNull(d.approveGuidance)
+    }
+
+    @Test fun answering_last_question_auto_approves_and_clears_lead_and_guidance() = runTest {   // ac4
+        var call = 0
+        val vm = vm(this) {
+            call++
+            if (call == 1) respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],
+                "open_questions":[{"id":"q1","text":"q","answer":null}]}""", HttpStatusCode.OK, jsonHdr)
+            else respond("""{"id":"s1","status":"approved",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],
+                "open_questions":[{"id":"q1","text":"q","answer":"yes"}],
+                "summary":{"criteria_total":1,"approved":1,"flagged":0,"unreviewed":0,"open_questions_unanswered":0}}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        assertNotNull((vm.state.value as SpecDetailUiState.Content).detail.approveGuidance)  // blocked before
+        vm.answer("q1", "yes")?.join()
+        val d = (vm.state.value as SpecDetailUiState.Content).detail
+        assertEquals("approved", d.status)   // server auto-approved on the answer POST; no Request-changes
+        assertNull(d.unansweredLead)
+        assertNull(d.approveGuidance)
     }
 }
