@@ -117,8 +117,12 @@ fun GroundControlApp(
         }
     }) { padding ->
         val connsForBadges by connRepo.connections.collectAsStateWithLifecycle(initialValue = emptyList())
-        val identityResolver: (String, String) -> WorkspaceIdentity =
+        // remember keyed on the connections so the resolver identity is stable across recompositions;
+        // staticCompositionLocalOf invalidates every badge reader on a by-reference change, so a fresh
+        // lambda each recomposition would needlessly re-render all badge sites (Greptile P2).
+        val identityResolver: (String, String) -> WorkspaceIdentity = remember(connsForBadges) {
             { id, name -> connsForBadges.firstOrNull { it.id == id }?.let(::resolveIdentity) ?: autoIdentity(name) }
+        }
         CompositionLocalProvider(LocalWorkspaceIdentityResolver provides identityResolver) {
         NavHost(nav, startDestination = Section.HOME.route, modifier = Modifier.padding(padding)) {
             composable(Section.HOME.route) {
