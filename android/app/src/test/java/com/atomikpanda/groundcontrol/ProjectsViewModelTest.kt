@@ -3,8 +3,10 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.projects.projectRows
 import com.atomikpanda.groundcontrol.ui.projects.workspaceRoute
+import com.atomikpanda.groundcontrol.ui.theme.WorkspacePalette
 import com.atomikpanda.groundcontrol.ui.theme.autoColor
 import com.atomikpanda.groundcontrol.ui.theme.colorFromHex
+import com.atomikpanda.groundcontrol.ui.theme.toHex
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -36,5 +38,11 @@ class ProjectsViewModelTest {
 
     @Test fun directory_builds_offline_from_connections_only() {
         assertEquals(3, projectRows(conns).size)
+    }
+
+    @Test fun palette_swatches_encode_to_parseable_hex() {
+        for (c in WorkspacePalette.swatches) {
+            assertEquals(c, colorFromHex(c.toHex()))
+        }
     }
 }
