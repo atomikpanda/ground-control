@@ -41,6 +41,9 @@ import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
+import com.atomikpanda.groundcontrol.ui.activity.LiveChip
+import com.atomikpanda.groundcontrol.ui.activity.PhaseStepper
+import com.atomikpanda.groundcontrol.ui.activity.phaseStepFor
 import com.atomikpanda.groundcontrol.ui.components.ExternalLinksRow
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
@@ -113,6 +116,8 @@ private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             item { HeaderSection(c.item) }
 
+            item { ActivityStrip(focusedTask) }
+
             item { SectionLabel("TASKS") }
             items(c.tasks, key = { it.slug }) { task -> TaskRow(task, colors) }
 
@@ -137,6 +142,19 @@ private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
             }
         }
         SteerBar(vm)
+    }
+}
+
+@Composable
+private fun ActivityStrip(task: TaskSummary?) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        PhaseStepper(phaseStepFor(task?.phase, task?.finishedAt != null))
+        LiveChip(
+            lastActivityIso = task?.lastActivityAt,
+            merged = task?.finishedAt != null,
+            nowMillis = System.currentTimeMillis(),
+            modifier = Modifier.padding(top = 8.dp),
+        )
     }
 }
 
