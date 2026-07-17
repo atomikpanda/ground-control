@@ -34,9 +34,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import com.atomikpanda.groundcontrol.ui.activity.LiveChip
+import com.atomikpanda.groundcontrol.ui.activity.PhaseStepper
+import com.atomikpanda.groundcontrol.ui.activity.phaseStepFor
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,6 +67,13 @@ import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 fun SpecDetailScreen(vm: SpecDetailViewModel, title: String, onBack: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
+
+    // Poll the in-flight task only while the spec is dispatched; stop at terminal.
+    val pollStatus = (state as? SpecDetailUiState.Content)?.detail?.status
+    DisposableEffect(pollStatus) {
+        val job = if (pollStatus == "dispatched") vm.startActivityPolling() else null
+        onDispose { job?.cancel() }
+    }
 
     // Show the loaded spec title once available; fall back to the spec id pre-load.
     val displayTitle = (state as? SpecDetailUiState.Content)?.detail?.title ?: title
@@ -125,6 +138,16 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                         style = MonoStyle,
                     )
                     ReadinessChipsRow(sum, Modifier.padding(top = 6.dp))
+                    if (d.taskSlug != null) {
+                        Spacer(Modifier.height(8.dp))
+                        PhaseStepper(phaseStepFor(d.taskPhase, d.taskFinished), compact = true)
+                        LiveChip(
+                            lastActivityIso = d.taskLastActivityAt,
+                            merged = d.taskFinished,
+                            nowMillis = System.currentTimeMillis(),
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
                 }
             }
             item { SpecBodyMarkdown(d.bodyMarkdown, Modifier.padding(16.dp, 4.dp)) }

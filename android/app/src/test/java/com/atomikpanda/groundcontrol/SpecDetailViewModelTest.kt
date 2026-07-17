@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import java.util.ArrayDeque
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -223,5 +224,50 @@ class SpecDetailViewModelTest {
         vm.load()?.join()
         vm.requestChanges("needs work")?.join()
         assertEquals("needs_clarification", (vm.state.value as SpecDetailUiState.Content).detail.status)
+    }
+
+    @Test fun activity_poll_advances_task_phase_then_stops_at_terminal() = runTest {
+        // /specs/s1: dispatched (load), dispatched (tick 1), implemented (tick 2 -> stop).
+        val specStatuses = ArrayDeque(listOf("dispatched", "dispatched", "implemented"))
+        val vm = vm(this) { req ->
+            when (req.url.encodedPath) {
+                "/specs/s1" -> {
+                    val status = if (specStatuses.size > 1) specStatuses.removeFirst() else specStatuses.first()
+                    respond(
+                        """{"id":"s1","title":"T","status":"$status","body":"b","task_slug":"s1"}""",
+                        HttpStatusCode.OK, jsonHdr,
+                    )
+                }
+                "/tasks/s1" -> respond(
+                    """{"slug":"s1","phase":"dev","branch":"b","finished_at":null,
+                        "last_activity_at":"2026-07-13T12:00:00Z"}""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        vm.startActivityPolling(intervalMs = 1000).join()
+        val c = vm.state.value as SpecDetailUiState.Content
+        assertEquals("dev", c.detail.taskPhase)
+        assertEquals("2026-07-13T12:00:00Z", c.detail.taskLastActivityAt)
+        assertEquals("implemented", c.detail.status) // terminal reached; poll stopped
+    }
+
+    @Test fun activity_poll_does_not_run_for_non_dispatched_spec() = runTest {
+        var taskCalls = 0
+        val vm = vm(this) { req ->
+            when (req.url.encodedPath) {
+                "/specs/s1" -> respond(
+                    """{"id":"s1","title":"T","status":"approved","body":"b","task_slug":"s1"}""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+                "/tasks/s1" -> { taskCalls++; respond("""{"slug":"s1","phase":"plan","branch":"b"}""", HttpStatusCode.OK, jsonHdr) }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        vm.startActivityPolling(intervalMs = 1000).join()
+        assertEquals(0, taskCalls) // never polled a non-dispatched (approved) spec
     }
 }
