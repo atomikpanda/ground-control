@@ -17,6 +17,8 @@ data class WorkItemSummary(
     @SerialName("external_links") val externalLinks: List<ExternalLink> = emptyList(),
     val unattended: Boolean = false,
     @SerialName("phase_override") val phaseOverride: String? = null,
+    @SerialName("active_phase") val activePhase: String? = null,
+    @SerialName("active_last_activity_at") val activeLastActivityAt: String? = null,
 )
 
 /** Body for POST /items/{id}/unattended — toggles cloud-runner eligibility. */

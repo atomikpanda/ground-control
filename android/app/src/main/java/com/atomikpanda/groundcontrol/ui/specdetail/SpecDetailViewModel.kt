@@ -17,9 +17,11 @@ import com.atomikpanda.groundcontrol.data.parseApproveBlockers
 import com.atomikpanda.groundcontrol.data.summaryOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class ErrorKind { NETWORK, AUTH, NOT_FOUND }
@@ -45,6 +47,9 @@ data class SpecDetail(
     val taskSlug: String?,
     val criteria: List<ReviewCriterion>,
     val questions: List<ReviewQuestion>,
+    val taskPhase: String? = null,
+    val taskLastActivityAt: String? = null,
+    val taskFinished: Boolean = false,
 ) {
     val summary: Summary get() = summaryOf(criteria, questions)
 }
@@ -95,6 +100,45 @@ class SpecDetailViewModel(
         is AuthException -> ErrorKind.AUTH
         is NotFoundException -> ErrorKind.NOT_FOUND
         else -> ErrorKind.NETWORK
+    }
+
+    private fun isSpecInFlight(status: String): Boolean = status == "dispatched"
+
+    /**
+     * Poll the task behind a dispatched spec so the compact stepper + chip advance live.
+     * Runs only while the spec is in-flight (`dispatched`) and stops at terminal
+     * (`implemented`/`archived`) or when the task can't be resolved. Mirrors
+     * ConsoleViewModel.startPolling. Cancel via the returned Job (bound to the screen lifecycle).
+     */
+    fun startActivityPolling(intervalMs: Long = 4000): Job = scope().launch {
+        while (isActive) {
+            val c = content() ?: break
+            if (!isSpecInFlight(c.detail.status)) break
+            delay(intervalMs)
+            if (!refreshActivityOnce()) break
+        }
+    }
+
+    /** One activity tick: re-read the spec (authoritative status) + its task (phase + activity).
+     *  Returns true to keep polling. Transient fetch failures keep polling; a missing task slug
+     *  or missing content stops it. */
+    private suspend fun refreshActivityOnce(): Boolean {
+        val slug = content()?.detail?.taskSlug ?: return false
+        val spec = runCatching { repo.load(conn, specId) }.getOrNull() ?: return true
+        val task = runCatching { repo.loadTask(conn, spec.taskSlug ?: slug) }.getOrNull()
+        val c = content() ?: return false
+        _state.value = c.copy(
+            detail = c.detail.copy(
+                status = spec.status,
+                taskSlug = spec.taskSlug ?: c.detail.taskSlug,
+                taskPhase = task?.phase ?: c.detail.taskPhase,
+                taskLastActivityAt = task?.lastActivityAt ?: c.detail.taskLastActivityAt,
+                // Preserve the prior value on a transient task-fetch miss (task == null)
+                // rather than silently reverting a recorded "finished" back to false.
+                taskFinished = if (task != null) task.finishedAt != null else c.detail.taskFinished,
+            ),
+        )
+        return isSpecInFlight(spec.status)
     }
 
     /** Apply a write's returned review payload over the current detail (body unchanged). */

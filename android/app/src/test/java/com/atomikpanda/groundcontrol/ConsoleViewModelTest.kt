@@ -197,4 +197,25 @@ class ConsoleViewModelTest {
         assertEquals(1, postedTexts.size)
         assertTrue(postedTexts[0].contains("go"))
     }
+
+    @Test fun fetch_surfaces_focused_task_activity_for_the_stepper() = runTest {
+        val taskWithActivity = """
+            {"slug":"a","phase":"dev","branch":"feat/a","finished_at":null,
+             "last_activity_at":"2026-07-13T12:00:00Z"}
+        """.trimIndent()
+        val vm = vm(this) { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") -> respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") -> respond(taskWithActivity, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/journal/a") -> respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads/t1") -> respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load().join()
+        val c = (vm.state.value as ConsoleUiState.Content).c
+        val focused = c.tasks.first()
+        assertEquals("dev", focused.phase)
+        assertEquals("2026-07-13T12:00:00Z", focused.lastActivityAt)
+    }
 }
