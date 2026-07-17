@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.applyIdentityOverride
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import org.junit.Assert.assertEquals
@@ -80,5 +81,46 @@ class ConnectionsCodecTest {
         assertEquals(1, restored.size)
         assertNull(restored[0].colorOverride)
         assertNull(restored[0].glyphOverride)
+    }
+
+    @Test fun upsert_preserves_prior_override_when_incoming_omits_it() {
+        val existing = listOf(
+            WorkspaceConnection("id-1", "http://host:47100", "old", "ws",
+                colorOverride = "#FF7B1FA2", glyphOverride = "Q"))
+        val incoming = WorkspaceConnection("id-1", "http://host:47100", "new", "ws")
+        val result = upsertConnection(existing, incoming)
+        assertEquals(1, result.size)
+        assertEquals("new", result[0].token)
+        assertEquals("#FF7B1FA2", result[0].colorOverride)   // preserved
+        assertEquals("Q", result[0].glyphOverride)           // preserved
+    }
+
+    @Test fun upsert_preserves_override_when_matched_by_baseUrl_after_id_change() {
+        val existing = listOf(
+            WorkspaceConnection("old-id", "http://host:47100", "old", "ws",
+                colorOverride = "#FF00796B", glyphOverride = null))
+        val incoming = WorkspaceConnection("new-id", "http://host:47100", "new", "ws")
+        val result = upsertConnection(existing, incoming)
+        assertEquals(1, result.size)
+        assertEquals("new-id", result[0].id)
+        assertEquals("#FF00796B", result[0].colorOverride)   // carried onto the replacement
+    }
+
+    @Test fun upsert_lets_an_explicit_incoming_override_win() {
+        val existing = listOf(
+            WorkspaceConnection("id-1", "http://host:47100", "t", "ws", colorOverride = "#FFAAAAAA"))
+        val incoming = existing[0].copy(colorOverride = "#FF111111")
+        assertEquals("#FF111111", upsertConnection(existing, incoming)[0].colorOverride)
+    }
+
+    @Test fun apply_identity_override_replaces_only_the_target_and_can_clear() {
+        val list = listOf(
+            WorkspaceConnection("a", "http://a", null, "ws-a", colorOverride = "#FF1976D2"),
+            WorkspaceConnection("b", "http://b", null, "ws-b"))
+        val set = applyIdentityOverride(list, "b", "#FFD32F2F", "B")
+        assertEquals("#FFD32F2F", set.first { it.id == "b" }.colorOverride)
+        assertEquals("#FF1976D2", set.first { it.id == "a" }.colorOverride)   // untouched
+        val cleared = applyIdentityOverride(set, "a", null, null)             // reset to auto
+        assertNull(cleared.first { it.id == "a" }.colorOverride)
     }
 }
