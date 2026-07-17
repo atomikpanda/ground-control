@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.ui.theme
 
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import kotlin.math.roundToInt
@@ -70,3 +71,11 @@ fun resolveIdentity(conn: WorkspaceConnection): WorkspaceIdentity {
     val glyph = conn.glyphOverride?.trim()?.takeIf { it.isNotEmpty() } ?: autoGlyph(name)
     return WorkspaceIdentity(color, glyph)
 }
+
+/** Default (id, name) → identity resolver: auto-by-name. Overridden app-wide by a connections-aware
+ *  resolver in GroundControlApp so overrides show at every badge site. */
+fun defaultIdentityResolver(connectionId: String, name: String): WorkspaceIdentity = autoIdentity(name)
+
+/** Read at any badge site: `LocalWorkspaceIdentityResolver.current(connectionId, fallbackName)`. */
+val LocalWorkspaceIdentityResolver =
+    staticCompositionLocalOf<(String, String) -> WorkspaceIdentity> { ::defaultIdentityResolver }

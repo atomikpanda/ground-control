@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.ui.theme.autoColor
 import com.atomikpanda.groundcontrol.ui.theme.autoGlyph
 import com.atomikpanda.groundcontrol.ui.theme.autoIdentity
 import com.atomikpanda.groundcontrol.ui.theme.colorFromHex
+import com.atomikpanda.groundcontrol.ui.theme.defaultIdentityResolver
 import com.atomikpanda.groundcontrol.ui.theme.resolveIdentity
 import com.atomikpanda.groundcontrol.ui.theme.toHex
 import org.junit.Assert.assertEquals
@@ -80,5 +81,9 @@ class WorkspaceIdentityTest {
         val conn = WorkspaceConnection("1", "http://host:47100", null, "", colorOverride = "bad-hex")
         val id = resolveIdentity(conn)
         assertEquals(autoColor("http://host:47100"), id.color) // bad override → auto by displayName
+    }
+
+    @Test fun default_identity_resolver_is_auto_by_name() {
+        assertEquals(autoIdentity("acme"), defaultIdentityResolver("any-id", "acme"))
     }
 }
