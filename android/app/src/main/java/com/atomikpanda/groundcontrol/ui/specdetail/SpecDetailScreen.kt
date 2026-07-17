@@ -361,6 +361,7 @@ private fun AskQuestionRow(
 private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
     val actions = availableActions(s.detail.status)
     if (actions.isEmpty()) return
+    val requestChangesDraft by vm.requestChangesDraft.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf(false) }
     var showReason by remember { mutableStateOf(false) }
     var showDispatch by remember { mutableStateOf(false) }
@@ -406,6 +407,8 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
     }
 
     if (showReason) RequestChangesSheet(
+        draft = requestChangesDraft,
+        onDraftChange = { vm.setRequestChangesDraft(it) },
         onDismiss = { showReason = false },
         onSend = { vm.requestChanges(it) },
     )
@@ -429,10 +432,14 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
  *  double-submit), then hides + dismisses. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RequestChangesSheet(onDismiss: () -> Unit, onSend: (String) -> Unit) {
+private fun RequestChangesSheet(
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSend: (String) -> Unit,
+) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
-    var reason by remember { mutableStateOf("") }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
@@ -440,15 +447,18 @@ private fun RequestChangesSheet(onDismiss: () -> Unit, onSend: (String) -> Unit)
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Request changes", style = MaterialTheme.typography.titleSmall)
+            // The reason lives in the VM draft (not local state) so a failed submit KEEPS it — the VM
+            // clears it only on success. We dismiss after firing; on failure the operator reopens the
+            // sheet with the reason intact instead of losing it (Greptile P2).
             MultilineComposeInput(
-                value = reason,
-                onValueChange = { reason = it },
+                value = draft,
+                onValueChange = onDraftChange,
                 onSend = {
-                    val toSend = reason
-                    reason = ""
-                    onSend(toSend)
-                    scope.launch { sheetState.hide() }.invokeOnCompletion {
-                        if (!sheetState.isVisible) onDismiss()
+                    if (draft.isNotBlank()) {
+                        onSend(draft)
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            if (!sheetState.isVisible) onDismiss()
+                        }
                     }
                 },
                 placeholder = "Reason for changes…",

@@ -371,4 +371,25 @@ class SpecDetailViewModelTest {
         vm.ask("new q")?.join()
         assertEquals("", vm.askDraft.value)
     }
+
+    @Test fun request_changes_draft_survives_failure_and_clears_on_success() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            when (call) {
+                1 -> respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                    "acceptance_criteria":[],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                2 -> respondError(HttpStatusCode.InternalServerError)   // request-changes network failure
+                else -> respond("""{"id":"s1","status":"needs_clarification","acceptance_criteria":[],"open_questions":[],
+                    "summary":{"criteria_total":0,"approved":0,"flagged":0,"unreviewed":0,"open_questions_unanswered":0}}""",
+                    HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        vm.load()?.join()
+        vm.setRequestChangesDraft("please fix X")
+        vm.requestChanges("please fix X")?.join()          // fails -> draft must be preserved
+        assertEquals("please fix X", vm.requestChangesDraft.value)
+        vm.requestChanges("please fix X")?.join()          // succeeds -> draft cleared
+        assertEquals("", vm.requestChangesDraft.value)
+    }
 }

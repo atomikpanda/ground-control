@@ -113,6 +113,12 @@ class SpecDetailViewModel(
 
     fun setAskDraft(text: String) { _askDraft.value = text }
 
+    // Request-changes reason draft, preserved on a failed submit (mirrors the answer/ask drafts) so a
+    // network failure never silently drops the typed reason — the sheet reopens with it intact.
+    private val _requestChangesDraft = MutableStateFlow("")
+    val requestChangesDraft: StateFlow<String> = _requestChangesDraft.asStateFlow()
+    fun setRequestChangesDraft(text: String) { _requestChangesDraft.value = text }
+
     fun load(): Job? {
         _state.value = SpecDetailUiState.Loading
         return scope().launch {
@@ -217,7 +223,9 @@ class SpecDetailViewModel(
     fun approve(bypass: Boolean): Job? = write(ActionRef.Approve) { repo.approve(conn, specId, bypass) }
 
     fun requestChanges(reason: String): Job? =
-        write(ActionRef.RequestChanges) { repo.requestChanges(conn, specId, reason) }
+        write(ActionRef.RequestChanges, onSuccess = { _requestChangesDraft.value = "" }) {
+            repo.requestChanges(conn, specId, reason)
+        }
 
     fun dispatch(): Job? {
         val c = content() ?: return null
