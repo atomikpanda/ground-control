@@ -52,6 +52,14 @@ data class SpecDetail(
     val taskFinished: Boolean = false,
 ) {
     val summary: Summary get() = summaryOf(criteria, questions)
+
+    /** Prominent lead atop the screen when this review-phase spec has unanswered questions (ac1);
+     *  null when there are none (ac5). */
+    val unansweredLead: String? get() = unansweredQuestionsLead(status, summary)
+
+    /** Approve-control guidance when unanswered questions are the sole approval blocker (ac2);
+     *  null otherwise. */
+    val approveGuidance: String? get() = soleBlockerApproveLabel(status, summary)
 }
 
 data class DispatchInfo(val taskSlug: String, val spawned: Boolean, val handoff: String)
@@ -86,6 +94,30 @@ class SpecDetailViewModel(
 
     private fun scope() = testScope ?: viewModelScope
     private fun content() = _state.value as? SpecDetailUiState.Content
+
+    // Unsent free-text drafts kept OUTSIDE the load lifecycle so they survive a leave+return (ac9).
+    // Answer drafts are keyed by question id so switching questions never cross-contaminates.
+    private val _answerDrafts = MutableStateFlow<Map<String, String>>(emptyMap())
+    val answerDrafts: StateFlow<Map<String, String>> = _answerDrafts.asStateFlow()
+
+    private val _askDraft = MutableStateFlow("")
+    val askDraft: StateFlow<String> = _askDraft.asStateFlow()
+
+    fun setAnswerDraft(questionId: String, text: String) {
+        _answerDrafts.value = _answerDrafts.value + (questionId to text)
+    }
+
+    private fun clearAnswerDraft(questionId: String) {
+        _answerDrafts.value = _answerDrafts.value - questionId
+    }
+
+    fun setAskDraft(text: String) { _askDraft.value = text }
+
+    // Request-changes reason draft, preserved on a failed submit (mirrors the answer/ask drafts) so a
+    // network failure never silently drops the typed reason — the sheet reopens with it intact.
+    private val _requestChangesDraft = MutableStateFlow("")
+    val requestChangesDraft: StateFlow<String> = _requestChangesDraft.asStateFlow()
+    fun setRequestChangesDraft(text: String) { _requestChangesDraft.value = text }
 
     fun load(): Job? {
         _state.value = SpecDetailUiState.Loading
@@ -156,12 +188,12 @@ class SpecDetailViewModel(
     }
 
     /** Run a write that returns a review; on success patch state, else surface a banner. */
-    private fun write(ref: ActionRef, block: suspend () -> SpecReview): Job? {
+    private fun write(ref: ActionRef, onSuccess: () -> Unit = {}, block: suspend () -> SpecReview): Job? {
         val c = content() ?: return null
         _state.value = c.copy(inFlight = ref, banner = null, blockers = null)
         return scope().launch {
             runCatching { block() }
-                .onSuccess { applyReview(it) }
+                .onSuccess { applyReview(it); onSuccess() }
                 .onFailure { t ->
                     val c2 = content() ?: return@onFailure
                     when (t) {
@@ -181,14 +213,19 @@ class SpecDetailViewModel(
         write(ActionRef.Verdict(criterionId)) { repo.setVerdict(conn, specId, criterionId, verdict) }
 
     fun answer(questionId: String, answer: String): Job? =
-        write(ActionRef.Answer(questionId)) { repo.answer(conn, specId, questionId, answer) }
+        write(ActionRef.Answer(questionId), onSuccess = { clearAnswerDraft(questionId) }) {
+            repo.answer(conn, specId, questionId, answer)
+        }
 
-    fun ask(text: String): Job? = write(ActionRef.Ask) { repo.ask(conn, specId, text) }
+    fun ask(text: String): Job? =
+        write(ActionRef.Ask, onSuccess = { _askDraft.value = "" }) { repo.ask(conn, specId, text) }
 
     fun approve(bypass: Boolean): Job? = write(ActionRef.Approve) { repo.approve(conn, specId, bypass) }
 
     fun requestChanges(reason: String): Job? =
-        write(ActionRef.RequestChanges) { repo.requestChanges(conn, specId, reason) }
+        write(ActionRef.RequestChanges, onSuccess = { _requestChangesDraft.value = "" }) {
+            repo.requestChanges(conn, specId, reason)
+        }
 
     fun dispatch(): Job? {
         val c = content() ?: return null

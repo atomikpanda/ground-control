@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.atomikpanda.groundcontrol.data.Summary
+import com.atomikpanda.groundcontrol.data.isReviewInteractive
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 
 /** Semantic role for a readiness chip; kept color-free so it is unit-testable. */
@@ -55,3 +56,22 @@ fun ReadinessChipsRow(sum: Summary, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/** The single lead-banner copy pointing the operator at answering as the path to approval.
+ *  Shared by spec-detail and the Queue's QuestionsCard so both surfaces speak the same words. */
+fun unansweredLeadText(count: Int): String = "$count unanswered question(s) — answer to approve"
+
+/** Lead shown atop a review-phase spec when >=1 open question is unanswered; null otherwise so a
+ *  spec with no open questions renders unchanged (ac5). Reuses the [Summary], not a re-derivation. */
+fun unansweredQuestionsLead(status: String, sum: Summary): String? =
+    if (isReviewInteractive(status) && sum.unansweredQuestions > 0) unansweredLeadText(sum.unansweredQuestions)
+    else null
+
+/** Approve-control guidance when unanswered questions are the ONLY approval blocker — i.e. every
+ *  criterion is already approved (none flagged or unreviewed) and >=1 question is unanswered:
+ *  'Answer N question(s) to approve'. Null otherwise (generic Approve). Reuses the [Summary]'s
+ *  counts rather than re-deriving the server approval gate. */
+fun soleBlockerApproveLabel(status: String, sum: Summary): String? =
+    if (isReviewInteractive(status) && sum.unansweredQuestions > 0 && sum.flagged == 0 && sum.unreviewed == 0)
+        "Answer ${sum.unansweredQuestions} question(s) to approve"
+    else null

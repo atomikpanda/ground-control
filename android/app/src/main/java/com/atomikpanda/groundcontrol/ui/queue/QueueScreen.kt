@@ -74,6 +74,7 @@ import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard as DecisionPromptCard
 import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
 import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
+import com.atomikpanda.groundcontrol.ui.specdetail.unansweredLeadText
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -483,6 +484,14 @@ private fun CardFace(
                     }
                 }
                 is QuestionsCard -> {
+                    // ac1 (Queue): lead the operator toward answering as the path to approval.
+                    Text(
+                        unansweredLeadText(card.items.size),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(4.dp))
                     card.items.forEach { item ->
                         QuestionAnswerRow(item, enabled) { answer -> vm.answerQuestion(card.connectionId, card.specId, item.id, answer) }
                     }

@@ -23,6 +23,7 @@ import java.util.ArrayDeque
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -269,5 +270,126 @@ class SpecDetailViewModelTest {
         vm.load()?.join()
         vm.startActivityPolling(intervalMs = 1000).join()
         assertEquals(0, taskCalls) // never polled a non-dispatched (approved) spec
+    }
+
+    @Test fun lead_and_guidance_surface_for_review_spec_with_sole_unanswered_blocker() = runTest {
+        val vm = vm(this) {
+            respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],
+                "open_questions":[{"id":"q1","text":"q","answer":null}]}""", HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        val d = (vm.state.value as SpecDetailUiState.Content).detail
+        assertEquals("1 unanswered question(s) — answer to approve", d.unansweredLead)   // ac1
+        assertEquals("Answer 1 question(s) to approve", d.approveGuidance)               // ac2
+    }
+
+    @Test fun no_lead_or_guidance_when_no_open_questions() = runTest {                    // ac5
+        val vm = vm(this) {
+            respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        val d = (vm.state.value as SpecDetailUiState.Content).detail
+        assertNull(d.unansweredLead)
+        assertNull(d.approveGuidance)
+    }
+
+    @Test fun answering_last_question_auto_approves_and_clears_lead_and_guidance() = runTest {   // ac4
+        var call = 0
+        val vm = vm(this) {
+            call++
+            if (call == 1) respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],
+                "open_questions":[{"id":"q1","text":"q","answer":null}]}""", HttpStatusCode.OK, jsonHdr)
+            else respond("""{"id":"s1","status":"approved",
+                "acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],
+                "open_questions":[{"id":"q1","text":"q","answer":"yes"}],
+                "summary":{"criteria_total":1,"approved":1,"flagged":0,"unreviewed":0,"open_questions_unanswered":0}}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        assertNotNull((vm.state.value as SpecDetailUiState.Content).detail.approveGuidance)  // blocked before
+        vm.answer("q1", "yes")?.join()
+        val d = (vm.state.value as SpecDetailUiState.Content).detail
+        assertEquals("approved", d.status)   // server auto-approved on the answer POST; no Request-changes
+        assertNull(d.unansweredLead)
+        assertNull(d.approveGuidance)
+    }
+
+    @Test fun unsent_answer_and_ask_drafts_survive_leave_and_return_keyed_per_question() = runTest {  // ac9
+        val vm = vm(this) {
+            respond("""{"id":"s1","title":"T","status":"needs_review","body":"b","acceptance_criteria":[],
+                "open_questions":[{"id":"q1","text":"q1","answer":null},{"id":"q2","text":"q2","answer":null}]}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        vm.setAnswerDraft("q1", "half-typed one")
+        vm.setAnswerDraft("q2", "half-typed two")
+        vm.setAskDraft("a new question I'm still writing")
+        // Leaving + returning re-runs load(); the unsent drafts must NOT be silently dropped.
+        vm.load()?.join()
+        assertEquals("half-typed one", vm.answerDrafts.value["q1"])
+        assertEquals("half-typed two", vm.answerDrafts.value["q2"])   // per-question, no cross-contamination
+        assertEquals("a new question I'm still writing", vm.askDraft.value)
+    }
+
+    @Test fun sending_an_answer_clears_only_that_questions_draft() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            if (call == 1) respond("""{"id":"s1","title":"T","status":"needs_review","body":"b","acceptance_criteria":[],
+                "open_questions":[{"id":"q1","text":"q1","answer":null},{"id":"q2","text":"q2","answer":null}]}""",
+                HttpStatusCode.OK, jsonHdr)
+            else respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[],
+                "open_questions":[{"id":"q1","text":"q1","answer":"done"},{"id":"q2","text":"q2","answer":null}],
+                "summary":{"criteria_total":0,"approved":0,"flagged":0,"unreviewed":0,"open_questions_unanswered":1}}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        vm.setAnswerDraft("q1", "done")
+        vm.setAnswerDraft("q2", "still typing")
+        vm.answer("q1", "done")?.join()
+        assertNull(vm.answerDrafts.value["q1"])                 // cleared on successful send
+        assertEquals("still typing", vm.answerDrafts.value["q2"])  // sibling draft untouched
+    }
+
+    @Test fun sending_a_question_clears_the_ask_draft() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            if (call == 1) respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+            else respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[],
+                "open_questions":[{"id":"q9","text":"new q","answer":null}],
+                "summary":{"criteria_total":0,"approved":0,"flagged":0,"unreviewed":0,"open_questions_unanswered":1}}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        vm.setAskDraft("new q")
+        vm.ask("new q")?.join()
+        assertEquals("", vm.askDraft.value)
+    }
+
+    @Test fun request_changes_draft_survives_failure_and_clears_on_success() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            when (call) {
+                1 -> respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                    "acceptance_criteria":[],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                2 -> respondError(HttpStatusCode.InternalServerError)   // request-changes network failure
+                else -> respond("""{"id":"s1","status":"needs_clarification","acceptance_criteria":[],"open_questions":[],
+                    "summary":{"criteria_total":0,"approved":0,"flagged":0,"unreviewed":0,"open_questions_unanswered":0}}""",
+                    HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        vm.load()?.join()
+        vm.setRequestChangesDraft("please fix X")
+        vm.requestChanges("please fix X")?.join()          // fails -> draft must be preserved
+        assertEquals("please fix X", vm.requestChangesDraft.value)
+        vm.requestChanges("please fix X")?.join()          // succeeds -> draft cleared
+        assertEquals("", vm.requestChangesDraft.value)
     }
 }
