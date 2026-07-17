@@ -37,4 +37,21 @@ class TaskDtosTest {
         assertEquals(2, e.iteration)
         assertNull(e.openQuestion)
     }
+
+    @Test fun parses_task_summary_activity_fields() {
+        val raw = """
+        {"slug":"t1","phase":"dev","branch":"feat/t1",
+         "last_activity_at":"2026-07-13T12:00:00Z","phase_entered_at":"2026-07-13T11:00:00Z"}
+        """.trimIndent()
+        val t = json.decodeFromString(TaskSummary.serializer(), raw)
+        assertEquals("2026-07-13T12:00:00Z", t.lastActivityAt)
+        assertEquals("2026-07-13T11:00:00Z", t.phaseEnteredAt)
+    }
+
+    @Test fun task_summary_activity_fields_default_null() {
+        val raw = """{"slug":"t1","phase":"dev","branch":"feat/t1"}"""
+        val t = json.decodeFromString(TaskSummary.serializer(), raw)
+        assertNull(t.lastActivityAt)
+        assertNull(t.phaseEnteredAt)
+    }
 }

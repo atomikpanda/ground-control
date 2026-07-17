@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.buildJson
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -76,5 +77,22 @@ class WorkItemDtosTest {
             """{"id":"wi-4","kind":"chore","title":"n","phase":"inbox","external_links":null}""",
         )
         assertTrue(w.externalLinks.isEmpty())
+    }
+
+    @Test fun parses_work_item_active_task_fields() {
+        val raw = """
+        {"id":"wi1","kind":"feature","title":"T","phase":"in_flight",
+         "active_phase":"dev","active_last_activity_at":"2026-07-13T12:00:00Z"}
+        """.trimIndent()
+        val w = json.decodeFromString(WorkItemSummary.serializer(), raw)
+        assertEquals("dev", w.activePhase)
+        assertEquals("2026-07-13T12:00:00Z", w.activeLastActivityAt)
+    }
+
+    @Test fun work_item_active_fields_default_null() {
+        val raw = """{"id":"wi1","kind":"feature","title":"T","phase":"inbox"}"""
+        val w = json.decodeFromString(WorkItemSummary.serializer(), raw)
+        assertNull(w.activePhase)
+        assertNull(w.activeLastActivityAt)
     }
 }

@@ -19,6 +19,8 @@ data class TaskSummary(
     @SerialName("tests_failing") val testsFailing: Boolean = false,
     @SerialName("finished_at") val finishedAt: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("last_activity_at") val lastActivityAt: String? = null,
+    @SerialName("phase_entered_at") val phaseEnteredAt: String? = null,
 )
 
 @Serializable
