@@ -2,6 +2,8 @@
 package com.atomikpanda.groundcontrol.ui.queue
 
 import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
+import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
+import com.atomikpanda.groundcontrol.ui.theme.LocalWorkspaceIdentityResolver
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -421,7 +424,13 @@ private fun CardFace(
     ) {
         // Content scrolls inside the (bounded) card so overflow never pushes the pinned Skip off-screen.
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
-            Text(card.workspaceName, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val wsIdentity = LocalWorkspaceIdentityResolver.current(card.connectionId, card.workspaceName)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                WorkspaceBadge(wsIdentity, size = 18.dp)
+                Spacer(Modifier.width(6.dp))
+                Text(card.workspaceName, style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             // Spec-review cards (#B) carry their WorkItem context: title + kind + the repos it touches,
             // so an approver knows *what* they're approving without opening the spec detail.
             val specMeta = when (card) {
