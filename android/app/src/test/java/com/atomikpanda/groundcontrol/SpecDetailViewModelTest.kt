@@ -317,4 +317,58 @@ class SpecDetailViewModelTest {
         assertNull(d.unansweredLead)
         assertNull(d.approveGuidance)
     }
+
+    @Test fun unsent_answer_and_ask_drafts_survive_leave_and_return_keyed_per_question() = runTest {  // ac9
+        val vm = vm(this) {
+            respond("""{"id":"s1","title":"T","status":"needs_review","body":"b","acceptance_criteria":[],
+                "open_questions":[{"id":"q1","text":"q1","answer":null},{"id":"q2","text":"q2","answer":null}]}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        vm.setAnswerDraft("q1", "half-typed one")
+        vm.setAnswerDraft("q2", "half-typed two")
+        vm.setAskDraft("a new question I'm still writing")
+        // Leaving + returning re-runs load(); the unsent drafts must NOT be silently dropped.
+        vm.load()?.join()
+        assertEquals("half-typed one", vm.answerDrafts.value["q1"])
+        assertEquals("half-typed two", vm.answerDrafts.value["q2"])   // per-question, no cross-contamination
+        assertEquals("a new question I'm still writing", vm.askDraft.value)
+    }
+
+    @Test fun sending_an_answer_clears_only_that_questions_draft() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            if (call == 1) respond("""{"id":"s1","title":"T","status":"needs_review","body":"b","acceptance_criteria":[],
+                "open_questions":[{"id":"q1","text":"q1","answer":null},{"id":"q2","text":"q2","answer":null}]}""",
+                HttpStatusCode.OK, jsonHdr)
+            else respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[],
+                "open_questions":[{"id":"q1","text":"q1","answer":"done"},{"id":"q2","text":"q2","answer":null}],
+                "summary":{"criteria_total":0,"approved":0,"flagged":0,"unreviewed":0,"open_questions_unanswered":1}}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        vm.setAnswerDraft("q1", "done")
+        vm.setAnswerDraft("q2", "still typing")
+        vm.answer("q1", "done")?.join()
+        assertNull(vm.answerDrafts.value["q1"])                 // cleared on successful send
+        assertEquals("still typing", vm.answerDrafts.value["q2"])  // sibling draft untouched
+    }
+
+    @Test fun sending_a_question_clears_the_ask_draft() = runTest {
+        var call = 0
+        val vm = vm(this) {
+            call++
+            if (call == 1) respond("""{"id":"s1","title":"T","status":"needs_review","body":"b",
+                "acceptance_criteria":[],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+            else respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[],
+                "open_questions":[{"id":"q9","text":"new q","answer":null}],
+                "summary":{"criteria_total":0,"approved":0,"flagged":0,"unreviewed":0,"open_questions_unanswered":1}}""",
+                HttpStatusCode.OK, jsonHdr)
+        }
+        vm.load()?.join()
+        vm.setAskDraft("new q")
+        vm.ask("new q")?.join()
+        assertEquals("", vm.askDraft.value)
+    }
 }
