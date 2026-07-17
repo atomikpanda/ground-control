@@ -69,7 +69,7 @@ fun PhaseStepper(current: PhaseStep, modifier: Modifier = Modifier, compact: Boo
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PhaseStep.values().forEachIndexed { i, step ->
+        PhaseStep.entries.forEachIndexed { i, step ->
             val isDone = i < current.ordinal
             val isCurrent = i == current.ordinal
             val tint = when {

@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
@@ -84,12 +85,6 @@ fun LiveChip(
         is LiveStatus.Done -> "done" to MaterialTheme.colorScheme.primary
         is LiveStatus.Unknown -> "—" to colors.muted
     }
-    val pulse by rememberInfiniteTransition(label = "chipPulse").animateFloat(
-        initialValue = 0.3f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "chipAlpha",
-    )
     Row(
         modifier
             .clip(RoundedCornerShape(50))
@@ -97,14 +92,26 @@ fun LiveChip(
             .padding(horizontal = 8.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .alpha(if (status is LiveStatus.Working) pulse else 1f)
-                .background(tint),
-        )
+        // Only the Working branch mounts the infinite transition, so an idle/quiet/done
+        // chip doesn't keep the choreographer ticking for a discarded pulse value.
+        if (status is LiveStatus.Working) PulsingDot(tint) else StatusDot(tint)
         Spacer(Modifier.size(6.dp))
         Text(label, style = MonoStyle, color = tint)
     }
+}
+
+@Composable
+private fun StatusDot(tint: Color, alpha: Float = 1f) {
+    Box(Modifier.size(8.dp).clip(CircleShape).alpha(alpha).background(tint))
+}
+
+@Composable
+private fun PulsingDot(tint: Color) {
+    val pulse by rememberInfiniteTransition(label = "chipPulse").animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "chipAlpha",
+    )
+    StatusDot(tint, pulse)
 }

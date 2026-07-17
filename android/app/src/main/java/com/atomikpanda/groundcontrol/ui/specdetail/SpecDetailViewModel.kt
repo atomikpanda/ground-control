@@ -133,7 +133,9 @@ class SpecDetailViewModel(
                 taskSlug = spec.taskSlug ?: c.detail.taskSlug,
                 taskPhase = task?.phase ?: c.detail.taskPhase,
                 taskLastActivityAt = task?.lastActivityAt ?: c.detail.taskLastActivityAt,
-                taskFinished = task?.finishedAt != null,
+                // Preserve the prior value on a transient task-fetch miss (task == null)
+                // rather than silently reverting a recorded "finished" back to false.
+                taskFinished = if (task != null) task.finishedAt != null else c.detail.taskFinished,
             ),
         )
         return isSpecInFlight(spec.status)
