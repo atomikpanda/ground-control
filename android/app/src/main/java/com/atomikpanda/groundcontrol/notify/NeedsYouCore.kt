@@ -34,12 +34,22 @@ class NeedsYouReconciler(
     private val store: NotifiedStore,
     private val notifier: Notifier,
     private val repo: ThreadsRepository,
+    /** The thread currently open+foregrounded (see [OpenThreadRegistry]), or null. Suppresses a
+     *  duplicate notification for the thread the user is already viewing (#378). Defaults to
+     *  "nothing open" so non-UI callers/tests keep the original always-notify behavior. */
+    private val foregroundThreadKey: () -> String? = { null },
 ) {
     suspend fun reconcile(conn: WorkspaceConnection, threads: List<ThreadSummary>) {
         for (t in threads) {
             val notified = store.isNotified(conn.id, t.id)
             val needsAttention = t.needsYou || t.needsDecision
             if (needsAttention && !notified) {
+                if (shouldSuppressNotification(foregroundThreadKey(), conn.id, t.id)) {
+                    // The user is looking at this exact thread right now. Skip the notification and
+                    // deliberately do NOT markNotified: if they leave it still-unanswered, a later
+                    // reconcile should surface it.
+                    continue
+                }
                 // Fetch the full thread once (gated by the dedupe store, so one GET per new
                 // notification) to build MessagingStyle context + resolve the active decision.
                 // Degrades to the summary preview if the fetch fails — a notification always fires.

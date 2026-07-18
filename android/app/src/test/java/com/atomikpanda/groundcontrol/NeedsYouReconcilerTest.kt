@@ -9,6 +9,7 @@ import com.atomikpanda.groundcontrol.notify.NeedsYouEvent
 import com.atomikpanda.groundcontrol.notify.NeedsYouReconciler
 import com.atomikpanda.groundcontrol.notify.Notifier
 import com.atomikpanda.groundcontrol.notify.NotifiedStore
+import com.atomikpanda.groundcontrol.notify.threadKey
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -147,5 +148,27 @@ class NeedsYouReconcilerTest {
         NeedsYouReconciler(store, notifier, repo).fetchAndReconcile(conn)
         assertEquals(1, notifier.events.size)
         assertEquals("look", notifier.events[0].preview)
+    }
+
+    @Test fun suppresses_notification_while_the_thread_is_open_in_foreground() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        var openKey: String? = threadKey(conn.id, "t1")
+        val r = NeedsYouReconciler(store, notifier, routedRepo(), foregroundThreadKey = { openKey })
+        r.reconcile(conn, listOf(decisionSummary("t1", true)))
+        assertEquals(0, notifier.events.size)   // suppressed: user is viewing t1 in the foreground
+        // Deliberately NOT marked notified: once the user leaves, the next reconcile surfaces it.
+        openKey = null
+        r.reconcile(conn, listOf(decisionSummary("t1", true)))
+        assertEquals(1, notifier.events.size)
+    }
+
+    @Test fun does_not_suppress_when_a_different_thread_is_open() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        val r = NeedsYouReconciler(
+            store, notifier, routedRepo(),
+            foregroundThreadKey = { threadKey(conn.id, "someOtherThread") },
+        )
+        r.reconcile(conn, listOf(summary("t1", true)))
+        assertEquals(1, notifier.events.size)
     }
 }
