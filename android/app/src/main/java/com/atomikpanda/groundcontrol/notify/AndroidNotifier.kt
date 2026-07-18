@@ -68,10 +68,13 @@ class AndroidNotifier(private val context: Context) : Notifier {
             }
         }
         // Full option list in the chat body so the reader can still see the full choices now that
-        // the option BUTTONS below show only a short label (#379).
-        decisionOptionsBody(event.decision)?.let { style.addMessage(it, now, agent) }
+        // the option BUTTONS below show only a short label (#379). Timestamped now+1 (and the error
+        // now+2) so these trailing lines always sort AFTER the conversation and in a fixed order —
+        // a thread message with an unparseable timestamp also falls back to `now`, so `now` here
+        // would tie and leave the order dependent on TimSort stability rather than guaranteed.
+        decisionOptionsBody(event.decision)?.let { style.addMessage(it, now + 1, agent) }
         if (errorLine != null) {
-            style.addMessage("⚠️ Couldn't send: $errorLine", now, me)
+            style.addMessage("⚠️ Couldn't send: $errorLine", now + 2, me)
         }
 
         val builder = NotificationCompat.Builder(context, NotificationChannels.NEEDS_YOU)
