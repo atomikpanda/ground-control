@@ -41,6 +41,7 @@ class WatchService : Service() {
             RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),
             AndroidNotifier(applicationContext),
             repo,
+            foregroundThreadKey = { OpenThreadRegistry.snapshot() },
         )
     }
 

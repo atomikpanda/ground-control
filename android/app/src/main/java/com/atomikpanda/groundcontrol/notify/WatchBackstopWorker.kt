@@ -21,6 +21,7 @@ class WatchBackstopWorker(appContext: Context, params: WorkerParameters) :
             RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),
             AndroidNotifier(applicationContext),
             repo,
+            foregroundThreadKey = { OpenThreadRegistry.snapshot() },
         )
         val conns = ConnectionsRepository(applicationContext).snapshot()
         if (conns.isEmpty()) return Result.success()
