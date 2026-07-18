@@ -40,6 +40,7 @@ import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.defaultHttpClient
+import com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller
 import com.atomikpanda.groundcontrol.ui.home.HomeScreen
 import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
@@ -450,7 +451,10 @@ fun GroundControlApp(
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
                 } else {
                     val vm = viewModel(key = "thread-$connectionId-$threadId") {
-                        ConversationViewModel(threadsRepo, conn, threadId)
+                        ConversationViewModel(
+                            threadsRepo, conn, threadId,
+                            canceller = AndroidNeedsYouCanceller(context.applicationContext),
+                        )
                     }
                     ConversationScreen(
                         vm,
