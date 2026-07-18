@@ -103,3 +103,66 @@ fun stripMarkdownForNotification(text: String): String {
     s = s.replace(Regex("\n{3,}"), "\n\n")
     return s.trim()
 }
+
+/**
+ * Deterministic key for a (connection, thread) pair — the single source of truth shared by the
+ * notification-id derivation, the open-thread suppression signal, and the cancel-on-view path so
+ * "post" and "cancel" always agree. Same `connId|threadId` string used since the first notifier.
+ */
+fun threadKey(connId: String, threadId: String): String = "$connId|$threadId"
+
+/**
+ * Stable notification id for a needs-you thread (#378). Both [com.atomikpanda.groundcontrol.notify
+ * .AndroidNotifier] (post) and [com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller]
+ * (cancel-on-view) derive the id through this one helper so a thread's notification can always be
+ * cancelled by the same id it was posted under.
+ */
+fun needsYouNotificationId(connId: String, threadId: String): Int = threadKey(connId, threadId).hashCode()
+
+/**
+ * A short, glanceable button label for a decision option (#379). The notification Action title has
+ * room for only ~1-3 words; the full option text overflows and is unusable. This shortens ONLY the
+ * visible label — the POSTED choice (EXTRA_OPTION_TEXT) stays the full text so a phone/Watch tap
+ * still sends the correct answer. Pure: first [maxWords] words, hard-capped at [maxChars], with an
+ * ellipsis whenever anything was dropped. Blank in → blank out.
+ */
+fun optionButtonLabel(fullText: String, maxWords: Int = 3, maxChars: Int = 24): String {
+    val trimmed = fullText.trim()
+    if (trimmed.isEmpty()) return ""
+    val words = trimmed.split(Regex("\\s+"))
+    var label = words.take(maxWords).joinToString(" ")
+    var truncated = words.size > maxWords
+    if (label.length > maxChars) {
+        label = label.take(maxChars).trimEnd()
+        truncated = true
+    }
+    return if (truncated) "$label…" else label
+}
+
+/**
+ * The full decision options as a plain-text block for the notification's MessagingStyle body
+ * (#379). Now that the option BUTTONS show only a short label, the reader still needs the full
+ * choices somewhere legible. Numbered 1-based, the recommended option flagged. Returns null when
+ * there's no decision or no options (nothing to add). Independent of `multi` — a multi-select
+ * decision renders no buttons, but its options are still worth reading.
+ */
+fun decisionOptionsBody(decision: Decision?): String? {
+    if (decision == null) return null
+    val options = decision.options
+    if (options.isEmpty()) return null
+    val rec = decision.recommended
+    return options.mapIndexed { i, opt ->
+        val flag = if (rec != null && i == rec) " (recommended)" else ""
+        "${i + 1}. $opt$flag"
+    }.joinToString("\n")
+}
+
+/**
+ * Whether a needs-you notification for (connId, threadId) should be SUPPRESSED because that exact
+ * thread is currently open in the foreground (#378). [openThreadKey] is the process-wide
+ * open+foregrounded thread signal (see [com.atomikpanda.groundcontrol.notify.OpenThreadRegistry]),
+ * or null when nothing is on screen / the app is backgrounded. Pure predicate — the reconciler
+ * stays a thin caller.
+ */
+fun shouldSuppressNotification(openThreadKey: String?, connId: String, threadId: String): Boolean =
+    openThreadKey != null && openThreadKey == threadKey(connId, threadId)

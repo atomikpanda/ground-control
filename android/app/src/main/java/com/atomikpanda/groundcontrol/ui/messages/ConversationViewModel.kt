@@ -8,6 +8,8 @@ import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.notify.NeedsYouCanceller
+import com.atomikpanda.groundcontrol.notify.NoopNeedsYouCanceller
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -43,9 +45,13 @@ sealed interface ConversationUiState {
 class ConversationViewModel(
     private val repo: ThreadsRepository,
     private val conn: WorkspaceConnection,
-    private val threadId: String,
+    val threadId: String,
     private val testScope: CoroutineScope? = null,
+    private val canceller: NeedsYouCanceller = NoopNeedsYouCanceller,
 ) : ViewModel() {
+
+    /** This conversation's connection id — exposed for ConversationScreen's open-thread signal (#378). */
+    val connectionId: String get() = conn.id
 
     private val _state = MutableStateFlow<ConversationUiState>(ConversationUiState.Loading)
     val state: StateFlow<ConversationUiState> = _state.asStateFlow()
@@ -67,6 +73,10 @@ class ConversationViewModel(
                     val journal = fetchJournal(thread.taskSlug)
                     _state.value = ConversationUiState.Content(thread, journal = journal)
                     markSeen(thread)
+                    // Opening the thread is "viewing" it: proactively clear any pending needs-you
+                    // notification for it so a message you're already reading doesn't linger in the
+                    // shade (#378). Idempotent — cancelling an absent notification is a no-op.
+                    canceller.cancel(conn.id, threadId)
                 }
                 .onFailure { t -> _state.value = ConversationUiState.Error(t.toKind(), t.message ?: "error") }
         }

@@ -30,7 +30,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         render(event, errorLine = failedText)
 
     private fun render(event: NeedsYouEvent, errorLine: String?) {
-        val notifId = (event.connectionId + "|" + event.threadId).hashCode()
+        val notifId = needsYouNotificationId(event.connectionId, event.threadId)
         val agentName = event.workspaceName.ifBlank { "Ground Control" }
         val title = event.subject.ifBlank { agentName }
         val me = Person.Builder().setName("You").setKey(KEY_ME).build()
@@ -67,8 +67,14 @@ class AndroidNotifier(private val context: Context) : Notifier {
                 style.addMessage(text, stamps[i], if (isHuman) me else agent)
             }
         }
+        // Full option list in the chat body so the reader can still see the full choices now that
+        // the option BUTTONS below show only a short label (#379). Timestamped now+1 (and the error
+        // now+2) so these trailing lines always sort AFTER the conversation and in a fixed order —
+        // a thread message with an unparseable timestamp also falls back to `now`, so `now` here
+        // would tie and leave the order dependent on TimSort stability rather than guaranteed.
+        decisionOptionsBody(event.decision)?.let { style.addMessage(it, now + 1, agent) }
         if (errorLine != null) {
-            style.addMessage("⚠️ Couldn't send: $errorLine", now, me)
+            style.addMessage("⚠️ Couldn't send: $errorLine", now + 2, me)
         }
 
         val builder = NotificationCompat.Builder(context, NotificationChannels.NEEDS_YOU)
@@ -106,8 +112,10 @@ class AndroidNotifier(private val context: Context) : Notifier {
     }
 
     private fun optionAction(event: NeedsYouEvent, optionText: String): NotificationCompat.Action {
+        // POST the FULL option text (EXTRA_OPTION_TEXT, via replyPendingIntent) so a phone/Watch tap
+        // sends the correct full choice; only the VISIBLE label is shortened (#379).
         val pi = replyPendingIntent(event, tag = "opt_" + optionText.hashCode(), optionText = optionText, mutable = false)
-        return NotificationCompat.Action.Builder(0, optionText, pi)
+        return NotificationCompat.Action.Builder(0, optionButtonLabel(optionText), pi)
             .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_NONE)
             .setShowsUserInterface(false)
             .build()

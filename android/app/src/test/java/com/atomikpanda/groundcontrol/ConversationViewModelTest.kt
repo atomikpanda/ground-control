@@ -585,4 +585,35 @@ class ConversationViewModelTest {
         // journal forward rather than resetting it to empty.
         assertEquals(2, (v.state.value as ConversationUiState.Content).journal.size)
     }
+
+    // --- #378: cancel a thread's pending notification when it's opened/viewed ---
+
+    private class FakeCanceller : com.atomikpanda.groundcontrol.notify.NeedsYouCanceller {
+        val cancelled = mutableListOf<Pair<String, String>>()
+        override fun cancel(connId: String, threadId: String) { cancelled += connId to threadId }
+    }
+
+    @Test fun opening_a_thread_cancels_its_pending_notification() = runTest {
+        val canceller = FakeCanceller()
+        val vm = ConversationViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine { req ->
+                if (req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get)
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                else respondError(HttpStatusCode.NotFound)
+            }) { mshipDefaults() })),
+            conn, "t1", testScope = this, canceller = canceller,
+        )
+        vm.load()?.join()
+        assertEquals(listOf("1" to "t1"), canceller.cancelled)   // conn.id == "1"
+    }
+
+    @Test fun a_failed_load_does_not_cancel() = runTest {
+        val canceller = FakeCanceller()
+        val vm = ConversationViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine { respondError(HttpStatusCode.InternalServerError) }) { mshipDefaults() })),
+            conn, "t1", testScope = this, canceller = canceller,
+        )
+        vm.load()?.join()
+        assertTrue(canceller.cancelled.isEmpty())
+    }
 }

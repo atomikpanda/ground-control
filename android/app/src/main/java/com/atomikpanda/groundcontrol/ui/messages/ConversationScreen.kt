@@ -59,10 +59,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.notify.OpenThreadRegistry
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
@@ -83,6 +85,15 @@ fun ConversationScreen(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load()?.join(); vm.startPolling() }
+
+    // Tell the watcher this thread is on screen + foregrounded so it suppresses a duplicate
+    // notification for it, and clear that signal when we leave or the app backgrounds (#378).
+    // RESUMED ⇒ open+foregrounded; PAUSE/dispose ⇒ closed. Thin lifecycle glue over the
+    // OpenThreadRegistry singleton (no ProcessLifecycleOwner dependency required).
+    LifecycleResumeEffect(vm.connectionId, vm.threadId) {
+        OpenThreadRegistry.open(vm.connectionId, vm.threadId)
+        onPauseOrDispose { OpenThreadRegistry.close(vm.connectionId, vm.threadId) }
+    }
 
     val displayTitle = (state as? ConversationUiState.Content)?.thread?.subject?.takeIf { it.isNotBlank() } ?: title
 

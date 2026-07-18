@@ -4,13 +4,19 @@ import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.notify.activeDecision
 import com.atomikpanda.groundcontrol.notify.decisionActionOptions
+import com.atomikpanda.groundcontrol.notify.decisionOptionsBody
 import com.atomikpanda.groundcontrol.notify.messageTimestamps
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
+import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
+import com.atomikpanda.groundcontrol.notify.optionButtonLabel
 import com.atomikpanda.groundcontrol.notify.recentMessages
 import com.atomikpanda.groundcontrol.notify.replyText
+import com.atomikpanda.groundcontrol.notify.shouldSuppressNotification
 import com.atomikpanda.groundcontrol.notify.stripMarkdownForNotification
+import com.atomikpanda.groundcontrol.notify.threadKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -166,5 +172,88 @@ class NotificationFormatTest {
     @Test fun leaves_plain_prose_untouched() {
         val prose = "Just a normal sentence with 2 + 2 = 4."
         assertEquals(prose, stripMarkdownForNotification(prose))
+    }
+
+    // --- notification id / thread key (shared by post + cancel, #378) ---------
+
+    @Test fun thread_key_is_conn_pipe_thread() {
+        assertEquals("c1|t1", threadKey("c1", "t1"))
+    }
+
+    @Test fun needs_you_notification_id_matches_the_legacy_derivation() {
+        // Must equal the exact string hash AndroidNotifier posted under before extraction,
+        // so a cancel keyed by the same id dismisses the same notification.
+        assertEquals(("c1" + "|" + "t1").hashCode(), needsYouNotificationId("c1", "t1"))
+        assertEquals("c1|t1".hashCode(), needsYouNotificationId("c1", "t1"))
+    }
+
+    @Test fun needs_you_notification_id_is_distinct_per_thread_and_connection() {
+        assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c1", "t2"))
+        assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c2", "t1"))
+    }
+
+    // --- option button short label (#379) -----------------------------------
+
+    @Test fun option_label_keeps_a_short_single_word() {
+        assertEquals("Yes", optionButtonLabel("Yes"))
+    }
+
+    @Test fun option_label_keeps_a_short_multiword_phrase() {
+        assertEquals("Ship it now", optionButtonLabel("Ship it now"))
+    }
+
+    @Test fun option_label_truncates_by_word_count_with_ellipsis() {
+        assertEquals("Merge the pull…", optionButtonLabel("Merge the pull request into main"))
+    }
+
+    @Test fun option_label_hard_caps_a_long_single_word() {
+        val out = optionButtonLabel("Supercalifragilisticexpialidocious")
+        assertTrue(out.endsWith("…"))
+        assertEquals(25, out.length)  // 24-char cap + the ellipsis
+    }
+
+    @Test fun option_label_blank_in_blank_out() {
+        assertEquals("", optionButtonLabel(""))
+        assertEquals("", optionButtonLabel("   "))
+    }
+
+    @Test fun option_label_trims_surrounding_whitespace() {
+        assertEquals("Approve", optionButtonLabel("  Approve  "))
+    }
+
+    // --- full decision options rendered into the chat body (#379) ------------
+
+    @Test fun options_body_numbers_all_options_full_text() {
+        val d = Decision(options = listOf("Ship it to production now", "Hold for review"))
+        assertEquals("1. Ship it to production now\n2. Hold for review", decisionOptionsBody(d))
+    }
+
+    @Test fun options_body_flags_the_recommended_option() {
+        val d = Decision(options = listOf("A", "B", "C"), recommended = 1)
+        assertEquals("1. A\n2. B (recommended)\n3. C", decisionOptionsBody(d))
+    }
+
+    @Test fun options_body_lists_options_even_for_multi_select() {
+        val d = Decision(options = listOf("A", "B"), multi = true)
+        assertEquals("1. A\n2. B", decisionOptionsBody(d))
+    }
+
+    @Test fun options_body_is_null_when_no_options_or_no_decision() {
+        assertNull(decisionOptionsBody(null))
+        assertNull(decisionOptionsBody(Decision(options = emptyList())))
+    }
+
+    // --- foreground open-thread suppression predicate (#378) ------------------
+
+    @Test fun suppress_when_the_open_thread_matches() {
+        assertTrue(shouldSuppressNotification(threadKey("c1", "t1"), "c1", "t1"))
+    }
+
+    @Test fun do_not_suppress_a_different_open_thread() {
+        assertFalse(shouldSuppressNotification(threadKey("c1", "other"), "c1", "t1"))
+    }
+
+    @Test fun do_not_suppress_when_nothing_is_open() {
+        assertFalse(shouldSuppressNotification(null, "c1", "t1"))
     }
 }
