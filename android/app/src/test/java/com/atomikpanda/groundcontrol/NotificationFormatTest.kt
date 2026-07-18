@@ -6,11 +6,14 @@ import com.atomikpanda.groundcontrol.notify.activeDecision
 import com.atomikpanda.groundcontrol.notify.decisionActionOptions
 import com.atomikpanda.groundcontrol.notify.messageTimestamps
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
+import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
 import com.atomikpanda.groundcontrol.notify.recentMessages
 import com.atomikpanda.groundcontrol.notify.replyText
 import com.atomikpanda.groundcontrol.notify.stripMarkdownForNotification
+import com.atomikpanda.groundcontrol.notify.threadKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -166,5 +169,23 @@ class NotificationFormatTest {
     @Test fun leaves_plain_prose_untouched() {
         val prose = "Just a normal sentence with 2 + 2 = 4."
         assertEquals(prose, stripMarkdownForNotification(prose))
+    }
+
+    // --- notification id / thread key (shared by post + cancel, #378) ---------
+
+    @Test fun thread_key_is_conn_pipe_thread() {
+        assertEquals("c1|t1", threadKey("c1", "t1"))
+    }
+
+    @Test fun needs_you_notification_id_matches_the_legacy_derivation() {
+        // Must equal the exact string hash AndroidNotifier posted under before extraction,
+        // so a cancel keyed by the same id dismisses the same notification.
+        assertEquals(("c1" + "|" + "t1").hashCode(), needsYouNotificationId("c1", "t1"))
+        assertEquals("c1|t1".hashCode(), needsYouNotificationId("c1", "t1"))
+    }
+
+    @Test fun needs_you_notification_id_is_distinct_per_thread_and_connection() {
+        assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c1", "t2"))
+        assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c2", "t1"))
     }
 }

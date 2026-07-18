@@ -103,3 +103,18 @@ fun stripMarkdownForNotification(text: String): String {
     s = s.replace(Regex("\n{3,}"), "\n\n")
     return s.trim()
 }
+
+/**
+ * Deterministic key for a (connection, thread) pair — the single source of truth shared by the
+ * notification-id derivation, the open-thread suppression signal, and the cancel-on-view path so
+ * "post" and "cancel" always agree. Same `connId|threadId` string used since the first notifier.
+ */
+fun threadKey(connId: String, threadId: String): String = "$connId|$threadId"
+
+/**
+ * Stable notification id for a needs-you thread (#378). Both [com.atomikpanda.groundcontrol.notify
+ * .AndroidNotifier] (post) and [com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller]
+ * (cancel-on-view) derive the id through this one helper so a thread's notification can always be
+ * cancelled by the same id it was posted under.
+ */
+fun needsYouNotificationId(connId: String, threadId: String): Int = threadKey(connId, threadId).hashCode()
