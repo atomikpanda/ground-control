@@ -156,3 +156,13 @@ fun decisionOptionsBody(decision: Decision?): String? {
         "${i + 1}. $opt$flag"
     }.joinToString("\n")
 }
+
+/**
+ * Whether a needs-you notification for (connId, threadId) should be SUPPRESSED because that exact
+ * thread is currently open in the foreground (#378). [openThreadKey] is the process-wide
+ * open+foregrounded thread signal (see [com.atomikpanda.groundcontrol.notify.OpenThreadRegistry]),
+ * or null when nothing is on screen / the app is backgrounded. Pure predicate — the reconciler
+ * stays a thin caller.
+ */
+fun shouldSuppressNotification(openThreadKey: String?, connId: String, threadId: String): Boolean =
+    openThreadKey != null && openThreadKey == threadKey(connId, threadId)

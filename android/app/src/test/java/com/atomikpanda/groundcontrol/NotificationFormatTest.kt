@@ -11,6 +11,7 @@ import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
 import com.atomikpanda.groundcontrol.notify.optionButtonLabel
 import com.atomikpanda.groundcontrol.notify.recentMessages
 import com.atomikpanda.groundcontrol.notify.replyText
+import com.atomikpanda.groundcontrol.notify.shouldSuppressNotification
 import com.atomikpanda.groundcontrol.notify.stripMarkdownForNotification
 import com.atomikpanda.groundcontrol.notify.threadKey
 import org.junit.Assert.assertEquals
@@ -240,5 +241,19 @@ class NotificationFormatTest {
     @Test fun options_body_is_null_when_no_options_or_no_decision() {
         assertNull(decisionOptionsBody(null))
         assertNull(decisionOptionsBody(Decision(options = emptyList())))
+    }
+
+    // --- foreground open-thread suppression predicate (#378) ------------------
+
+    @Test fun suppress_when_the_open_thread_matches() {
+        assertTrue(shouldSuppressNotification(threadKey("c1", "t1"), "c1", "t1"))
+    }
+
+    @Test fun do_not_suppress_a_different_open_thread() {
+        assertFalse(shouldSuppressNotification(threadKey("c1", "other"), "c1", "t1"))
+    }
+
+    @Test fun do_not_suppress_when_nothing_is_open() {
+        assertFalse(shouldSuppressNotification(null, "c1", "t1"))
     }
 }
