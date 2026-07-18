@@ -138,3 +138,21 @@ fun optionButtonLabel(fullText: String, maxWords: Int = 3, maxChars: Int = 24): 
     }
     return if (truncated) "$label…" else label
 }
+
+/**
+ * The full decision options as a plain-text block for the notification's MessagingStyle body
+ * (#379). Now that the option BUTTONS show only a short label, the reader still needs the full
+ * choices somewhere legible. Numbered 1-based, the recommended option flagged. Returns null when
+ * there's no decision or no options (nothing to add). Independent of `multi` — a multi-select
+ * decision renders no buttons, but its options are still worth reading.
+ */
+fun decisionOptionsBody(decision: Decision?): String? {
+    if (decision == null) return null
+    val options = decision.options
+    if (options.isEmpty()) return null
+    val rec = decision.recommended
+    return options.mapIndexed { i, opt ->
+        val flag = if (rec != null && i == rec) " (recommended)" else ""
+        "${i + 1}. $opt$flag"
+    }.joinToString("\n")
+}

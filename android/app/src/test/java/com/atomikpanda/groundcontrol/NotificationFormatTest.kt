@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.notify.activeDecision
 import com.atomikpanda.groundcontrol.notify.decisionActionOptions
+import com.atomikpanda.groundcontrol.notify.decisionOptionsBody
 import com.atomikpanda.groundcontrol.notify.messageTimestamps
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
@@ -217,5 +218,27 @@ class NotificationFormatTest {
 
     @Test fun option_label_trims_surrounding_whitespace() {
         assertEquals("Approve", optionButtonLabel("  Approve  "))
+    }
+
+    // --- full decision options rendered into the chat body (#379) ------------
+
+    @Test fun options_body_numbers_all_options_full_text() {
+        val d = Decision(options = listOf("Ship it to production now", "Hold for review"))
+        assertEquals("1. Ship it to production now\n2. Hold for review", decisionOptionsBody(d))
+    }
+
+    @Test fun options_body_flags_the_recommended_option() {
+        val d = Decision(options = listOf("A", "B", "C"), recommended = 1)
+        assertEquals("1. A\n2. B (recommended)\n3. C", decisionOptionsBody(d))
+    }
+
+    @Test fun options_body_lists_options_even_for_multi_select() {
+        val d = Decision(options = listOf("A", "B"), multi = true)
+        assertEquals("1. A\n2. B", decisionOptionsBody(d))
+    }
+
+    @Test fun options_body_is_null_when_no_options_or_no_decision() {
+        assertNull(decisionOptionsBody(null))
+        assertNull(decisionOptionsBody(Decision(options = emptyList())))
     }
 }
