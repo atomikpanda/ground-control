@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.notify.decisionActionOptions
 import com.atomikpanda.groundcontrol.notify.messageTimestamps
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
+import com.atomikpanda.groundcontrol.notify.optionButtonLabel
 import com.atomikpanda.groundcontrol.notify.recentMessages
 import com.atomikpanda.groundcontrol.notify.replyText
 import com.atomikpanda.groundcontrol.notify.stripMarkdownForNotification
@@ -187,5 +188,34 @@ class NotificationFormatTest {
     @Test fun needs_you_notification_id_is_distinct_per_thread_and_connection() {
         assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c1", "t2"))
         assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c2", "t1"))
+    }
+
+    // --- option button short label (#379) -----------------------------------
+
+    @Test fun option_label_keeps_a_short_single_word() {
+        assertEquals("Yes", optionButtonLabel("Yes"))
+    }
+
+    @Test fun option_label_keeps_a_short_multiword_phrase() {
+        assertEquals("Ship it now", optionButtonLabel("Ship it now"))
+    }
+
+    @Test fun option_label_truncates_by_word_count_with_ellipsis() {
+        assertEquals("Merge the pull…", optionButtonLabel("Merge the pull request into main"))
+    }
+
+    @Test fun option_label_hard_caps_a_long_single_word() {
+        val out = optionButtonLabel("Supercalifragilisticexpialidocious")
+        assertTrue(out.endsWith("…"))
+        assertEquals(25, out.length)  // 24-char cap + the ellipsis
+    }
+
+    @Test fun option_label_blank_in_blank_out() {
+        assertEquals("", optionButtonLabel(""))
+        assertEquals("", optionButtonLabel("   "))
+    }
+
+    @Test fun option_label_trims_surrounding_whitespace() {
+        assertEquals("Approve", optionButtonLabel("  Approve  "))
     }
 }

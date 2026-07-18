@@ -118,3 +118,23 @@ fun threadKey(connId: String, threadId: String): String = "$connId|$threadId"
  * cancelled by the same id it was posted under.
  */
 fun needsYouNotificationId(connId: String, threadId: String): Int = threadKey(connId, threadId).hashCode()
+
+/**
+ * A short, glanceable button label for a decision option (#379). The notification Action title has
+ * room for only ~1-3 words; the full option text overflows and is unusable. This shortens ONLY the
+ * visible label — the POSTED choice (EXTRA_OPTION_TEXT) stays the full text so a phone/Watch tap
+ * still sends the correct answer. Pure: first [maxWords] words, hard-capped at [maxChars], with an
+ * ellipsis whenever anything was dropped. Blank in → blank out.
+ */
+fun optionButtonLabel(fullText: String, maxWords: Int = 3, maxChars: Int = 24): String {
+    val trimmed = fullText.trim()
+    if (trimmed.isEmpty()) return ""
+    val words = trimmed.split(Regex("\\s+"))
+    var label = words.take(maxWords).joinToString(" ")
+    var truncated = words.size > maxWords
+    if (label.length > maxChars) {
+        label = label.take(maxChars).trimEnd()
+        truncated = true
+    }
+    return if (truncated) "$label…" else label
+}
