@@ -37,7 +37,11 @@ private const val ENC_SUFFIX = ".enc"
 fun imageBlobPathOrNull(e: Evidence, specId: String): String? {
     if (e.kind != "artifact") return null
     val logical = e.ref.removeSuffix(ENC_SUFFIX)
-    val ext = logical.substringAfterLast('.', "").lowercase()
+    // Case-sensitive: `evidence_store.py`'s `_REF_RE` (the server's `is_stored_ref`
+    // shape check) requires a lowercase extension, so a ref like `….PNG` will never
+    // resolve at the blob route. Matching that case-sensitivity here means the phone
+    // never optimistically tries a fetch the server is guaranteed to 404.
+    val ext = logical.substringAfterLast('.', "")
     if (ext !in IMAGE_EXTS) return null
     return "/specs/$specId/evidence/${e.ref}/blob"
 }

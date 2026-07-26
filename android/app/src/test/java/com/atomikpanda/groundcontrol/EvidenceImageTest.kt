@@ -30,12 +30,13 @@ class EvidenceImageTest {
         assertNull(imageBlobPathOrNull(ev("commit", "abc123"), "my-spec"))
     }
 
+    // The server's ref shape (`evidence_store.py::is_stored_ref` / `_REF_RE`) requires
+    // a lowercase extension — `store_artifact` never produces anything else, and the
+    // blob route 404s on a mismatch. Matching that case-sensitively here means the
+    // phone never builds a blob URL the server is guaranteed to reject.
     @Test
-    fun `extension matching is case insensitive`() {
-        assertEquals(
-            "/specs/s/evidence/a1b2c3d4e5f6.PNG/blob",
-            imageBlobPathOrNull(ev("artifact", "a1b2c3d4e5f6.PNG"), "s"),
-        )
+    fun `uppercase extension yields null (server ref shape is lowercase-only)`() {
+        assertNull(imageBlobPathOrNull(ev("artifact", "a1b2c3d4e5f6.PNG"), "s"))
     }
 
     // serve's blob route decrypts `.enc` refs transparently when the host holds
