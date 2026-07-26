@@ -19,3 +19,25 @@ fun evidenceLabels(evidence: List<Evidence>): List<String> =
             e.note?.takeIf { it.isNotBlank() }?.let { append(" — "); append(it) }
         }
     }
+
+private val IMAGE_EXTS = setOf("png", "jpg", "jpeg", "webp")
+private const val ENC_SUFFIX = ".enc"
+
+/** Blob path for an image artifact, or null for everything else (non-image artifacts, and
+ *  `test`/`commit` refs, which keep the existing text label from [evidenceLabels]).
+ *
+ *  An encrypted ref (`…enc`) still yields a path: serve's blob route decrypts it transparently
+ *  when the host holds the key, returning real image bytes with the right content-type — it 409s
+ *  "locked" otherwise. So the phone always tries; it can't know up front whether this host can
+ *  unlock it, and that 409 is a fetch failure for the caller (Task 14) to handle, not something
+ *  this helper pre-filters.
+ *
+ *  A ref is a bare content-hash filename (`store_artifact` in evidence_store.py), never a path, so
+ *  it has no separators to escape — always safe to interpolate directly into the URL. */
+fun imageBlobPathOrNull(e: Evidence, specId: String): String? {
+    if (e.kind != "artifact") return null
+    val logical = e.ref.removeSuffix(ENC_SUFFIX)
+    val ext = logical.substringAfterLast('.', "").lowercase()
+    if (ext !in IMAGE_EXTS) return null
+    return "/specs/$specId/evidence/${e.ref}/blob"
+}
