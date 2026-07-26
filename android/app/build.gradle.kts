@@ -52,6 +52,9 @@ dependencies {
     // QR scanning: drop-in scanner activity (ScanContract / ScanOptions).
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
+    // Image loading for AC evidence screenshots (caching, cancellation, loading/error states).
+    implementation("io.coil-kt:coil-compose:2.7.0")
+
     // Compose-native markdown rendering for the full spec body.
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.26.0")
 

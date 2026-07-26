@@ -84,7 +84,9 @@ private fun SpecRecord.toDetail() = SpecDetail(
 
 class SpecDetailViewModel(
     private val repo: SpecDetailRepository,
-    private val conn: WorkspaceConnection,
+    /** Public because evidence images are fetched by Coil (its own OkHttp stack), not through the
+     *  repository — the screen needs this workspace's baseUrl + bearer to build those requests. */
+    val conn: WorkspaceConnection,
     private val specId: String,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {

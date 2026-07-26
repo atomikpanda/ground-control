@@ -181,7 +181,7 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
             if (d.criteria.isNotEmpty()) {
                 item { SectionLabel("ACCEPTANCE CRITERIA") }
                 items(d.criteria, key = { it.id }) { criterion ->
-                    CriterionRow(criterion, interactive, s.inFlight, vm)
+                    CriterionRow(criterion, d.id, interactive, s.inFlight, vm)
                 }
             }
             item { SectionLabel("OPEN QUESTIONS") }
@@ -247,6 +247,7 @@ private fun BulletText(text: String) =
 @Composable
 private fun CriterionRow(
     c: ReviewCriterion,
+    specId: String,
     interactive: Boolean,
     inFlight: ActionRef?,
     vm: SpecDetailViewModel,
@@ -279,8 +280,10 @@ private fun CriterionRow(
         } else {
             Text(verdictGlyph(c.verdict), Modifier.padding(8.dp))
         }
-        // Criterion text, then its evidence (AC-evidence loop): each backing ref on a muted line, or a
-        // single muted "unverified" when nothing backs it. Long refs cap at 2 lines so they can't run away.
+        // Criterion text, then its evidence (AC-evidence loop): image artifacts render as the picture
+        // itself (tap to zoom), everything else stays a muted "kind: ref" line — an item rendered as an
+        // image is NOT also listed by hash. A single muted "unverified" when nothing backs it at all.
+        // Long refs cap at 2 lines so they can't run away.
         Column(Modifier.padding(start = 4.dp, top = 8.dp)) {
             Text(c.text)
             if (isUnverified(c.evidence)) {
@@ -290,7 +293,8 @@ private fun CriterionRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                evidenceLabels(c.evidence).forEach { line ->
+                val display = evidenceDisplay(c.evidence, specId, vm.conn.baseUrl)
+                display.labels.forEach { line ->
                     Text(
                         line,
                         style = MaterialTheme.typography.labelSmall,
@@ -298,6 +302,9 @@ private fun CriterionRow(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                display.images.forEach { img ->
+                    EvidenceImage(img, vm.conn.token)
                 }
             }
         }

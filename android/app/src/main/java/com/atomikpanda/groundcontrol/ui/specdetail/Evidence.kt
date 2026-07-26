@@ -41,3 +41,29 @@ fun imageBlobPathOrNull(e: Evidence, specId: String): String? {
     if (ext !in IMAGE_EXTS) return null
     return "/specs/$specId/evidence/${e.ref}/blob"
 }
+
+/** One image artifact to render inline: its absolute blob URL, the provenance note (capture kind,
+ *  platform, and the revision it came from — including the marker when that revision isn't a real
+ *  commit) shown beneath the picture, and [label] — the plain text line this evidence would have
+ *  had, which the UI falls back to when the image can't be loaded. */
+data class EvidenceImageRef(val url: String, val note: String?, val label: String)
+
+/** A criterion's evidence split for display: artifacts that render as pictures, and everything else
+ *  as today's compact text labels. */
+data class EvidenceDisplay(val images: List<EvidenceImageRef>, val labels: List<String>)
+
+/** Partition so an artifact shown as a picture never ALSO appears as an "artifact: <hash>.png"
+ *  line — the picture is the evidence; its content-hash filename beside it is noise. Everything
+ *  [imageBlobPathOrNull] declines (test/commit refs, non-image artifacts) keeps its label. */
+fun evidenceDisplay(evidence: List<Evidence>, specId: String, baseUrl: String): EvidenceDisplay {
+    val images = mutableListOf<EvidenceImageRef>()
+    val rest = mutableListOf<Evidence>()
+    val base = baseUrl.trimEnd('/')
+    evidence.forEach { e ->
+        when (val path = imageBlobPathOrNull(e, specId)) {
+            null -> rest += e
+            else -> images += EvidenceImageRef(base + path, e.note, evidenceLabels(listOf(e)).first())
+        }
+    }
+    return EvidenceDisplay(images, evidenceLabels(rest))
+}
