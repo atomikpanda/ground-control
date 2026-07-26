@@ -1,8 +1,14 @@
 package com.atomikpanda.groundcontrol
 
+import coil.network.HttpException
 import com.atomikpanda.groundcontrol.data.dto.Evidence
 import com.atomikpanda.groundcontrol.ui.specdetail.evidenceDisplay
+import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLoadFailureText
 import com.atomikpanda.groundcontrol.ui.specdetail.imageBlobPathOrNull
+import java.io.IOException
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -111,4 +117,40 @@ class EvidenceImageTest {
         val d = evidenceDisplay(listOf(Evidence("artifact", "aaa.png", "shot")), "s", "http://h")
         assertEquals("artifact: aaa.png — shot", d.images[0].label)
     }
+
+    // --- EvidenceImage.kt's error-slot TEXT (not the Compose wiring — see note below) ---
+
+    private fun httpException(code: Int): HttpException {
+        val request = Request.Builder().url("http://host/blob").build()
+        val response = Response.Builder()
+            .request(request).protocol(Protocol.HTTP_1_1).code(code).message("status").build()
+        return HttpException(response)
+    }
+
+    @Test
+    fun `a 409 load failure renders the locked message`() {
+        assertEquals(
+            "🔒 locked — no key for this artifact on this workspace",
+            evidenceLoadFailureText(httpException(409), "artifact: aaa.png"),
+        )
+    }
+
+    // Anything that ISN'T specifically a 409 HttpException — a different status, a plain network
+    // failure, or no throwable at all — falls back to the evidence's own text label.
+    @Test
+    fun `a non-409 load failure falls back to the evidence label`() {
+        val label = "artifact: aaa.png"
+        assertEquals(label, evidenceLoadFailureText(httpException(500), label))
+        assertEquals(label, evidenceLoadFailureText(IOException("boom"), label))
+        assertEquals(label, evidenceLoadFailureText(null, label))
+    }
+
+    // NOTE on what this file does NOT prove: `evidenceLoadFailureText` covers the locked-vs-label
+    // TEXT decision, but `EvidenceImage.kt`'s `EvidenceLoadFailure` composable is wired into
+    // `SubcomposeAsyncImage`'s `error = { … }` slot — a regression that dropped that slot entirely
+    // (leaving Coil's default broken-image behaviour) would NOT be caught by any test here or
+    // elsewhere in this module. Proving the slot itself stays wired needs a Compose UI test
+    // (`createComposeRule` + a semantics assertion), and this project has no JVM-runnable rig for
+    // that (no Robolectric, no `androidx.compose.ui:ui-test-junit4` test dependency) — only
+    // instrumented `androidTest`, which needs a device/emulator we don't have here.
 }

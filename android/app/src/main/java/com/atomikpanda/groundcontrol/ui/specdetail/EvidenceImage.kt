@@ -91,13 +91,25 @@ fun EvidenceImage(image: EvidenceImageRef, token: String?, modifier: Modifier = 
     if (zoomed) EvidenceZoomDialog(request, image) { zoomed = false }
 }
 
+/** The text a failed image load renders: a locked-state message for a 409 (no key on this host
+ *  for an encrypted artifact), or [label] — the evidence's plain text line — for anything else.
+ *  Split out as a pure function so this decision is unit-testable on the JVM without a Compose
+ *  test rig; it does NOT prove [EvidenceLoadFailure]'s `error = { … }` slot stays wired into
+ *  [SubcomposeAsyncImage] below, which would need an actual Compose UI test (no JVM-runnable
+ *  rig — Robolectric/compose-ui-test — is set up in this project). */
+fun evidenceLoadFailureText(throwable: Throwable?, label: String): String =
+    if ((throwable as? HttpException)?.response?.code == HTTP_LOCKED) {
+        "🔒 locked — no key for this artifact on this workspace"
+    } else {
+        label
+    }
+
 /** Locked (409: no key on this host) reads as a state, not a fault; anything else falls back to the
  *  plain evidence label, so a flaky fetch looks like the pre-image UI rather than a rendering bug. */
 @Composable
 private fun EvidenceLoadFailure(state: AsyncImagePainter.State.Error, label: String) {
-    val locked = (state.result.throwable as? HttpException)?.response?.code == HTTP_LOCKED
     Text(
-        if (locked) "🔒 locked — no key for this artifact on this workspace" else label,
+        evidenceLoadFailureText(state.result.throwable, label),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
