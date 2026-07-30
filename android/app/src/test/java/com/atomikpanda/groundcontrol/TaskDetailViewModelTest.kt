@@ -238,23 +238,31 @@ class TaskDetailViewModelTest {
         assertEquals("Approval failed — tap Approve to retry.", c.assumptionsNotice)
     }
 
-    // GREPTILE FINDING 2 (TaskDetailViewModel.kt:69): a pull-to-refresh while an approval is
-    // in flight must not flip Content -> Loading and discard the approval's result. The gate
-    // on the approve response proves this deterministically: while approve is still pending,
-    // a concurrent load() call must not have touched the assumptions endpoint again or
-    // replaced Content with Loading — and once approve completes, its result must land.
-    @Test fun load_while_approve_in_flight_does_not_discard_approval_result() = runTest {
+    // GREPTILE FINDING 2 (TaskDetailViewModel.kt:73): a pull-to-refresh while an approval is
+    // in flight must not discard the refresh outright (that leaves task/journal/assumptions
+    // stale). Instead load() defers: it awaits the in-flight approve job first (so the
+    // approval's own state update lands, never clobbered), then runs its normal fetch — so
+    // the operator's refresh is still honored once the approve settles. The gate on the
+    // approve response proves the ordering deterministically: while approve is still
+    // pending, the deferred load must not have re-queried assumptions yet; once approve
+    // completes, the deferred load re-fetches and picks up the already-approved state.
+    @Test fun load_while_approve_in_flight_defers_then_refreshes_after_approve_lands() = runTest {
         var assumptionsCallCount = 0
+        var approved = false
         val approveGate = CompletableDeferred<Unit>()
         val vm = vm(this) { req ->
             taskHandler(req) ?: when {
                 req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") -> {
                     approveGate.await()
+                    approved = true
                     respond(assumptionsJsonApproved, HttpStatusCode.OK, jsonHdr)
                 }
                 req.url.encodedPath.endsWith("/plan-assumptions/t1") -> {
                     assumptionsCallCount++
-                    respond(assumptionsJsonOnePending, HttpStatusCode.OK, jsonHdr)
+                    respond(
+                        if (approved) assumptionsJsonApproved else assumptionsJsonOnePending,
+                        HttpStatusCode.OK, jsonHdr,
+                    )
                 }
                 else -> respondError(HttpStatusCode.NotFound)
             }
@@ -265,8 +273,8 @@ class TaskDetailViewModelTest {
         val approveJob = vm.approveFlag("scope")
         val loadJob = vm.load()
 
-        // Approve is still pending (blocked on the gate): a concurrent refresh must not have
-        // re-queried assumptions or discarded the in-flight marker by flipping to Loading.
+        // Approve is still pending (blocked on the gate): the deferred load must not have
+        // re-queried assumptions yet, and the in-flight marker is still showing.
         assertEquals(1, assumptionsCallCount)
         val mid = vm.state.value as TaskDetailUiState.Content
         assertTrue(mid.inFlight is ActionRef.ApproveFlag)
@@ -275,9 +283,32 @@ class TaskDetailViewModelTest {
         approveJob?.join()
         loadJob?.join()
 
+        // The deferred load ran after the approve completed: assumptions were re-fetched
+        // (call count advanced past the approve's own state update), and the approval
+        // result was not clobbered — the flag is still approved, not reverted to pending.
+        assertEquals(2, assumptionsCallCount)
         val c = vm.state.value as TaskDetailUiState.Content
         assertEquals(0, c.assumptions?.pending)
         assertEquals(true, c.assumptions?.flags?.first()?.approved)
         assertEquals(null, c.inFlight)
+    }
+
+    // A load() with no approve in flight must not wait on anything — the common case stays
+    // as fast as before, and completes synchronously with respect to the mock engine.
+    @Test fun load_with_no_approve_in_flight_does_not_wait() = runTest {
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") ->
+                    respond(assumptionsJsonOnePending, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        val first = vm.state.value as TaskDetailUiState.Content
+        assertEquals(1, first.assumptions?.pending)
+
+        vm.load()?.join()
+        val second = vm.state.value as TaskDetailUiState.Content
+        assertEquals(1, second.assumptions?.pending)
     }
 }

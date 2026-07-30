@@ -58,6 +58,10 @@ class TaskDetailViewModel(
     private val _state = MutableStateFlow<TaskDetailUiState>(TaskDetailUiState.Loading)
     val state: StateFlow<TaskDetailUiState> = _state.asStateFlow()
 
+    /** The currently in-flight approve job, if any — load() awaits it before fetching so a
+     *  concurrent refresh can't clobber the approval's own state update (see load() doc). */
+    private var approveJob: Job? = null
+
     private fun scope() = testScope ?: viewModelScope
     private fun content() = _state.value as? TaskDetailUiState.Content
 
@@ -66,14 +70,15 @@ class TaskDetailViewModel(
      *  a failure there degrades to `assumptions = null` with an inline note, never blanks the
      *  whole screen. */
     fun load(): Job {
-        if (content()?.inFlight is ActionRef.ApproveFlag) {
-            // An approve is in flight: flipping to Loading now would make approveFlag's own
-            // completion find no Content to update (content() returns null), silently
-            // dropping its result. Skip this refresh — the approve's completion settles state.
-            return scope().launch {}
-        }
-        _state.value = TaskDetailUiState.Loading
+        val pendingApprove = approveJob
         return scope().launch {
+            // An approve may be in flight: flipping to Loading now would make approveFlag's
+            // own completion find no Content to update (content() returns null), silently
+            // dropping its result. Defer this refresh until the approve settles — the
+            // approval result lands first, then this fetch runs and picks up the fresh
+            // (already-approved) state, so the operator's refresh is still honored.
+            pendingApprove?.join()
+            _state.value = TaskDetailUiState.Loading
             coroutineScope {
                 // Each async wraps its own runCatching: an exception thrown directly inside an
                 // async body would fail the whole coroutineScope (cancelling the sibling) before
@@ -111,7 +116,7 @@ class TaskDetailViewModel(
     fun approveFlag(axis: String): Job? {
         val c = content() ?: return null
         _state.value = c.copy(inFlight = ActionRef.ApproveFlag(axis), banner = null, assumptionsNotice = null)
-        return scope().launch {
+        val job = scope().launch {
             runCatching { repo.approvePlanFlag(conn, slug, axis, null) }
                 .onSuccess { envelope ->
                     val c2 = content() ?: return@onSuccess
@@ -132,6 +137,8 @@ class TaskDetailViewModel(
                     }
                 }
         }
+        approveJob = job
+        return job
     }
 
     /** Re-fetch the assumptions envelope and stamp a transient notice explaining the refresh,
