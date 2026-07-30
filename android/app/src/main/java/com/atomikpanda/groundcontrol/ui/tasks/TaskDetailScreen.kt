@@ -158,12 +158,52 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
                 }
             }
 
+            // Inline note on the assumptions section (a degraded fetch, or a post-approve refresh)
+            s.assumptionsNotice?.let { notice ->
+                item {
+                    Surface(
+                        Modifier.fillMaxWidth().padding(16.dp, 4.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        tonalElevation = 2.dp,
+                    ) {
+                        Text(
+                            notice,
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+
+            // Stale assumptions: the plan/assumptions changed since this check, so the gate
+            // will reject approvals until a re-check runs. Approve controls are withheld below.
+            if (s.isAssumptionsStale) {
+                item {
+                    Surface(
+                        Modifier.fillMaxWidth().padding(16.dp, 4.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        tonalElevation = 2.dp,
+                    ) {
+                        Text(
+                            "Assumptions changed since this check — re-run the checker; approvals won't apply yet.",
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
+                }
+            }
+
             // Pending plan-assumptions to approve
             val pendingAssumptions = s.assumptions?.flags?.filter { !it.approved } ?: emptyList()
             if (pendingAssumptions.isNotEmpty()) {
                 item { SectionLabel("ASSUMPTIONS TO APPROVE") }
                 items(pendingAssumptions) { flag ->
-                    AssumptionRow(flag, s.inFlight, onApprove = { vm.approveFlag(flag.axis) })
+                    AssumptionRow(
+                        flag, s.inFlight,
+                        canApprove = s.canApproveAssumptions,
+                        onApprove = { vm.approveFlag(flag.axis) },
+                    )
                 }
             }
 
@@ -228,7 +268,12 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
 }
 
 @Composable
-private fun AssumptionRow(flag: PlanAssumptionFlag, inFlight: ActionRef?, onApprove: () -> Unit) {
+private fun AssumptionRow(
+    flag: PlanAssumptionFlag,
+    inFlight: ActionRef?,
+    canApprove: Boolean,
+    onApprove: () -> Unit,
+) {
     val approving = inFlight == ActionRef.ApproveFlag(flag.axis)
     Row(
         Modifier.fillMaxWidth().padding(16.dp, 4.dp),
@@ -245,7 +290,7 @@ private fun AssumptionRow(flag: PlanAssumptionFlag, inFlight: ActionRef?, onAppr
         }
         if (approving) {
             CircularProgressIndicator(Modifier.padding(start = 8.dp).size(20.dp))
-        } else {
+        } else if (canApprove) {
             Button(onClick = onApprove, modifier = Modifier.padding(start = 8.dp)) { Text("Approve") }
         }
     }

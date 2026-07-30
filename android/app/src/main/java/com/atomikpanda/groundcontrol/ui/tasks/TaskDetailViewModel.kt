@@ -2,7 +2,6 @@ package com.atomikpanda.groundcontrol.ui.tasks
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.NotFoundException
 import com.atomikpanda.groundcontrol.data.TasksRepository
@@ -13,6 +12,8 @@ import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,7 +33,18 @@ sealed interface TaskDetailUiState {
         val assumptions: PlanAssumptionsEnvelope? = null,
         val inFlight: ActionRef? = null,
         val banner: String? = null,
-    ) : TaskDetailUiState
+        /** Transient note about the assumptions section only (a degraded fetch, or a
+         *  post-approve refresh) — distinct from `banner`, which covers the whole task. */
+        val assumptionsNotice: String? = null,
+    ) : TaskDetailUiState {
+        /** True once the assumptions set is known to have gone stale (`fresh == false`): the
+         *  plan/assumptions changed since this check, so the gate will reject approvals until a
+         *  re-check runs. Unknown (assumptions == null) is treated as not-stale. */
+        val isAssumptionsStale: Boolean get() = assumptions?.fresh == false
+
+        /** Approve controls should only be offered while the assumptions set is fresh. */
+        val canApproveAssumptions: Boolean get() = !isAssumptionsStale
+    }
 }
 
 class TaskDetailViewModel(
@@ -48,29 +60,48 @@ class TaskDetailViewModel(
     private fun scope() = testScope ?: viewModelScope
     private fun content() = _state.value as? TaskDetailUiState.Content
 
+    /** Task + journal are the core content: fetched in parallel, fatal (Error state) on
+     *  failure. Assumptions load in parallel alongside them but in their own runCatching —
+     *  a failure there degrades to `assumptions = null` with an inline note, never blanks the
+     *  whole screen. */
     fun load(): Job {
         _state.value = TaskDetailUiState.Loading
         return scope().launch {
-            runCatching {
-                val task = repo.getTask(conn, slug)
-                val journal = repo.getJournal(conn, slug)
-                val assumptions = repo.getPlanAssumptions(conn, slug)
-                Triple(task, journal, assumptions)
+            coroutineScope {
+                // Each async wraps its own runCatching: an exception thrown directly inside an
+                // async body would fail the whole coroutineScope (cancelling the sibling) before
+                // either result could be inspected, defeating the "assumptions degrade, core is
+                // fatal" split below.
+                val coreDeferred = async { runCatching { repo.getTask(conn, slug) to repo.getJournal(conn, slug) } }
+                val assumptionsDeferred = async { runCatching { repo.getPlanAssumptions(conn, slug) } }
+
+                val coreResult = coreDeferred.await()
+                val assumptionsResult = assumptionsDeferred.await()
+
+                coreResult
+                    .onSuccess { (task, journal) ->
+                        _state.value = TaskDetailUiState.Content(
+                            task, journal,
+                            assumptions = assumptionsResult.getOrNull(),
+                            assumptionsNotice = assumptionsResult.exceptionOrNull()
+                                ?.let { "Couldn't load assumptions — pull to retry." },
+                        )
+                    }
+                    .onFailure { t ->
+                        _state.value = TaskDetailUiState.Error(t.toKind(), t.message ?: "error")
+                    }
             }
-                .onSuccess { (task, journal, assumptions) ->
-                    _state.value = TaskDetailUiState.Content(task, journal, assumptions)
-                }
-                .onFailure { t ->
-                    _state.value = TaskDetailUiState.Error(t.toKind(), t.message ?: "error")
-                }
         }
     }
 
     /** Approve one pending plan-assumption flag; re-renders `Content.assumptions` from the
-     *  returned envelope. Reuses the same conflict/not-found handling as SpecDetailViewModel's writes. */
+     *  returned envelope. A 404/409 here means the flag was already handled (approved, or the
+     *  check regenerated) since the operator's last fetch — that's routine staleness, not a
+     *  fatal error, so it re-fetches assumptions and notes why the row vanished instead of
+     *  blanking task+journal. Only a genuine auth failure is fatal. */
     fun approveFlag(axis: String): Job? {
         val c = content() ?: return null
-        _state.value = c.copy(inFlight = ActionRef.ApproveFlag(axis), banner = null)
+        _state.value = c.copy(inFlight = ActionRef.ApproveFlag(axis), banner = null, assumptionsNotice = null)
         return scope().launch {
             runCatching { repo.approvePlanFlag(conn, slug, axis, null) }
                 .onSuccess { envelope ->
@@ -80,14 +111,23 @@ class TaskDetailViewModel(
                 .onFailure { t ->
                     val c2 = content() ?: return@onFailure
                     when (t) {
-                        is ApiConflictException ->
-                            _state.value = c2.copy(inFlight = null, banner = "Assumptions changed since you opened this task.")
                         is AuthException -> _state.value = TaskDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
-                        is NotFoundException -> _state.value = TaskDetailUiState.Error(ErrorKind.NOT_FOUND, t.message ?: "gone")
-                        else -> _state.value = c2.copy(inFlight = null, banner = "Couldn't reach workspace — retry.")
+                        else -> {
+                            _state.value = c2.copy(inFlight = null)
+                            refetchAssumptionsWithNotice("That assumption was already handled — refreshed.")
+                        }
                     }
                 }
         }
+    }
+
+    /** Re-fetch the assumptions envelope and stamp a transient notice explaining the refresh,
+     *  leaving task+journal untouched. Used when an approve write turns out to be stale
+     *  (404/409/other API failure) rather than a genuine fatal error. */
+    private suspend fun refetchAssumptionsWithNotice(notice: String) {
+        val fresh = runCatching { repo.getPlanAssumptions(conn, slug) }.getOrNull()
+        val c2 = content() ?: return
+        _state.value = c2.copy(assumptions = fresh ?: c2.assumptions, assumptionsNotice = notice)
     }
 
     private fun Throwable.toKind(): ErrorKind = when (this) {

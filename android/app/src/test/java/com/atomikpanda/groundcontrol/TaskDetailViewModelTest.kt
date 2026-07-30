@@ -58,6 +58,11 @@ class TaskDetailViewModelTest {
             {"axis":"scope","source":"plan","reason":"assumed single-repo change","approved":true,"approved_by":"operator"}
         ]}"""
 
+    private val assumptionsJsonStale =
+        """{"task":"t1","fresh":false,"pending":1,"flags":[
+            {"axis":"scope","source":"plan","reason":"assumed single-repo change","approved":false}
+        ]}"""
+
     private fun MockRequestHandleScope.taskHandler(req: HttpRequestData): HttpResponseData? = when {
         req.url.encodedPath.endsWith("/tasks/t1") ->
             respond(
@@ -134,5 +139,70 @@ class TaskDetailViewModelTest {
         val s = vm.state.value as TaskDetailUiState.Error
         assertEquals(ErrorKind.NETWORK, s.kind)
         assertTrue(s.message.isNotBlank())
+    }
+
+    // FINDING 1: a stale/already-handled flag 404s on approve. That must NOT blank the whole
+    // screen — task + journal stay put, assumptions get refreshed, and a notice explains why
+    // the row vanished.
+    @Test fun approveFlag_404_refreshes_assumptions_and_sets_notice_without_going_fatal() = runTest {
+        var assumptionsCallCount = 0
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") ->
+                    respondError(HttpStatusCode.NotFound)
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") -> {
+                    assumptionsCallCount++
+                    respond(assumptionsJsonApproved, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        assertEquals(1, assumptionsCallCount)
+
+        vm.approveFlag("scope")?.join()
+
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals("t1", c.task.slug)
+        assertEquals(2, c.journal.size)
+        assertEquals(2, assumptionsCallCount)
+        assertEquals(0, c.assumptions?.pending)
+        assertEquals("That assumption was already handled — refreshed.", c.assumptionsNotice)
+    }
+
+    // FINDING 2: a stale assumptions set (fresh == false) must surface distinctly and must not
+    // offer Approve (the gate will reject approvals until a re-check).
+    @Test fun load_stale_assumptions_marks_content_not_approvable() = runTest {
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") ->
+                    respond(assumptionsJsonStale, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals(false, c.assumptions?.fresh)
+        assertTrue(c.isAssumptionsStale)
+        assertEquals(false, c.canApproveAssumptions)
+    }
+
+    // FINDING 3: task+journal are the core content and load in parallel with assumptions;
+    // an assumptions-fetch failure degrades to assumptions == null (with a note) instead of
+    // blanking the whole screen.
+    @Test fun load_assumptions_failure_still_yields_content_with_null_assumptions() = runTest {
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") ->
+                    respondError(HttpStatusCode.InternalServerError)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals("t1", c.task.slug)
+        assertEquals(2, c.journal.size)
+        assertEquals(null, c.assumptions)
+        assertTrue(c.assumptionsNotice?.isNotBlank() == true)
     }
 }
