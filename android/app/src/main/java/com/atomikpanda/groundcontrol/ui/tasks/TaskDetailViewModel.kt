@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol.ui.tasks
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.NotFoundException
 import com.atomikpanda.groundcontrol.data.TasksRepository
@@ -65,6 +66,12 @@ class TaskDetailViewModel(
      *  a failure there degrades to `assumptions = null` with an inline note, never blanks the
      *  whole screen. */
     fun load(): Job {
+        if (content()?.inFlight is ActionRef.ApproveFlag) {
+            // An approve is in flight: flipping to Loading now would make approveFlag's own
+            // completion find no Content to update (content() returns null), silently
+            // dropping its result. Skip this refresh — the approve's completion settles state.
+            return scope().launch {}
+        }
         _state.value = TaskDetailUiState.Loading
         return scope().launch {
             coroutineScope {
@@ -98,7 +105,9 @@ class TaskDetailViewModel(
      *  returned envelope. A 404/409 here means the flag was already handled (approved, or the
      *  check regenerated) since the operator's last fetch — that's routine staleness, not a
      *  fatal error, so it re-fetches assumptions and notes why the row vanished instead of
-     *  blanking task+journal. Only a genuine auth failure is fatal. */
+     *  blanking task+journal. A genuine auth failure is fatal. Any other failure (timeout,
+     *  5xx, decode error) means the approval never happened — it must NOT be presented as
+     *  success/refreshed, and the pending flag must stay visible so the operator can retry. */
     fun approveFlag(axis: String): Job? {
         val c = content() ?: return null
         _state.value = c.copy(inFlight = ActionRef.ApproveFlag(axis), banner = null, assumptionsNotice = null)
@@ -112,10 +121,14 @@ class TaskDetailViewModel(
                     val c2 = content() ?: return@onFailure
                     when (t) {
                         is AuthException -> _state.value = TaskDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
-                        else -> {
+                        is NotFoundException, is ApiConflictException -> {
                             _state.value = c2.copy(inFlight = null)
                             refetchAssumptionsWithNotice("That assumption was already handled — refreshed.")
                         }
+                        else -> _state.value = c2.copy(
+                            inFlight = null,
+                            assumptionsNotice = "Approval failed — tap Approve to retry.",
+                        )
                     }
                 }
         }

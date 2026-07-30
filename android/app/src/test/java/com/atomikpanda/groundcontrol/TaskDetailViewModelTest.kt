@@ -5,6 +5,7 @@ import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
+import com.atomikpanda.groundcontrol.ui.tasks.ActionRef
 import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailUiState
 import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailViewModel
 import io.ktor.client.HttpClient
@@ -18,6 +19,7 @@ import io.ktor.client.request.HttpResponseData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -204,5 +206,78 @@ class TaskDetailViewModelTest {
         assertEquals(2, c.journal.size)
         assertEquals(null, c.assumptions)
         assertTrue(c.assumptionsNotice?.isNotBlank() == true)
+    }
+
+    // GREPTILE FINDING 1 (TaskDetailViewModel.kt:118): a transient failure (timeout, 5xx,
+    // decode error) during approve is NOT the same as a stale/already-handled flag. It must
+    // not be presented as "refreshed" (that implies the approval was accounted for some way),
+    // the pending flag must stay visible (not silently dropped), and the notice must say the
+    // approval failed and is retryable.
+    @Test fun approveFlag_transient_failure_keeps_pending_flag_and_sets_retry_notice() = runTest {
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") ->
+                    respondError(HttpStatusCode.InternalServerError)
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") ->
+                    respond(assumptionsJsonOnePending, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        assertEquals(1, (vm.state.value as TaskDetailUiState.Content).assumptions?.pending)
+
+        vm.approveFlag("scope")?.join()
+
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals("t1", c.task.slug)
+        // Pending flag is still shown — never silently dropped by a failed approve.
+        assertEquals(1, c.assumptions?.pending)
+        assertEquals(false, c.assumptions?.flags?.first()?.approved)
+        // inFlight cleared so the Approve button is tappable again.
+        assertEquals(null, c.inFlight)
+        assertEquals("Approval failed — tap Approve to retry.", c.assumptionsNotice)
+    }
+
+    // GREPTILE FINDING 2 (TaskDetailViewModel.kt:69): a pull-to-refresh while an approval is
+    // in flight must not flip Content -> Loading and discard the approval's result. The gate
+    // on the approve response proves this deterministically: while approve is still pending,
+    // a concurrent load() call must not have touched the assumptions endpoint again or
+    // replaced Content with Loading — and once approve completes, its result must land.
+    @Test fun load_while_approve_in_flight_does_not_discard_approval_result() = runTest {
+        var assumptionsCallCount = 0
+        val approveGate = CompletableDeferred<Unit>()
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") -> {
+                    approveGate.await()
+                    respond(assumptionsJsonApproved, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") -> {
+                    assumptionsCallCount++
+                    respond(assumptionsJsonOnePending, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        assertEquals(1, assumptionsCallCount)
+
+        val approveJob = vm.approveFlag("scope")
+        val loadJob = vm.load()
+
+        // Approve is still pending (blocked on the gate): a concurrent refresh must not have
+        // re-queried assumptions or discarded the in-flight marker by flipping to Loading.
+        assertEquals(1, assumptionsCallCount)
+        val mid = vm.state.value as TaskDetailUiState.Content
+        assertTrue(mid.inFlight is ActionRef.ApproveFlag)
+
+        approveGate.complete(Unit)
+        approveJob?.join()
+        loadJob?.join()
+
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals(0, c.assumptions?.pending)
+        assertEquals(true, c.assumptions?.flags?.first()?.approved)
+        assertEquals(null, c.inFlight)
     }
 }
