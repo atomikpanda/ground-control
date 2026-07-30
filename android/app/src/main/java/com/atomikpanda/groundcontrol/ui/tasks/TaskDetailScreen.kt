@@ -290,7 +290,9 @@ private fun AssumptionRow(
         }
         if (approving) {
             CircularProgressIndicator(Modifier.padding(start = 8.dp).size(20.dp))
-        } else if (canApprove) {
+        } else if (canApprove && inFlight == null) {
+            // Hidden (not just this row) while any approve is in flight, so a second tap can't
+            // start an overlapping approve — only one may run at a time.
             Button(onClick = onApprove, modifier = Modifier.padding(start = 8.dp)) { Text("Approve") }
         }
     }

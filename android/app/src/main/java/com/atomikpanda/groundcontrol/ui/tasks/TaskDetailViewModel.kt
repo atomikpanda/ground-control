@@ -115,6 +115,10 @@ class TaskDetailViewModel(
      *  success/refreshed, and the pending flag must stay visible so the operator can retry. */
     fun approveFlag(axis: String): Job? {
         val c = content() ?: return null
+        // Only one approve may be in flight at a time: approveJob is a single reference (load()
+        // awaits it before refreshing), so a second concurrent approve would silently take over
+        // that slot and let the first approve's in-flight result get clobbered by a refresh.
+        if (c.inFlight is ActionRef.ApproveFlag) return null
         _state.value = c.copy(inFlight = ActionRef.ApproveFlag(axis), banner = null, assumptionsNotice = null)
         val job = scope().launch {
             runCatching { repo.approvePlanFlag(conn, slug, axis, null) }
@@ -128,7 +132,7 @@ class TaskDetailViewModel(
                         is AuthException -> _state.value = TaskDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
                         is NotFoundException, is ApiConflictException -> {
                             _state.value = c2.copy(inFlight = null)
-                            refetchAssumptionsWithNotice("That assumption was already handled — refreshed.")
+                            refetchAssumptionsWithNotice()
                         }
                         else -> _state.value = c2.copy(
                             inFlight = null,
@@ -141,13 +145,18 @@ class TaskDetailViewModel(
         return job
     }
 
-    /** Re-fetch the assumptions envelope and stamp a transient notice explaining the refresh,
-     *  leaving task+journal untouched. Used when an approve write turns out to be stale
-     *  (404/409/other API failure) rather than a genuine fatal error. */
-    private suspend fun refetchAssumptionsWithNotice(notice: String) {
-        val fresh = runCatching { repo.getPlanAssumptions(conn, slug) }.getOrNull()
+    /** Re-fetch the assumptions envelope and stamp a transient notice reflecting the refetch's
+     *  own outcome, leaving task+journal untouched. Used when an approve write turns out to be
+     *  stale (404/409) rather than a genuine fatal error. The refetch can itself fail (network,
+     *  5xx) — that must never be presented as a successful refresh: the notice must say the
+     *  refresh failed, and the prior assumptions/pending state is left visibly intact. */
+    private suspend fun refetchAssumptionsWithNotice() {
+        val result = runCatching { repo.getPlanAssumptions(conn, slug) }
         val c2 = content() ?: return
-        _state.value = c2.copy(assumptions = fresh ?: c2.assumptions, assumptionsNotice = notice)
+        _state.value = result.fold(
+            onSuccess = { fresh -> c2.copy(assumptions = fresh, assumptionsNotice = "That assumption was already handled — refreshed.") },
+            onFailure = { c2.copy(assumptionsNotice = "That assumption changed, but refreshing failed — pull to refresh.") },
+        )
     }
 
     private fun Throwable.toKind(): ErrorKind = when (this) {

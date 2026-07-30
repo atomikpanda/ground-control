@@ -65,6 +65,12 @@ class TaskDetailViewModelTest {
             {"axis":"scope","source":"plan","reason":"assumed single-repo change","approved":false}
         ]}"""
 
+    private val assumptionsJsonTwoPending =
+        """{"task":"t1","fresh":true,"pending":2,"flags":[
+            {"axis":"scope","source":"plan","reason":"assumed single-repo change","approved":false},
+            {"axis":"risk","source":"plan","reason":"assumed low risk","approved":false}
+        ]}"""
+
     private fun MockRequestHandleScope.taskHandler(req: HttpRequestData): HttpResponseData? = when {
         req.url.encodedPath.endsWith("/tasks/t1") ->
             respond(
@@ -310,5 +316,78 @@ class TaskDetailViewModelTest {
         vm.load()?.join()
         val second = vm.state.value as TaskDetailUiState.Content
         assertEquals(1, second.assumptions?.pending)
+    }
+
+    // GREPTILE RE-REVIEW FINDING 1 (TaskDetailViewModel.kt:80): approveJob is a single var
+    // overwritten by each approve call. Tapping Approve on a second assumption while the first
+    // is still in flight must NOT start a second job (which would make the single approveJob
+    // reference — the one load()'s defer-join awaits — point only at the second call, losing
+    // track of the first). Only one approve may be in flight at a time.
+    @Test fun approveFlag_ignores_overlapping_call_while_one_is_in_flight() = runTest {
+        var approveCallCount = 0
+        val approveGate = CompletableDeferred<Unit>()
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") -> {
+                    approveCallCount++
+                    approveGate.await()
+                    respond(assumptionsJsonApproved, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") ->
+                    respond(assumptionsJsonTwoPending, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        assertEquals(2, (vm.state.value as TaskDetailUiState.Content).assumptions?.pending)
+
+        val jobA = vm.approveFlag("scope")
+        val jobB = vm.approveFlag("risk")
+
+        // The overlapping tap is ignored: no second job, and the in-flight marker (set
+        // synchronously by approveFlag, before its coroutine even runs) still points at the
+        // first, still-running approve.
+        assertEquals(null, jobB)
+        val mid = vm.state.value as TaskDetailUiState.Content
+        assertEquals(ActionRef.ApproveFlag("scope"), mid.inFlight)
+
+        approveGate.complete(Unit)
+        jobA?.join()
+
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals(1, approveCallCount)
+        assertEquals(null, c.inFlight)
+    }
+
+    // GREPTILE RE-REVIEW FINDING 2 (TaskDetailViewModel.kt:150): the 404/409 reconcile path
+    // stamps a "...refreshed" notice even when the refetch itself fails, claiming success for a
+    // failed reconciliation while the stale snapshot remains. The notice must reflect the
+    // refetch's real outcome, and the prior assumptions/pending state must stay intact.
+    @Test fun approveFlag_404_then_refetch_failure_reports_refresh_failed_not_succeeded() = runTest {
+        var assumptionsCallCount = 0
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") ->
+                    respondError(HttpStatusCode.NotFound)
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") -> {
+                    assumptionsCallCount++
+                    if (assumptionsCallCount == 1) respond(assumptionsJsonOnePending, HttpStatusCode.OK, jsonHdr)
+                    else respondError(HttpStatusCode.InternalServerError)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        assertEquals(1, assumptionsCallCount)
+
+        vm.approveFlag("scope")?.join()
+
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals(2, assumptionsCallCount)
+        // Notice reflects the failed refresh — never claims "refreshed" when it didn't happen.
+        assertEquals("That assumption changed, but refreshing failed — pull to refresh.", c.assumptionsNotice)
+        // Prior (pre-refetch) assumptions/pending state stays visibly intact.
+        assertEquals(1, c.assumptions?.pending)
+        assertEquals(false, c.assumptions?.flags?.first()?.approved)
     }
 }
