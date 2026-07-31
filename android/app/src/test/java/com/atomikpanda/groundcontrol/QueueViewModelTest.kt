@@ -63,6 +63,7 @@ class QueueViewModelTest {
             path.endsWith("/specs") -> if (req.url.host == "a")
                 """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
             path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
             path.contains("/specs/") ->
                 """{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","updated_at":"2026-01-01T00:00:00Z"}"""
             else -> "{}"
@@ -119,6 +120,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -150,6 +152,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"Ship it","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"Ship it","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -176,6 +179,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -204,6 +208,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -244,6 +249,7 @@ class QueueViewModelTest {
                     respond(if (specsCalls == 1) """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 }
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -273,6 +279,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -312,6 +319,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -344,6 +352,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed",$ev},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -375,6 +384,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[{"id":"q1","text":"q?","answer":null}],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -406,6 +416,7 @@ class QueueViewModelTest {
                     """{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}"""
                 path.endsWith("/specs") -> """[{"id":"s1","title":"S1","status":"needs_review"}]"""  // BOTH hosts
                 path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
                 path.contains("/specs/") ->
                     """{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
                 else -> "{}"
@@ -435,6 +446,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") -> if (req.url.host == "a")
                     """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
                 path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
                 path.contains("/specs/") ->
                     """{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
                 else -> "{}"
@@ -462,6 +474,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") -> if (req.url.host == "a")
                     """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
                 path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
                 path.contains("/specs/") ->
                     """{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
                 else -> "{}"
@@ -492,6 +505,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"Ship it","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"Ship it","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)

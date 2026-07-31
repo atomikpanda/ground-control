@@ -4,6 +4,7 @@ package com.atomikpanda.groundcontrol.data
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.home.displayName
+import com.atomikpanda.groundcontrol.ui.queue.PlanAssumptionCard
 import com.atomikpanda.groundcontrol.ui.queue.QueueV2Card
 import com.atomikpanda.groundcontrol.ui.queue.cardsFromSpec
 import com.atomikpanda.groundcontrol.ui.queue.decisionCardFrom
@@ -44,9 +45,10 @@ class QueueRepository(private val api: SpecApi) {
                 onFailure = { ConnResult(emptyList(), WorkspaceError(conn.id, conn.displayName())) },
             )
 
-    /** One workspace's cards: `needs_review` spec chunks + open thread decisions.
-     *  Any failure here (list or per-item fetch) propagates so [loadOne] can isolate
-     *  the whole workspace to a [WorkspaceError] rather than emit a partial queue. */
+    /** One workspace's cards: `needs_review` spec chunks + open thread decisions + fleet-wide
+     *  pending plan-assumptions. Any failure here (list or per-item fetch) propagates so
+     *  [loadOne] can isolate the whole workspace to a [WorkspaceError] rather than emit a
+     *  partial queue. */
     private suspend fun sourceCards(conn: WorkspaceConnection): List<QueueV2Card> = coroutineScope {
         val specCards = async {
             api.listSpecs(conn)
@@ -58,7 +60,19 @@ class QueueRepository(private val api: SpecApi) {
                 .filter { it.needsDecision }
                 .mapNotNull { summary -> decisionCardFrom(conn, api.getThread(conn, summary.id)) }
         }
-        specCards.await() + decisionCards.await()
+        val planAssumptionCards = async {
+            api.listPlanAssumptions(conn)
+                .filter { it.pending > 0 }
+                .map { summary ->
+                    PlanAssumptionCard(
+                        connectionId = conn.id,
+                        workspaceName = conn.displayName(),
+                        task = summary.task,
+                        pending = summary.pending,
+                    )
+                }
+        }
+        specCards.await() + decisionCards.await() + planAssumptionCards.await()
     }
 
     // --- action seams (thin api.* passthroughs for the card faces) ---

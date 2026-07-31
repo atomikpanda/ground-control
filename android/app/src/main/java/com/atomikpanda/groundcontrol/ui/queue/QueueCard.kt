@@ -119,6 +119,20 @@ data class DecisionCard(
     override val key: String get() = "decision:$connectionId:$threadId"
 }
 
+/** A fleet-wide plan-assumption flag summary for [task] with [pending] unresolved flags — sourced
+ *  from `GET /plan-assumptions`, not tied to a spec/thread. Taps deep-link to the existing Task
+ *  Detail screen (Wave 3b) rather than approving inline from the card. */
+data class PlanAssumptionCard(
+    override val connectionId: String,
+    override val workspaceName: String,
+    val task: String,
+    val pending: Int,
+    override val waitingSince: String = "",
+) : QueueV2Card {
+    override val tier: QueueTier get() = QueueTier.APPROVAL
+    override val key: String get() = "planAssumption:$connectionId:$task"
+}
+
 /** Split a spec markdown body into `{heading: prose}` by `## ` headings — the GC
  *  mirror of serve's `parse_body_sections` (an `## ` line opens a section; `### `+
  *  stays in-section). Duplicate headings: last occurrence wins. */

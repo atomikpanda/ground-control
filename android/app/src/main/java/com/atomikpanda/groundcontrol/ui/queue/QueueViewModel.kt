@@ -74,20 +74,23 @@ class QueueViewModel(
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
     private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
 
-    /** The spec a chunk card belongs to (null for a decision card). */
+    /** The spec a chunk card belongs to (null for a decision or plan-assumption card). */
     private fun QueueV2Card.specId(): String? = when (this) {
         is ProseCard -> specId
         is CriteriaCard -> specId
         is QuestionsCard -> specId
         is DecisionCard -> null
+        is PlanAssumptionCard -> null
     }
 
-    /** The spec title carried on a chunk card's review metadata (blank for a decision card). */
+    /** The spec title carried on a chunk card's review metadata (blank for a decision or
+     *  plan-assumption card). */
     private fun QueueV2Card.specTitle(): String = when (this) {
         is ProseCard -> meta.title
         is CriteriaCard -> meta.title
         is QuestionsCard -> meta.title
         is DecisionCard -> ""
+        is PlanAssumptionCard -> ""
     }
 
     fun refresh(): Job? {

@@ -12,6 +12,7 @@ import com.atomikpanda.groundcontrol.data.dto.SeenBody
 import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
 import com.atomikpanda.groundcontrol.data.dto.NewThreadBody
 import com.atomikpanda.groundcontrol.data.dto.PhaseBody
+import com.atomikpanda.groundcontrol.data.dto.PlanAssumptionSummary
 import com.atomikpanda.groundcontrol.data.dto.PlanAssumptionsEnvelope
 import com.atomikpanda.groundcontrol.data.dto.PlanFlagApproveBody
 import com.atomikpanda.groundcontrol.data.dto.ProseVerdictBody
@@ -203,6 +204,9 @@ class SpecApi(private val client: HttpClient) {
     suspend fun markThreadSeen(conn: WorkspaceConnection, id: String, seenAt: String?) {
         client.post("${conn.baseUrl}/threads/$id/seen") { auth(conn); jsonBody(SeenBody(seenAt)) }
     }
+
+    suspend fun listPlanAssumptions(conn: WorkspaceConnection): List<PlanAssumptionSummary> =
+        client.get("${conn.baseUrl}/plan-assumptions") { auth(conn) }.body()
 
     suspend fun getPlanAssumptions(conn: WorkspaceConnection, slug: String): PlanAssumptionsEnvelope =
         client.get("${conn.baseUrl}/plan-assumptions/$slug") { auth(conn) }.body()
