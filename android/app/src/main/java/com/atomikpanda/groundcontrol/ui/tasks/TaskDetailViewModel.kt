@@ -70,14 +70,25 @@ class TaskDetailViewModel(
      *  a failure there degrades to `assumptions = null` with an inline note, never blanks the
      *  whole screen. */
     fun load(): Job {
-        val pendingApprove = approveJob
         return scope().launch {
             // An approve may be in flight: flipping to Loading now would make approveFlag's
             // own completion find no Content to update (content() returns null), silently
             // dropping its result. Defer this refresh until the approve settles — the
             // approval result lands first, then this fetch runs and picks up the fresh
             // (already-approved) state, so the operator's refresh is still honored.
-            pendingApprove?.join()
+            //
+            // The defer decision is gated on `inFlight`, not on `approveJob` directly:
+            // `inFlight` is set synchronously by approveFlag() before it returns, so reading
+            // it here (inside this coroutine's body, not captured before launch) reliably
+            // detects an in-flight approve regardless of which dispatcher runs this body.
+            // Capturing `approveJob` itself before/outside the coroutine would be a
+            // check-then-act on two fields approveFlag sets in sequence (inFlight, then
+            // approveJob) — safe only because viewModelScope happens to run inline to the
+            // first suspension; gating on the synchronously-set `inFlight` instead removes
+            // that assumption entirely.
+            if (content()?.inFlight is ActionRef.ApproveFlag) {
+                approveJob?.join()
+            }
             _state.value = TaskDetailUiState.Loading
             coroutineScope {
                 // Each async wraps its own runCatching: an exception thrown directly inside an
@@ -131,7 +142,11 @@ class TaskDetailViewModel(
                     when (t) {
                         is AuthException -> _state.value = TaskDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
                         is NotFoundException, is ApiConflictException -> {
-                            _state.value = c2.copy(inFlight = null)
+                            // Do NOT clear inFlight here: refetchAssumptionsWithNotice() below
+                            // suspends, and releasing the lock before it completes would let a
+                            // second approve start mid-refetch and clobber this one's outcome.
+                            // The lock is released exactly once, in that function's own
+                            // terminal state update.
                             refetchAssumptionsWithNotice()
                         }
                         else -> _state.value = c2.copy(
@@ -153,9 +168,11 @@ class TaskDetailViewModel(
     private suspend fun refetchAssumptionsWithNotice() {
         val result = runCatching { repo.getPlanAssumptions(conn, slug) }
         val c2 = content() ?: return
+        // Terminal state for the reconcile: this is where the approve serialization lock
+        // (inFlight) is released — exactly once, after the refetch itself has settled.
         _state.value = result.fold(
-            onSuccess = { fresh -> c2.copy(assumptions = fresh, assumptionsNotice = "That assumption was already handled — refreshed.") },
-            onFailure = { c2.copy(assumptionsNotice = "That assumption changed, but refreshing failed — pull to refresh.") },
+            onSuccess = { fresh -> c2.copy(assumptions = fresh, inFlight = null, assumptionsNotice = "That assumption was already handled — refreshed.") },
+            onFailure = { c2.copy(inFlight = null, assumptionsNotice = "That assumption changed, but refreshing failed — pull to refresh.") },
         )
     }
 

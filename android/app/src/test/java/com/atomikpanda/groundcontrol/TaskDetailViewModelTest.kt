@@ -24,8 +24,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -389,5 +393,134 @@ class TaskDetailViewModelTest {
         // Prior (pre-refetch) assumptions/pending state stays visibly intact.
         assertEquals(1, c.assumptions?.pending)
         assertEquals(false, c.assumptions?.flags?.first()?.approved)
+    }
+
+    // P1B: the defer decision in load() must be dispatcher-independent. The old implementation
+    // captured `pendingApprove = approveJob` synchronously at load()-call time, *outside* its own
+    // launched coroutine. If load() is issued before approveFlag() (its coroutine body merely
+    // queued, not run inline, on StandardTestDispatcher) and approveFlag() then runs its
+    // synchronous prefix (sets `inFlight`, assigns `approveJob`) before either queued coroutine
+    // gets a turn, the old code's captured `pendingApprove` is already fixed at a stale `null` —
+    // so it skips the join entirely and flips straight to Loading, blanking task/journal/
+    // assumptions out from under an approve that's still in flight (and dropping that approve's
+    // own state write if it lands during the blank window). Gating on `inFlight`, read *inside*
+    // load's own coroutine body (so it reflects state as of when that body actually runs, not
+    // when load() was called), keeps load() correctly deferred no matter which order the two
+    // calls arrive in.
+    //
+    // Distinguishing old vs. new requires observing state *while the approve is still pending*
+    // (both eventually converge to the same final value once the approve's own network call has
+    // landed, because load()'s independent re-fetch re-syncs from the server) — so this test
+    // gates the approve's HTTP response on a CompletableDeferred and inspects state after
+    // runCurrent() runs both queued coroutines up to their next real suspension, mirroring the
+    // gating technique the other in-flight tests in this file already use.
+    @Test fun load_issued_just_before_approve_does_not_blank_screen_while_approve_in_flight() = runTest {
+        val approveGate = CompletableDeferred<Unit>()
+        var approved = false
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") -> {
+                    approveGate.await()
+                    approved = true
+                    respond(assumptionsJsonApproved, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") ->
+                    respond(
+                        if (approved) assumptionsJsonApproved else assumptionsJsonOnePending,
+                        HttpStatusCode.OK, jsonHdr,
+                    )
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+
+        // load() is issued first — its coroutine body is only queued on StandardTestDispatcher,
+        // not run inline — then approveFlag() runs its synchronous prefix (sets inFlight, assigns
+        // approveJob) before either queued coroutine gets a chance to execute.
+        val loadJob = vm.load()
+        val approveJob = vm.approveFlag("scope")
+
+        // Run both queued coroutines up to their next real suspension (load's defer join / the
+        // gated approve call) without resolving the gate yet.
+        runCurrent()
+
+        // While the approve is still pending, the screen must still show Content with the
+        // in-flight marker — never Loading. A load() that skipped the join here would have
+        // blanked the whole screen (and orphaned the approve's own pending state update).
+        assertTrue(
+            "load() blanked the screen to Loading while an approve was still in flight",
+            vm.state.value is TaskDetailUiState.Content,
+        )
+        val mid = vm.state.value as TaskDetailUiState.Content
+        assertTrue(mid.inFlight is ActionRef.ApproveFlag)
+
+        approveGate.complete(Unit)
+        approveJob?.join()
+        loadJob?.join()
+
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals(true, c.assumptions?.flags?.first()?.approved)
+        assertEquals(0, c.assumptions?.pending)
+        assertEquals(null, c.inFlight)
+    }
+
+    // P1: reconciliation must not release the approve serialization lock early. The gone-stale
+    // (404/409) branch used to clear `inFlight` BEFORE calling the suspending
+    // refetchAssumptionsWithNotice() — so while that refetch was still in flight, the guard in
+    // approveFlag() would let a second concurrent approve start, clobbering the first's outcome.
+    // `inFlight` must stay held for the whole reconcile and clear exactly once, when the refetch
+    // itself reaches its terminal state.
+    @Test fun approveFlag_holds_serialization_lock_across_gone_stale_refetch() = runTest {
+        var approveCallCount = 0
+        var assumptionsCallCount = 0
+        val refetchGate = CompletableDeferred<Unit>()
+        val vm = vm(this) { req ->
+            taskHandler(req) ?: when {
+                req.url.encodedPath.endsWith("/plan-assumptions/t1/approve") -> {
+                    approveCallCount++
+                    respondError(HttpStatusCode.NotFound)
+                }
+                req.url.encodedPath.endsWith("/plan-assumptions/t1") -> {
+                    assumptionsCallCount++
+                    if (assumptionsCallCount == 1) {
+                        respond(assumptionsJsonOnePending, HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        // The reconcile refetch (2nd+ GET): suspend until the test releases it,
+                        // so we can probe the lock state mid-refetch.
+                        refetchGate.await()
+                        respond(assumptionsJsonApproved, HttpStatusCode.OK, jsonHdr)
+                    }
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load()?.join()
+        assertEquals(1, assumptionsCallCount)
+
+        val jobA = vm.approveFlag("scope")
+
+        // Drive jobA forward in real time until it's blocked inside the gone-stale refetch
+        // (gated by refetchGate) — a real suspension, not virtual/delay-based time, so we poll
+        // rather than advanceUntilIdle (which would spin forever on an unresolved real gate).
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) {
+                while (assumptionsCallCount < 2) yield()
+            }
+        }
+
+        // While the refetch is still suspended, the lock must still be held: a second approve
+        // is a no-op.
+        val mid = vm.state.value as TaskDetailUiState.Content
+        assertEquals(ActionRef.ApproveFlag("scope"), mid.inFlight)
+        val jobB = vm.approveFlag("risk")
+        assertEquals(null, jobB)
+        assertEquals(1, approveCallCount)
+
+        refetchGate.complete(Unit)
+        jobA?.join()
+
+        val c = vm.state.value as TaskDetailUiState.Content
+        assertEquals(null, c.inFlight)
+        assertEquals("That assumption was already handled — refreshed.", c.assumptionsNotice)
     }
 }
