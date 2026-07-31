@@ -46,9 +46,10 @@ class QueueRepository(private val api: SpecApi) {
             )
 
     /** One workspace's cards: `needs_review` spec chunks + open thread decisions + fleet-wide
-     *  pending plan-assumptions. Any failure here (list or per-item fetch) propagates so
-     *  [loadOne] can isolate the whole workspace to a [WorkspaceError] rather than emit a
-     *  partial queue. */
+     *  pending plan-assumptions. A spec/decision failure propagates so [loadOne] can isolate
+     *  the whole workspace to a [WorkspaceError] rather than emit a partial queue; the
+     *  plan-assumptions source is isolated from that (see below) since its serve endpoint
+     *  ships independently of the others. */
     private suspend fun sourceCards(conn: WorkspaceConnection): List<QueueV2Card> = coroutineScope {
         val specCards = async {
             api.listSpecs(conn)
@@ -60,17 +61,22 @@ class QueueRepository(private val api: SpecApi) {
                 .filter { it.needsDecision }
                 .mapNotNull { summary -> decisionCardFrom(conn, api.getThread(conn, summary.id)) }
         }
+        // Isolated from specCards/decisionCards: an older serve without this route (or a
+        // network/5xx blip) degrades to zero assumption cards rather than sinking the
+        // whole workspace's queue (the /specs and /threads fetches are unrelated to it).
         val planAssumptionCards = async {
-            api.listPlanAssumptions(conn)
-                .filter { it.pending > 0 }
-                .map { summary ->
-                    PlanAssumptionCard(
-                        connectionId = conn.id,
-                        workspaceName = conn.displayName(),
-                        task = summary.task,
-                        pending = summary.pending,
-                    )
-                }
+            runCatching {
+                api.listPlanAssumptions(conn)
+                    .filter { it.pending > 0 }
+                    .map { summary ->
+                        PlanAssumptionCard(
+                            connectionId = conn.id,
+                            workspaceName = conn.displayName(),
+                            task = summary.task,
+                            pending = summary.pending,
+                        )
+                    }
+            }.getOrElse { if (it is CancellationException) throw it else emptyList() }
         }
         specCards.await() + decisionCards.await() + planAssumptionCards.await()
     }

@@ -94,6 +94,27 @@ class QueueRepositoryTest {
         assertEquals(setOf("a", "b"), feed.cards.map { it.connectionId }.toSet())
     }
 
+    @Test fun plan_assumptions_404_degrades_to_no_card_not_empty_queue() = runTest {
+        val api = SpecApi(HttpClient(MockEngine { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/plan-assumptions") -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                path.endsWith("/specs") -> respond(specsDefault, HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond(threadsDefault, HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") -> respond(specDetail(path.substringAfterLast("/")), HttpStatusCode.OK, jsonHdr)
+                path.contains("/threads/") -> respond(threadDetail, HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })
+        val feed = QueueRepository(api).load(listOf(
+            WorkspaceConnection("a", "http://a:47100", null, "ws-a"),
+        ))
+        assertTrue(feed.errors.isEmpty())
+        // The spec + decision cards still render even though plan-assumptions 404s.
+        assertEquals(2, feed.cards.size)
+        assertTrue(feed.cards.filterIsInstance<PlanAssumptionCard>().isEmpty())
+    }
+
     @Test fun one_failing_workspace_isolates_to_error_others_still_load() = runTest {
         val feed = QueueRepository(api()).load(listOf(
             WorkspaceConnection("ok", "http://good:47100", null, "ws-good"),
