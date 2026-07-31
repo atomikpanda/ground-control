@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -37,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
+import com.atomikpanda.groundcontrol.data.dto.PlanAssumptionFlag
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 
@@ -138,6 +140,73 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
                 }
             }
 
+            // Banner (e.g. an approve conflict / network hiccup)
+            s.banner?.let { banner ->
+                item {
+                    Surface(
+                        Modifier.fillMaxWidth().padding(16.dp, 4.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        tonalElevation = 2.dp,
+                    ) {
+                        Text(
+                            banner,
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
+                }
+            }
+
+            // Inline note on the assumptions section (a degraded fetch, or a post-approve refresh)
+            s.assumptionsNotice?.let { notice ->
+                item {
+                    Surface(
+                        Modifier.fillMaxWidth().padding(16.dp, 4.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        tonalElevation = 2.dp,
+                    ) {
+                        Text(
+                            notice,
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+
+            // Stale assumptions: the plan/assumptions changed since this check, so the gate
+            // will reject approvals until a re-check runs. Approve controls are withheld below.
+            if (s.isAssumptionsStale) {
+                item {
+                    Surface(
+                        Modifier.fillMaxWidth().padding(16.dp, 4.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        tonalElevation = 2.dp,
+                    ) {
+                        Text(
+                            "Assumptions changed since this check — re-run the checker; approvals won't apply yet.",
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
+                }
+            }
+
+            // Pending plan-assumptions to approve
+            val pendingAssumptions = s.assumptions?.flags?.filter { !it.approved } ?: emptyList()
+            if (pendingAssumptions.isNotEmpty()) {
+                item { SectionLabel("ASSUMPTIONS TO APPROVE") }
+                items(pendingAssumptions) { flag ->
+                    AssumptionRow(
+                        flag, s.inFlight,
+                        canApprove = s.canApproveAssumptions,
+                        onApprove = { vm.approveFlag(flag.axis) },
+                    )
+                }
+            }
+
             // Affected repos
             if (task.affectedRepos.isNotEmpty()) {
                 item { SectionLabel("AFFECTED REPOS") }
@@ -195,6 +264,37 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
             }
         }
         PullToRefreshContainer(state = pull, modifier = Modifier.align(Alignment.TopCenter))
+    }
+}
+
+@Composable
+private fun AssumptionRow(
+    flag: PlanAssumptionFlag,
+    inFlight: ActionRef?,
+    canApprove: Boolean,
+    onApprove: () -> Unit,
+) {
+    val approving = inFlight == ActionRef.ApproveFlag(flag.axis)
+    Row(
+        Modifier.fillMaxWidth().padding(16.dp, 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Assumption: ${flag.axis}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(flag.reason, style = MaterialTheme.typography.bodySmall)
+        }
+        if (approving) {
+            CircularProgressIndicator(Modifier.padding(start = 8.dp).size(20.dp))
+        } else if (canApprove && inFlight == null) {
+            // Hidden (not just this row) while any approve is in flight, so a second tap can't
+            // start an overlapping approve — only one may run at a time.
+            Button(onClick = onApprove, modifier = Modifier.padding(start = 8.dp)) { Text("Approve") }
+        }
     }
 }
 

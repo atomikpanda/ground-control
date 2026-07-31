@@ -12,6 +12,8 @@ import com.atomikpanda.groundcontrol.data.dto.SeenBody
 import com.atomikpanda.groundcontrol.data.dto.NewSpecBody
 import com.atomikpanda.groundcontrol.data.dto.NewThreadBody
 import com.atomikpanda.groundcontrol.data.dto.PhaseBody
+import com.atomikpanda.groundcontrol.data.dto.PlanAssumptionsEnvelope
+import com.atomikpanda.groundcontrol.data.dto.PlanFlagApproveBody
 import com.atomikpanda.groundcontrol.data.dto.ProseVerdictBody
 import com.atomikpanda.groundcontrol.data.dto.QuestionBody
 import com.atomikpanda.groundcontrol.data.dto.ReasonBody
@@ -201,6 +203,14 @@ class SpecApi(private val client: HttpClient) {
     suspend fun markThreadSeen(conn: WorkspaceConnection, id: String, seenAt: String?) {
         client.post("${conn.baseUrl}/threads/$id/seen") { auth(conn); jsonBody(SeenBody(seenAt)) }
     }
+
+    suspend fun getPlanAssumptions(conn: WorkspaceConnection, slug: String): PlanAssumptionsEnvelope =
+        client.get("${conn.baseUrl}/plan-assumptions/$slug") { auth(conn) }.body()
+
+    suspend fun approvePlanFlag(conn: WorkspaceConnection, slug: String, axis: String, reason: String?): PlanAssumptionsEnvelope =
+        client.post("${conn.baseUrl}/plan-assumptions/$slug/approve") {
+            auth(conn); jsonBody(PlanFlagApproveBody(axis, reason))
+        }.body()
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {
         conn.token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
