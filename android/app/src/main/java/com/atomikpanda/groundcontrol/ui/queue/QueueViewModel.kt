@@ -117,12 +117,20 @@ class QueueViewModel(
     }
 
     /** Keep [head] at position 0 (don't yank focus); urgency-sort the active rest of [fresh] behind
-     *  it, and keep any deferred cards pinned to the back in their original defer order. */
+     *  it, and keep any deferred cards pinned to the back in their original defer order.
+     *
+     *  Freezing the head instance exists to protect an in-progress interaction (checking a criterion,
+     *  answering a question) from being clobbered mid-edit by a live poll. A [PlanAssumptionCard] has
+     *  no such in-place interaction — it only deep-links out (see [QueueHints.OPEN_TASK]) — so freezing
+     *  it would just hide its `pending` count changing, or the card lingering after it resolves to zero
+     *  (the repo drops pending==0 from the feed entirely). Let a plan-assumption head fall through to
+     *  the normal fresh-card merge like any other card instead of pinning the stale instance. */
     private fun mergeKeepingHead(head: QueueV2Card?, fresh: List<QueueV2Card>): List<QueueV2Card> {
-        val rest = fresh.filter { it.key != head?.key }
+        val stableHead = head?.takeUnless { it is PlanAssumptionCard }
+        val rest = fresh.filter { it.key != stableHead?.key }
         val (deferred, active) = rest.partition { it.key in deferredKeys }
         val order = deferredKeys.toList()
-        return listOfNotNull(head) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
+        return listOfNotNull(stableHead) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
     }
 
     // --- v2 transitions -----------------------------------------------------
