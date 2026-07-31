@@ -122,12 +122,17 @@ class QueueViewModel(
      *  Freezing the head instance exists to protect an in-progress interaction (checking a criterion,
      *  answering a question) from being clobbered mid-edit by a live poll. A [PlanAssumptionCard] has
      *  no such in-place interaction — it only deep-links out (see [QueueHints.OPEN_TASK]) — so freezing
-     *  it would just hide its `pending` count changing, or the card lingering after it resolves to zero
-     *  (the repo drops pending==0 from the feed entirely). Let a plan-assumption head fall through to
-     *  the normal fresh-card merge like any other card instead of pinning the stale instance. */
+     *  it VERBATIM would hide its `pending` count changing, or leave it lingering after it resolves to
+     *  zero (the repo drops pending==0 from the feed entirely). But dropping it from stableHead
+     *  altogether re-exposes it to urgency sorting, so a higher-priority card arriving mid-refresh
+     *  yanks it from the head while the operator is viewing it. So it still occupies position 0 (no
+     *  yank) — but keeps the FRESH instance of itself (fresh `pending`, or removed entirely when it's
+     *  no longer in [fresh]), rather than the stale one. Other card types keep the stale instance
+     *  verbatim, since their in-place edits (verdicts, answers) would otherwise be clobbered by a
+     *  fetch that doesn't know about them yet. */
     private fun mergeKeepingHead(head: QueueV2Card?, fresh: List<QueueV2Card>): List<QueueV2Card> {
-        val stableHead = head?.takeUnless { it is PlanAssumptionCard }
-        val rest = fresh.filter { it.key != stableHead?.key }
+        val stableHead = if (head is PlanAssumptionCard) fresh.firstOrNull { it.key == head.key } else head
+        val rest = fresh.filter { it.key != head?.key }
         val (deferred, active) = rest.partition { it.key in deferredKeys }
         val order = deferredKeys.toList()
         return listOfNotNull(stableHead) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }

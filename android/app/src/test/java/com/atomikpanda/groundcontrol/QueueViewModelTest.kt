@@ -560,5 +560,40 @@ class QueueViewModelTest {
         assertNull(vm.stateContent().current)
     }
 
+    // Greptile P1 (PR #65) follow-up: the staleness fix above excluded PlanAssumptionCard from
+    // stableHead entirely, so a displayed plan-assumption head got swept into the normal
+    // urgency-sorted merge on every refresh — a higher-priority DecisionCard arriving mid-refresh
+    // would replace it at the head (a yank) while the operator was viewing/about-to-tap it. The
+    // fix must keep the plan-assumption head PINNED (refreshed with fresh data, not verbatim) so a
+    // newly-arrived higher-priority card is merged BEHIND it, not swapped in.
+    @Test fun plan_assumption_head_is_not_yanked_by_a_higher_priority_card_on_refresh() = runTest {
+        var threadCalls = 0
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            val body = when {
+                path.endsWith("/specs") -> "[]"
+                path.endsWith("/threads") -> {
+                    threadCalls++
+                    if (threadCalls == 1) "[]" else """[{"id":"t1","needs_decision":true}]"""
+                }
+                path.contains("/threads/") ->
+                    """{"id":"t1","updated_at":"2026-06-03T00:00:00Z","messages":[
+                         {"id":"m1","role":"agent","text":"Pick one","kind":"decision","decision":{"options":["X","Y"]}}]}"""
+                path.endsWith("/plan-assumptions") -> """[{"task":"t1","fresh":true,"pending":2}]"""
+                else -> "{}"
+            }
+            respond(body, HttpStatusCode.OK, jsonHdr)
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        assertTrue(vm.stateContent().current is PlanAssumptionCard)
+
+        vm.refresh()?.join()  // live refresh: a higher-priority decision thread now also appears
+        val c = vm.stateContent()
+        assertTrue("head must stay the plan-assumption card, not be yanked by the new decision", c.current is PlanAssumptionCard)
+        assertEquals(2, (c.current as PlanAssumptionCard).pending)
+        assertEquals(2, c.cards.size)
+    }
+
     private fun QueueViewModel.stateContent(): QueueUiState.Content = state.value as QueueUiState.Content
 }
