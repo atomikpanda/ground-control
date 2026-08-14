@@ -152,6 +152,7 @@ fun GroundControlApp(
                     coachMark = coachMark,
                     onOpenItem = { connId, itemId -> nav.navigate("item/$connId/$itemId") },
                     onOpenPr = { url -> uriHandler.openUri(url) },
+                    onOpenTask = { connId, task -> nav.navigate("taskDetail/$connId/$task") },
                 )
             }
             composable("threads") {

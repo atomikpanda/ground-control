@@ -15,6 +15,8 @@ object QueueHints {
     const val ANSWER = "Answer to continue"
     /** What a DecisionCard needs (swipe-right is not an approve here). */
     const val DECIDE = "Choose an option"
+    /** What a PlanAssumptionCard needs — it's a deep-link, not a swipe action. */
+    const val OPEN_TASK = "Tap to review in Task Detail"
 }
 
 /** Swipe-right = approve-all is only a valid action for the spec-review chunk cards. */
@@ -32,4 +34,5 @@ fun queueCardHint(card: QueueV2Card): String = when (card) {
     is ProseCard, is CriteriaCard -> QueueHints.SWIPE_RESTING
     is QuestionsCard -> QueueHints.ANSWER
     is DecisionCard -> QueueHints.DECIDE
+    is PlanAssumptionCard -> QueueHints.OPEN_TASK
 }

@@ -74,20 +74,23 @@ class QueueViewModel(
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
     private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
 
-    /** The spec a chunk card belongs to (null for a decision card). */
+    /** The spec a chunk card belongs to (null for a decision or plan-assumption card). */
     private fun QueueV2Card.specId(): String? = when (this) {
         is ProseCard -> specId
         is CriteriaCard -> specId
         is QuestionsCard -> specId
         is DecisionCard -> null
+        is PlanAssumptionCard -> null
     }
 
-    /** The spec title carried on a chunk card's review metadata (blank for a decision card). */
+    /** The spec title carried on a chunk card's review metadata (blank for a decision or
+     *  plan-assumption card). */
     private fun QueueV2Card.specTitle(): String = when (this) {
         is ProseCard -> meta.title
         is CriteriaCard -> meta.title
         is QuestionsCard -> meta.title
         is DecisionCard -> ""
+        is PlanAssumptionCard -> ""
     }
 
     fun refresh(): Job? {
@@ -114,12 +117,25 @@ class QueueViewModel(
     }
 
     /** Keep [head] at position 0 (don't yank focus); urgency-sort the active rest of [fresh] behind
-     *  it, and keep any deferred cards pinned to the back in their original defer order. */
+     *  it, and keep any deferred cards pinned to the back in their original defer order.
+     *
+     *  Freezing the head instance exists to protect an in-progress interaction (checking a criterion,
+     *  answering a question) from being clobbered mid-edit by a live poll. A [PlanAssumptionCard] has
+     *  no such in-place interaction — it only deep-links out (see [QueueHints.OPEN_TASK]) — so freezing
+     *  it VERBATIM would hide its `pending` count changing, or leave it lingering after it resolves to
+     *  zero (the repo drops pending==0 from the feed entirely). But dropping it from stableHead
+     *  altogether re-exposes it to urgency sorting, so a higher-priority card arriving mid-refresh
+     *  yanks it from the head while the operator is viewing it. So it still occupies position 0 (no
+     *  yank) — but keeps the FRESH instance of itself (fresh `pending`, or removed entirely when it's
+     *  no longer in [fresh]), rather than the stale one. Other card types keep the stale instance
+     *  verbatim, since their in-place edits (verdicts, answers) would otherwise be clobbered by a
+     *  fetch that doesn't know about them yet. */
     private fun mergeKeepingHead(head: QueueV2Card?, fresh: List<QueueV2Card>): List<QueueV2Card> {
+        val stableHead = if (head is PlanAssumptionCard) fresh.firstOrNull { it.key == head.key } else head
         val rest = fresh.filter { it.key != head?.key }
         val (deferred, active) = rest.partition { it.key in deferredKeys }
         val order = deferredKeys.toList()
-        return listOfNotNull(head) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
+        return listOfNotNull(stableHead) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
     }
 
     // --- v2 transitions -----------------------------------------------------

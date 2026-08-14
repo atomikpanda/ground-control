@@ -6,6 +6,7 @@ import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.queue.DecisionCard
+import com.atomikpanda.groundcontrol.ui.queue.PlanAssumptionCard
 import com.atomikpanda.groundcontrol.ui.queue.ProseCard
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -44,12 +45,38 @@ class QueueRepositoryTest {
         val body = when {
             path.endsWith("/specs") -> if (req.url.host == "b") specsB else specsDefault
             path.endsWith("/threads") -> if (req.url.host == "b") "[]" else threadsDefault
+            path.endsWith("/plan-assumptions") -> "[]"
             path.contains("/specs/") -> specDetail(path.substringAfterLast("/"))
             path.contains("/threads/") -> threadDetail
             else -> "{}"
         }
         respond(body, HttpStatusCode.OK, jsonHdr)
     }) { mshipDefaults() })
+
+    // A dedicated MockEngine for the plan-assumptions source: no specs/threads noise, just the
+    // `GET /plan-assumptions` list this test cares about.
+    private fun planAssumptionsApi(listBody: String) = SpecApi(HttpClient(MockEngine { req ->
+        val path = req.url.encodedPath
+        val body = when {
+            path.endsWith("/plan-assumptions") -> listBody
+            path.endsWith("/specs") -> "[]"
+            path.endsWith("/threads") -> "[]"
+            else -> "{}"
+        }
+        respond(body, HttpStatusCode.OK, jsonHdr)
+    }) { mshipDefaults() })
+
+    @Test fun plan_assumptions_with_pending_become_a_card_pending_zero_does_not() = runTest {
+        val listBody = """[{"task":"dq","fresh":true,"pending":2},{"task":"ok","fresh":true,"pending":0}]"""
+        val feed = QueueRepository(planAssumptionsApi(listBody)).load(listOf(
+            WorkspaceConnection("a", "http://a:47100", null, "ws-a"),
+        ))
+        assertTrue(feed.errors.isEmpty())
+        val cards = feed.cards.filterIsInstance<PlanAssumptionCard>()
+        assertEquals(1, cards.size)
+        assertEquals("dq", cards[0].task)
+        assertEquals(2, cards[0].pending)
+    }
 
     @Test fun two_workspaces_merge_into_prose_and_decision_cards_urgency_sorted() = runTest {
         val feed = QueueRepository(api()).load(listOf(
@@ -65,6 +92,27 @@ class QueueRepositoryTest {
         val prose = feed.cards.filterIsInstance<ProseCard>()
         assertEquals(setOf("s1", "s3"), prose.map { it.specId }.toSet())
         assertEquals(setOf("a", "b"), feed.cards.map { it.connectionId }.toSet())
+    }
+
+    @Test fun plan_assumptions_404_degrades_to_no_card_not_empty_queue() = runTest {
+        val api = SpecApi(HttpClient(MockEngine { req ->
+            val path = req.url.encodedPath
+            when {
+                path.endsWith("/plan-assumptions") -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                path.endsWith("/specs") -> respond(specsDefault, HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/threads") -> respond(threadsDefault, HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/") -> respond(specDetail(path.substringAfterLast("/")), HttpStatusCode.OK, jsonHdr)
+                path.contains("/threads/") -> respond(threadDetail, HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })
+        val feed = QueueRepository(api).load(listOf(
+            WorkspaceConnection("a", "http://a:47100", null, "ws-a"),
+        ))
+        assertTrue(feed.errors.isEmpty())
+        // The spec + decision cards still render even though plan-assumptions 404s.
+        assertEquals(2, feed.cards.size)
+        assertTrue(feed.cards.filterIsInstance<PlanAssumptionCard>().isEmpty())
     }
 
     @Test fun one_failing_workspace_isolates_to_error_others_still_load() = runTest {

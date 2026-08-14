@@ -11,6 +11,7 @@ import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.queue.CriteriaCard
+import com.atomikpanda.groundcontrol.ui.queue.PlanAssumptionCard
 import com.atomikpanda.groundcontrol.ui.queue.ProseCard
 import com.atomikpanda.groundcontrol.ui.queue.QueueUiState
 import com.atomikpanda.groundcontrol.ui.queue.QueueViewModel
@@ -63,6 +64,7 @@ class QueueViewModelTest {
             path.endsWith("/specs") -> if (req.url.host == "a")
                 """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
             path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
             path.contains("/specs/") ->
                 """{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","updated_at":"2026-01-01T00:00:00Z"}"""
             else -> "{}"
@@ -119,6 +121,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -150,6 +153,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"Ship it","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"Ship it","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -176,6 +180,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -204,6 +209,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -244,6 +250,7 @@ class QueueViewModelTest {
                     respond(if (specsCalls == 1) """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 }
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -273,6 +280,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -312,6 +320,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -344,6 +353,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed",$ev},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -375,6 +385,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[{"id":"q1","text":"q?","answer":null}],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -406,6 +417,7 @@ class QueueViewModelTest {
                     """{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}"""
                 path.endsWith("/specs") -> """[{"id":"s1","title":"S1","status":"needs_review"}]"""  // BOTH hosts
                 path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
                 path.contains("/specs/") ->
                     """{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
                 else -> "{}"
@@ -435,6 +447,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") -> if (req.url.host == "a")
                     """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
                 path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
                 path.contains("/specs/") ->
                     """{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
                 else -> "{}"
@@ -462,6 +475,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") -> if (req.url.host == "a")
                     """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
                 path.endsWith("/threads") -> "[]"
+            path.endsWith("/plan-assumptions") -> "[]"
                 path.contains("/specs/") ->
                     """{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"},{"id":"ac2","text":"b","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}"""
                 else -> "{}"
@@ -492,6 +506,7 @@ class QueueViewModelTest {
                 path.endsWith("/specs") ->
                     respond(if (req.url.host == "a") """[{"id":"s1","title":"Ship it","status":"needs_review"}]""" else "[]", HttpStatusCode.OK, jsonHdr)
                 path.endsWith("/threads") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
                 path.contains("/specs/") ->
                     respond("""{"id":"s1","title":"Ship it","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
@@ -505,6 +520,79 @@ class QueueViewModelTest {
         assertNotNull(c.specApproved)                // parity: per-item finalize also confirms by name
         assertEquals("Ship it", c.specApproved!!.title)
         assertNull(c.undo)                           // a whole-spec approve is not undoable
+    }
+
+    // Greptile P1 (PR #65): mergeKeepingHead freezes the head card instance across a live refresh so
+    // an in-progress interaction (checking a criterion, answering a question) isn't yanked from under
+    // the operator. A PlanAssumptionCard has no such in-place interaction (it's a tap-out deep-link,
+    // QueueHints.OPEN_TASK) — freezing it only hides that its `pending` count changed, or that it
+    // resolved to zero (the repo filters pending==0 out of the feed entirely, see QueueRepository).
+    // A single-workspace queue with only a plan-assumption card: refreshing across pending 2 -> 1 -> 0
+    // (gone) must be reflected live, not pinned to the first-loaded instance.
+    @Test fun plan_assumption_head_reflects_pending_changes_and_disappears_at_zero() = runTest {
+        var planCalls = 0
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            val body = when {
+                path.endsWith("/specs") -> "[]"
+                path.endsWith("/threads") -> "[]"
+                path.endsWith("/plan-assumptions") -> {
+                    planCalls++
+                    when (planCalls) {
+                        1 -> """[{"task":"t1","fresh":true,"pending":2}]"""
+                        2 -> """[{"task":"t1","fresh":true,"pending":1}]"""
+                        else -> "[]"
+                    }
+                }
+                else -> "{}"
+            }
+            respond(body, HttpStatusCode.OK, jsonHdr)
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        assertEquals(2, (vm.stateContent().current as PlanAssumptionCard).pending)
+
+        vm.refresh()?.join()  // live refresh: pending drops 2 -> 1
+        assertEquals(1, (vm.stateContent().current as PlanAssumptionCard).pending)
+
+        vm.refresh()?.join()  // live refresh: fully resolved -> the card leaves the queue
+        assertTrue(vm.stateContent().caughtUp)
+        assertNull(vm.stateContent().current)
+    }
+
+    // Greptile P1 (PR #65) follow-up: the staleness fix above excluded PlanAssumptionCard from
+    // stableHead entirely, so a displayed plan-assumption head got swept into the normal
+    // urgency-sorted merge on every refresh — a higher-priority DecisionCard arriving mid-refresh
+    // would replace it at the head (a yank) while the operator was viewing/about-to-tap it. The
+    // fix must keep the plan-assumption head PINNED (refreshed with fresh data, not verbatim) so a
+    // newly-arrived higher-priority card is merged BEHIND it, not swapped in.
+    @Test fun plan_assumption_head_is_not_yanked_by_a_higher_priority_card_on_refresh() = runTest {
+        var threadCalls = 0
+        val handler: MockRequestHandler = { req ->
+            val path = req.url.encodedPath
+            val body = when {
+                path.endsWith("/specs") -> "[]"
+                path.endsWith("/threads") -> {
+                    threadCalls++
+                    if (threadCalls == 1) "[]" else """[{"id":"t1","needs_decision":true}]"""
+                }
+                path.contains("/threads/") ->
+                    """{"id":"t1","updated_at":"2026-06-03T00:00:00Z","messages":[
+                         {"id":"m1","role":"agent","text":"Pick one","kind":"decision","decision":{"options":["X","Y"]}}]}"""
+                path.endsWith("/plan-assumptions") -> """[{"task":"t1","fresh":true,"pending":2}]"""
+                else -> "{}"
+            }
+            respond(body, HttpStatusCode.OK, jsonHdr)
+        }
+        val vm = vm(this, connsA, handler)
+        vm.refresh()?.join()
+        assertTrue(vm.stateContent().current is PlanAssumptionCard)
+
+        vm.refresh()?.join()  // live refresh: a higher-priority decision thread now also appears
+        val c = vm.stateContent()
+        assertTrue("head must stay the plan-assumption card, not be yanked by the new decision", c.current is PlanAssumptionCard)
+        assertEquals(2, (c.current as PlanAssumptionCard).pending)
+        assertEquals(2, c.cards.size)
     }
 
     private fun QueueViewModel.stateContent(): QueueUiState.Content = state.value as QueueUiState.Content

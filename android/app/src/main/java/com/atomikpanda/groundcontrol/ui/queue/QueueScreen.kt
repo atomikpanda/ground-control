@@ -9,6 +9,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -104,6 +105,7 @@ fun QueueScreen(
     coachMark: CoachMarkStore,
     onOpenItem: (connectionId: String, itemId: String) -> Unit,
     onOpenPr: (url: String) -> Unit,
+    onOpenTask: (connectionId: String, task: String) -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     // AC9: initial load + live auto-refresh. The poll is cancelled when the tab
@@ -195,7 +197,9 @@ fun QueueScreen(
                                 // Keyed to the card so each head gets a fresh fling offset + scroll state.
                                 key(card.key) {
                                     val canFlingRight = card is ProseCard || card is CriteriaCard  // right = approve-all
-                                    val canFlingLeft = card !is DecisionCard                         // left = reject sheet
+                                    // left = reject sheet; not for decision cards (no spec to request changes on)
+                                    // nor plan-assumption cards (deep-link only, no inline approval to reject).
+                                    val canFlingLeft = card !is DecisionCard && card !is PlanAssumptionCard
                                     FlingCard(
                                         cardKey = card.key,
                                         canFlingRight = canFlingRight,
@@ -217,6 +221,7 @@ fun QueueScreen(
                                             onApproveAll = approveAll,
                                             onReject = { rejectSheet = true },
                                             onOption = { text -> vm.answerDecision(text) },
+                                            onOpenTask = onOpenTask,
                                         )
                                     }
                                 }
@@ -410,11 +415,16 @@ private fun CardFace(
     onApproveAll: () -> Unit,
     onReject: () -> Unit,
     onOption: (String) -> Unit,
+    onOpenTask: (connectionId: String, task: String) -> Unit,
 ) {
     // High-contrast elevated surface: the highest container tone + shadow + a hairline border so the
     // card clearly floats above the screen background in both light and dark.
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = if (card is PlanAssumptionCard) {
+            Modifier.fillMaxWidth().clickable(enabled = enabled) { onOpenTask(card.connectionId, card.task) }
+        } else {
+            Modifier.fillMaxWidth()
+        },
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
             contentColor = MaterialTheme.colorScheme.onSurface,
@@ -511,6 +521,14 @@ private fun CardFace(
                         decision = card.decision,
                         enabled = enabled,
                         onOption = onOption,
+                    )
+                }
+                is PlanAssumptionCard -> {
+                    // Copy says "assumption", never "axis"/"flag" — those are internal serve terms.
+                    Text(
+                        "${card.pending} assumption${if (card.pending == 1) "" else "s"} need sign-off — ${card.task}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
             }
@@ -647,4 +665,5 @@ private fun cardLabel(card: QueueV2Card): String = when (card) {
     is CriteriaCard -> "Review acceptance criteria"
     is QuestionsCard -> "Open questions"
     is DecisionCard -> "Needs decision"
+    is PlanAssumptionCard -> "Plan assumptions"
 }

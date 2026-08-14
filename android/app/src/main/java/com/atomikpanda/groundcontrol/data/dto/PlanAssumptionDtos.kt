@@ -26,3 +26,8 @@ data class PlanAssumptionsEnvelope(
 
 @Serializable
 data class PlanFlagApproveBody(val axis: String, val reason: String? = null)
+
+/** One row of `GET /plan-assumptions` — the fleet-wide list of tasks with plan-assumption
+ *  flags, without their per-flag detail (that's [PlanAssumptionsEnvelope], fetched per-task). */
+@Serializable
+data class PlanAssumptionSummary(val task: String, val fresh: Boolean = true, val pending: Int = 0)
