@@ -14,6 +14,35 @@ data class WorkspaceConnection(
     val colorOverride: String? = null,
     /** Operator override for the identity badge glyph; null = auto (name's first letter). */
     val glyphOverride: String? = null,
+    /** Host this connection was discovered on (#472); null for manually paired
+     *  connections and for JSON persisted before this field existed — declared
+     *  with a default so old stored lists still deserialize (missing keys are
+     *  NOT covered by ignoreUnknownKeys, only defaults cover them). */
+    val hostId: String? = null,
+    /** Last-known discovery state from the host registry (#472); null = unknown/manual. */
+    val state: String? = null,
+)
+
+/**
+ * Derive a connection from a host's discovered workspace (#472): the SERVER
+ * workspace id becomes the connection id (so re-discovery matches in
+ * [upsertConnection] and identity overrides carry forward), and the baseUrl is
+ * the workspace-addressed prefix — opaque to everything downstream.
+ */
+fun deriveConnection(
+    hostBase: String,
+    hostToken: String?,
+    hostId: String,
+    workspaceId: String,
+    workspaceName: String,
+    state: String,
+): WorkspaceConnection = WorkspaceConnection(
+    id = workspaceId,
+    baseUrl = hostBase.trimEnd('/') + "/workspaces/" + workspaceId,
+    token = hostToken,
+    workspaceName = workspaceName,
+    hostId = hostId,
+    state = state,
 )
 
 /** Pure (de)serialization of the connection list stored in DataStore. */

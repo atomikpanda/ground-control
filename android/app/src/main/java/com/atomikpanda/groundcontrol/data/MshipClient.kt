@@ -3,6 +3,8 @@ package com.atomikpanda.groundcontrol.data
 import com.atomikpanda.groundcontrol.data.dto.AnswerBody
 import com.atomikpanda.groundcontrol.data.dto.ApproveBody
 import com.atomikpanda.groundcontrol.data.dto.CaptureBody
+import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
+import com.atomikpanda.groundcontrol.data.dto.WorkspacesResponse
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
@@ -215,6 +217,14 @@ class SpecApi(private val client: HttpClient) {
         client.post("${conn.baseUrl}/plan-assumptions/$slug/approve") {
             auth(conn); jsonBody(PlanFlagApproveBody(axis, reason))
         }.body()
+
+    /** Host-level list (#472): GET {hostBase}/workspaces with the host token.
+     *  Degraded entries are carried with their state, never dropped — the
+     *  caller decides how to render them. */
+    suspend fun listWorkspaces(hostBase: String, token: String?): List<WorkspaceInfo> =
+        client.get("${hostBase.trimEnd('/')}/workspaces") {
+            token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+        }.body<WorkspacesResponse>().workspaces
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {
         conn.token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }

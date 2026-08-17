@@ -7,6 +7,8 @@ import com.atomikpanda.groundcontrol.data.NotificationsSetting
 import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.deriveConnection
+import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,4 +58,39 @@ class SettingsViewModel(
     }
 
     fun remove(id: String) { viewModelScope.launch { repo.remove(id) } }
+
+    // ---- Host workspace discovery (#472) ----
+
+    private val _discovered = MutableStateFlow<List<WorkspaceInfo>?>(null)
+    /** Workspaces the last [discoverOnHost] found; null = no discovery ran/failed. */
+    val discovered: StateFlow<List<WorkspaceInfo>?> = _discovered.asStateFlow()
+
+    /** Probe {host}/workspaces and surface the list for selection. Degraded
+     *  entries are kept (with their state) so the operator can see them. */
+    fun discoverOnHost(baseUrlInput: String, token: String?) {
+        val base = normalizedBaseUrl(baseUrlInput) ?: run {
+            _testResult.value = "Invalid URL (need http:// or https://)"; return
+        }
+        viewModelScope.launch {
+            runCatching { api.listWorkspaces(base, token?.ifBlank { null }) }
+                .onSuccess { _discovered.value = it; _testResult.value = "Found ${it.size} workspace(s)" }
+                .onFailure { _discovered.value = null; _testResult.value = "Couldn't list workspaces: ${it.message}" }
+        }
+    }
+
+    /** Persist a discovered workspace as a derived connection. The host base
+     *  URL doubles as the host handle pre-#471 (opaque resolver seam: literal
+     *  URL today, relay identity later — see #471). */
+    fun addDiscovered(baseUrlInput: String, token: String?, info: WorkspaceInfo) {
+        val base = normalizedBaseUrl(baseUrlInput) ?: return
+        viewModelScope.launch {
+            repo.upsert(
+                deriveConnection(
+                    hostBase = base, hostToken = token?.ifBlank { null },
+                    hostId = base, workspaceId = info.id,
+                    workspaceName = info.name, state = info.state,
+                )
+            )
+        }
+    }
 }
