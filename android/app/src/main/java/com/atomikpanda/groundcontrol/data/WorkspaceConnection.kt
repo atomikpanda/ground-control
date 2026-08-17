@@ -29,7 +29,7 @@ data class WorkspaceConnection(
 private fun hostFingerprint(hostBase: String): String =
     MessageDigest.getInstance("SHA-256")
         .digest(hostBase.trimEnd('/').toByteArray())
-        .take(4)
+        .take(16)
         .joinToString("") { "%02x".format(it) }
 
 /**
@@ -101,5 +101,8 @@ fun normalizedBaseUrl(input: String): String? {
     val t = input.trim().trimEnd('/')
     if (!t.startsWith("http://") && !t.startsWith("https://")) return null
     if (t.substringAfter("://").isBlank()) return null
+    // Endpoints are appended as path segments; a query/fragment would swallow
+    // them ("...?q=1/workspaces" puts the path inside the query string).
+    if (t.contains('?') || t.contains('#')) return null
     return t
 }

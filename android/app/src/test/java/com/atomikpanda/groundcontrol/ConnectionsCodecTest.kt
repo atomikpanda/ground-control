@@ -31,6 +31,13 @@ class ConnectionsCodecTest {
         assertNull(normalizedBaseUrl(""))
     }
 
+    @Test fun rejects_base_url_with_query_or_fragment() {
+        // Endpoints are appended as path segments; a query/fragment would
+        // swallow them (".../workspaces" lands inside the query string).
+        assertNull(normalizedBaseUrl("https://h:47190?profile=dev"))
+        assertNull(normalizedBaseUrl("https://h:47190/#top"))
+    }
+
     // ── upsertConnection tests ──────────────────────────────────────────────
 
     @Test fun upsert_same_baseUrl_different_id_keeps_size_1_with_new_token() {

@@ -78,19 +78,24 @@ fun SettingsScreen(vm: SettingsViewModel) {
         // its daemon discovered; picking one derives a per-workspace connection.
         Button(onClick = { vm.discoverOnHost(url, token) }) { Text("Discover workspaces on host") }
         discovered?.let { found ->
-            found.workspaces.forEach { info ->
-                ListItem(
-                    headlineContent = { Text(info.name) },
-                    supportingContent = {
-                        Text(if (info.state == "healthy") info.path else "${info.state}: ${info.detail}")
-                    },
-                    trailingContent = {
-                        TextButton(
-                            enabled = info.state == "healthy",
-                            onClick = { vm.addDiscovered(found, info) },
-                        ) { Text("Add") }
-                    },
-                )
+            // Own scrollable, non-greedy region: many discovered workspaces
+            // must neither starve the saved-connections list below nor become
+            // unreachable themselves.
+            LazyColumn(Modifier.weight(1f, fill = false)) {
+                items(found.workspaces, key = { it.id }) { info ->
+                    ListItem(
+                        headlineContent = { Text(info.name) },
+                        supportingContent = {
+                            Text(if (info.state == "healthy") info.path else "${info.state}: ${info.detail}")
+                        },
+                        trailingContent = {
+                            TextButton(
+                                enabled = info.state == "healthy",
+                                onClick = { vm.addDiscovered(found, info) },
+                            ) { Text("Add") }
+                        },
+                    )
+                }
             }
         }
         Button(
