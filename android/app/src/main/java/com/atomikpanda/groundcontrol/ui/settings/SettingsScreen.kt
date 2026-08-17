@@ -77,19 +77,21 @@ fun SettingsScreen(vm: SettingsViewModel) {
         // Host discovery (#472): one host URL + host token lists every workspace
         // its daemon discovered; picking one derives a per-workspace connection.
         Button(onClick = { vm.discoverOnHost(url, token) }) { Text("Discover workspaces on host") }
-        discovered?.forEach { info ->
-            ListItem(
-                headlineContent = { Text(info.name) },
-                supportingContent = {
-                    Text(if (info.state == "healthy") info.path else "${info.state}: ${info.detail}")
-                },
-                trailingContent = {
-                    TextButton(
-                        enabled = info.state == "healthy",
-                        onClick = { vm.addDiscovered(url, token, info) },
-                    ) { Text("Add") }
-                },
-            )
+        discovered?.let { found ->
+            found.workspaces.forEach { info ->
+                ListItem(
+                    headlineContent = { Text(info.name) },
+                    supportingContent = {
+                        Text(if (info.state == "healthy") info.path else "${info.state}: ${info.detail}")
+                    },
+                    trailingContent = {
+                        TextButton(
+                            enabled = info.state == "healthy",
+                            onClick = { vm.addDiscovered(found, info) },
+                        ) { Text("Add") }
+                    },
+                )
+            }
         }
         Button(
             onClick = {

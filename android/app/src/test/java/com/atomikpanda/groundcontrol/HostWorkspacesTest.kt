@@ -46,16 +46,35 @@ class HostWorkspacesTest {
         assertEquals("invalid yaml", ws[1].detail)
     }
 
-    @Test fun derived_connection_uses_server_id_and_prefixed_baseUrl() {
+    @Test fun derived_connection_has_host_scoped_id_and_prefixed_baseUrl() {
         val conn = deriveConnection(
             hostBase = "http://host:47190/", hostToken = "tok",
             hostId = "http://host:47190", workspaceId = "ws-1",
             workspaceName = "product", state = "healthy",
         )
-        assertEquals("ws-1", conn.id) // server id IS the connection id
+        assertTrue(conn.id.startsWith("ws-1-")) // server id, scoped per host
         assertEquals("http://host:47190/workspaces/ws-1", conn.baseUrl)
         assertEquals("http://host:47190", conn.hostId)
         assertEquals("healthy", conn.state)
+    }
+
+    @Test fun derived_id_is_stable_for_a_host_and_url_safe() {
+        // Connection ids are interpolated raw into nav routes — no slashes,
+        // colons, or anything needing encoding.
+        val a = deriveConnection("http://host:47190/", "t", "http://host:47190", "ws-1", "p", "healthy")
+        val b = deriveConnection("http://host:47190", "t", "http://host:47190", "ws-1", "p", "healthy")
+        assertEquals(a.id, b.id) // trailing slash normalized away → stable id
+        assertTrue(a.id.matches(Regex("[A-Za-z0-9._~-]+")))
+    }
+
+    @Test fun same_workspace_id_on_two_hosts_keeps_both_connections() {
+        // #472 allows the same logical workspace on multiple hosts; adding it
+        // from host B must not evict the host A connection.
+        val fromA = deriveConnection("http://host-a:1", "t", "http://host-a:1", "ws-1", "product", "healthy")
+        val fromB = deriveConnection("http://host-b:1", "t", "http://host-b:1", "ws-1", "product", "healthy")
+        val list = upsertConnection(upsertConnection(emptyList(), fromA), fromB)
+        assertEquals(2, list.size)
+        assertEquals(2, list.map { it.id }.toSet().size)
     }
 
     @Test fun rediscovery_upsert_preserves_identity_overrides() {

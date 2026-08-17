@@ -61,9 +61,19 @@ class SettingsViewModel(
 
     // ---- Host workspace discovery (#472) ----
 
-    private val _discovered = MutableStateFlow<List<WorkspaceInfo>?>(null)
-    /** Workspaces the last [discoverOnHost] found; null = no discovery ran/failed. */
-    val discovered: StateFlow<List<WorkspaceInfo>?> = _discovered.asStateFlow()
+    /** A discovery result pinned to the host base/token the probe actually
+     *  used, so a later edit of the input fields (or a stale response landing
+     *  after a newer host was entered) can't persist a workspace under the
+     *  wrong host or token. */
+    data class DiscoveredWorkspaces(
+        val hostBase: String,
+        val hostToken: String?,
+        val workspaces: List<WorkspaceInfo>,
+    )
+
+    private val _discovered = MutableStateFlow<DiscoveredWorkspaces?>(null)
+    /** What the last [discoverOnHost] found; null = no discovery ran/failed. */
+    val discovered: StateFlow<DiscoveredWorkspaces?> = _discovered.asStateFlow()
 
     /** Probe {host}/workspaces and surface the list for selection. Degraded
      *  entries are kept (with their state) so the operator can see them. */
@@ -71,23 +81,27 @@ class SettingsViewModel(
         val base = normalizedBaseUrl(baseUrlInput) ?: run {
             _testResult.value = "Invalid URL (need http:// or https://)"; return
         }
+        val tok = token?.ifBlank { null }
         viewModelScope.launch {
-            runCatching { api.listWorkspaces(base, token?.ifBlank { null }) }
-                .onSuccess { _discovered.value = it; _testResult.value = "Found ${it.size} workspace(s)" }
+            runCatching { api.listWorkspaces(base, tok) }
+                .onSuccess {
+                    _discovered.value = DiscoveredWorkspaces(base, tok, it)
+                    _testResult.value = "Found ${it.size} workspace(s)"
+                }
                 .onFailure { _discovered.value = null; _testResult.value = "Couldn't list workspaces: ${it.message}" }
         }
     }
 
-    /** Persist a discovered workspace as a derived connection. The host base
-     *  URL doubles as the host handle pre-#471 (opaque resolver seam: literal
-     *  URL today, relay identity later — see #471). */
-    fun addDiscovered(baseUrlInput: String, token: String?, info: WorkspaceInfo) {
-        val base = normalizedBaseUrl(baseUrlInput) ?: return
+    /** Persist a discovered workspace as a derived connection, using the host
+     *  base/token captured at discovery time. The host base URL doubles as the
+     *  host handle pre-#471 (opaque resolver seam: literal URL today, relay
+     *  identity later — see #471). */
+    fun addDiscovered(from: DiscoveredWorkspaces, info: WorkspaceInfo) {
         viewModelScope.launch {
             repo.upsert(
                 deriveConnection(
-                    hostBase = base, hostToken = token?.ifBlank { null },
-                    hostId = base, workspaceId = info.id,
+                    hostBase = from.hostBase, hostToken = from.hostToken,
+                    hostId = from.hostBase, workspaceId = info.id,
                     workspaceName = info.name, state = info.state,
                 )
             )

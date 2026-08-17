@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.data
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import java.security.MessageDigest
 
 @Serializable
 data class WorkspaceConnection(
@@ -23,11 +24,21 @@ data class WorkspaceConnection(
     val state: String? = null,
 )
 
+/** Short URL-safe fingerprint of a host base URL. Connection ids are
+ *  interpolated raw into nav routes, so host scoping can't embed the URL itself. */
+private fun hostFingerprint(hostBase: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(hostBase.trimEnd('/').toByteArray())
+        .take(4)
+        .joinToString("") { "%02x".format(it) }
+
 /**
- * Derive a connection from a host's discovered workspace (#472): the SERVER
- * workspace id becomes the connection id (so re-discovery matches in
- * [upsertConnection] and identity overrides carry forward), and the baseUrl is
- * the workspace-addressed prefix — opaque to everything downstream.
+ * Derive a connection from a host's discovered workspace (#472): the connection
+ * id is the SERVER workspace id scoped by a host fingerprint — deterministic, so
+ * re-discovery matches in [upsertConnection] and identity overrides carry
+ * forward, and host-scoped because the same logical workspace may exist on
+ * several hosts. The baseUrl is the workspace-addressed prefix — opaque to
+ * everything downstream.
  */
 fun deriveConnection(
     hostBase: String,
@@ -37,7 +48,7 @@ fun deriveConnection(
     workspaceName: String,
     state: String,
 ): WorkspaceConnection = WorkspaceConnection(
-    id = workspaceId,
+    id = workspaceId + "-" + hostFingerprint(hostBase),
     baseUrl = hostBase.trimEnd('/') + "/workspaces/" + workspaceId,
     token = hostToken,
     workspaceName = workspaceName,
