@@ -4,8 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.HomeFeed
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.applyHostLadder
+import com.atomikpanda.groundcontrol.data.dedupeHostErrors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +35,7 @@ class HomeViewModel(
     private val repo: HomeFeedRepository,
     private val connectionsProvider: () -> List<WorkspaceConnection>,
     private val testScope: CoroutineScope? = null,
+    private val hostsProvider: () -> List<HostConnection> = { emptyList() },
 ) : ViewModel() {
     private val _state = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
@@ -39,12 +43,14 @@ class HomeViewModel(
     private var feed: HomeFeed = HomeFeed(emptyList(), emptyList(), emptyList())
     private var selected: String? = null
     private var lastConnections: List<WorkspaceConnection> = emptyList()
+    private var lastHosts: List<HostConnection> = emptyList()
 
     fun refresh(): Job? {
         val connections = connectionsProvider()
         if (connections.isEmpty()) { _state.value = HomeUiState.EmptyConfig; return null }
         _state.value = HomeUiState.Loading
         lastConnections = connections
+        lastHosts = hostsProvider()
         return (testScope ?: viewModelScope).launch {
             feed = repo.load(connections)
             render(connections)
@@ -74,6 +80,14 @@ class HomeViewModel(
         }
         val visible = if (selected == null) feed.items else feed.items.filter { it.connectionId == selected }
         val visibleNotes = if (selected == null) feed.notes else feed.notes.filter { it.connectionId == selected }
-        _state.value = HomeUiState.Content(chips, selected, visible, visibleNotes, feed.errors)
+        // One dead host is one row, and its wording comes from the same ladder
+        // Projects, Queue and Settings render (#471).
+        val errors = applyHostLadder(
+            feed.errors,
+            connections,
+            lastHosts,
+            System.currentTimeMillis(),
+        )
+        _state.value = HomeUiState.Content(chips, selected, visible, visibleNotes, dedupeHostErrors(errors))
     }
 }

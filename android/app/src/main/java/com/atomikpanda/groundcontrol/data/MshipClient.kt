@@ -7,6 +7,11 @@ import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.dto.WorkspacesResponse
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
+import com.atomikpanda.groundcontrol.data.dto.HostHealth
+import com.atomikpanda.groundcontrol.data.dto.HostInfo
+import com.atomikpanda.groundcontrol.data.dto.HostTokenBody
+import com.atomikpanda.groundcontrol.data.dto.HostTokenResponse
+import com.atomikpanda.groundcontrol.data.dto.HostsResponse
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.NewMessageBody
@@ -33,9 +38,12 @@ import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.call.body
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.api.Send
+import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
@@ -52,6 +60,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -92,8 +104,171 @@ fun HttpClientConfig<*>.mshipDefaults() {
     }
 }
 
-/** Default production client (OkHttp engine). Tests inject a MockEngine-backed client. */
+/** Default production client (OkHttp engine), for callers with no host state
+ *  to read. App code goes through `appHttpClient(context)`, which adds the
+ *  host-scoped bearer refresh. Tests inject a MockEngine-backed client. */
 fun defaultHttpClient(): HttpClient = HttpClient(OkHttp) { mshipDefaults() }
+
+// ---- the relay directory + the host-scoped refresh exchange (#471) ---------
+
+/** The per-device fleet credential's header, mirroring the relay's
+ *  `host_contract.FLEET_TOKEN_HEADER`. */
+const val FLEET_TOKEN_HEADER = "Mship-Fleet-Token"
+
+/** Every host route sits under this one prefix (AC13's single Caddy matcher). */
+const val HOSTS_PATH = "/hosts"
+
+/** The host's own bootstrap exchange — never proxied through the relay. */
+const val HOST_TOKEN_PATH = "/host/token"
+
+/** `https://enroll.<relay domain>`: the one enroll server `mship relay enroll`,
+ *  the daemon and the phone all address (`host_contract.enroll_base_url`). */
+fun enrollBaseUrl(relayDomain: String): String {
+    val domain = relayDomain.trim()
+        .removePrefix("https://").removePrefix("http://")
+        .trim('/')
+        .removePrefix("enroll.")
+    return "https://enroll.$domain"
+}
+
+/** The persisted refresh credential was itself refused: no retry can fix this,
+ *  the operator has to re-pair the device. */
+class RePairNeededException(val hostBase: String) :
+    Exception("re-pair needed: $hostBase refused the stored refresh credential")
+
+/** Client + the token cache its interceptor mints through. */
+class HostClient(val client: HttpClient, val tokens: HostTokens)
+
+/**
+ * Short-lived host bearers (AC9), one cache entry per host base URL.
+ *
+ * The exchange is serialized per host: two requests that discover the same
+ * expired bearer at the same moment must produce ONE exchange, not two — the
+ * loser reads the winner's token. That is the whole reason this is a class and
+ * not a function.
+ */
+class HostTokens(
+    private val credentialFor: suspend (hostBase: String) -> String?,
+    private val exchange: suspend (hostBase: String, credential: String) -> String,
+) {
+    private val cache = ConcurrentHashMap<String, String>()
+    private val guard = Mutex()
+    private val locks = mutableMapOf<String, Mutex>()
+
+    fun cached(hostBase: String): String? = cache[hostBase]
+
+    /**
+     * The current bearer for [hostBase], minting one if we have none or if
+     * [stale] is the one that just came back 401. Null when no refresh
+     * credential is stored (a manually paired host, say).
+     */
+    suspend fun bearer(hostBase: String, stale: String? = null): String? {
+        val lock = guard.withLock { locks.getOrPut(hostBase) { Mutex() } }
+        return lock.withLock {
+            val current = cache[hostBase]
+            // Someone else already replaced the token we came to replace.
+            if (current != null && current != stale) return@withLock current
+            val credential = credentialFor(hostBase) ?: return@withLock null
+            exchange(hostBase, credential).also { cache[hostBase] = it }
+        }
+    }
+}
+
+
+/** Which host base [url] belongs to, longest prefix first (a URL under two
+ *  known bases belongs to the more specific one). The exchange route itself is
+ *  excluded: it carries the credential, never a bearer, and its 401 is final. */
+fun hostBaseFor(url: String, hosts: List<HostConnection>): String? {
+    if (url.substringBefore('?').trimEnd('/').endsWith(HOST_TOKEN_PATH)) return null
+    return hosts.flatMap { it.hostBases() }
+        .filter { url.startsWith("$it/") }
+        .maxByOrNull { it.length }
+}
+
+private suspend fun notifyHostContact(
+    callback: suspend (hostBase: String) -> Unit,
+    hostBase: String,
+) {
+    try {
+        callback(hostBase)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        // Contact persistence is secondary evidence; it must not turn a
+        // successful host response into a failed operator action.
+    }
+}
+
+/**
+ * A client that mints and refreshes host bearers by itself (#471 AC9).
+ *
+ * The interceptor is host-scoped: it attaches a bearer only to requests that
+ * fall under a known host base, and on a 401 it exchanges the PERSISTED refresh
+ * credential at that host's own `POST /host/token` — never at the relay — and
+ * retries once. It never touches a request that already carries an
+ * Authorization header, so manually paired connections keep their standing
+ * token untouched.
+ */
+
+fun hostAwareClient(
+    engine: HttpClientEngine,
+    onHostContact: suspend (hostBase: String) -> Unit = {},
+    hosts: suspend () -> List<HostConnection>,
+): HostClient {
+    var tokens: HostTokens? = null
+    val refreshAuth = createClientPlugin("HostRefreshAuth") {
+        on(Send) { request ->
+            val cache = tokens
+            val base = cache?.let { hostBaseFor(request.url.buildString(), hosts()) }
+            if (cache == null || base == null) return@on proceed(request)
+            if (request.headers.contains(HttpHeaders.Authorization)) {
+                val call = proceed(request)
+                if (call.response.status.isSuccess()) notifyHostContact(onHostContact, base)
+                return@on call
+            }
+            val token = cache.cached(base) ?: cache.bearer(base)
+            token?.let { request.headers[HttpHeaders.Authorization] = "Bearer $it" }
+            // The response validator turns a 401 into an AuthException, and it
+            // may fire either here or when the caller reads the body — so both
+            // shapes have to mean the same thing.
+            val call = try {
+                proceed(request).takeIf { it.response.status != HttpStatusCode.Unauthorized }
+            } catch (_: AuthException) {
+                null
+            }
+            if (call != null) {
+                if (call.response.status.isSuccess()) notifyHostContact(onHostContact, base)
+                return@on call
+            }
+            val refreshed = cache.bearer(base, stale = token) ?: throw AuthException("no credential for $base")
+            request.headers[HttpHeaders.Authorization] = "Bearer $refreshed"
+            val retried = proceed(request)
+            if (retried.response.status.isSuccess()) notifyHostContact(onHostContact, base)
+            retried
+        }
+    }
+    val client = HttpClient(engine) {
+        mshipDefaults()
+        install(refreshAuth)
+    }
+    tokens = HostTokens(
+        credentialFor = { base -> hosts().firstOrNull { base in it.hostBases() }?.refresh },
+        exchange = { base, credential -> mintHostToken(client, base, credential) },
+    )
+    return HostClient(client, tokens)
+}
+
+/** The bootstrap exchange itself: no Authorization header, the credential in the
+ *  body, and every failure is a uniform 401 — which can only mean re-pair. */
+private suspend fun mintHostToken(client: HttpClient, hostBase: String, credential: String): String =
+    try {
+        client.post("${hostBase.trimEnd('/')}$HOST_TOKEN_PATH") {
+            contentType(ContentType.Application.Json)
+            setBody(HostTokenBody(credential))
+        }.body<HostTokenResponse>().token
+    } catch (_: AuthException) {
+        throw RePairNeededException(hostBase)
+    }
 
 /** Thin wrapper over mship serve endpoints. One client; per-call base URL + bearer. */
 class SpecApi(private val client: HttpClient) {
@@ -217,6 +392,19 @@ class SpecApi(private val client: HttpClient) {
         client.post("${conn.baseUrl}/plan-assumptions/$slug/approve") {
             auth(conn); jsonBody(PlanFlagApproveBody(axis, reason))
         }.body()
+
+    /** The fleet (#471): GET enroll.<relay>/hosts with the per-device fleet token.
+     *  The phone holds a relay ACCOUNT — this is the only route that turns it
+     *  into addresses, and the only one that publishes refresh credentials. */
+    suspend fun listHosts(relayDomain: String, fleetToken: String): List<HostInfo> =
+        client.get("${enrollBaseUrl(relayDomain)}$HOSTS_PATH") {
+            header(FLEET_TOKEN_HEADER, fleetToken)
+        }.body<HostsResponse>().hosts
+
+    /** A host's unauthenticated GET /health: ids and counts, the reachability
+     *  probe and the `host_id` half of an adoption's identity tuple. */
+    suspend fun hostHealth(hostBase: String): HostHealth =
+        client.get("${hostBase.trimEnd('/')}/health").body()
 
     /** Host-level list (#472): GET {hostBase}/workspaces with the host token.
      *  Degraded entries are carried with their state, never dropped — the

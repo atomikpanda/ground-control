@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.NOTIFICATIONS_ENABLED
 import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.settingsStore
@@ -62,6 +63,12 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         val raw = intent?.data?.toString() ?: return
+        // A relay account is the fleet-level pairing (#471); a workspace link is
+        // the LAN/tailnet fallback. Both arrive on the same intent path.
+        PairLink.parseRelay(raw)?.let { account ->
+            lifecycleScope.launch { HostsRepository(applicationContext).setRelayAccount(account) }
+            return
+        }
         PairLink.parse(raw)?.let { conn ->
             lifecycleScope.launch { ConnectionsRepository(applicationContext).upsert(conn) }
             return

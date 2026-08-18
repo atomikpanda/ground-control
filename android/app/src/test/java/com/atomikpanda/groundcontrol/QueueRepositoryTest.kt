@@ -1,9 +1,12 @@
 // app/src/test/java/com/atomikpanda/groundcontrol/QueueRepositoryTest.kt
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.WorkspaceErrorAction
+import com.atomikpanda.groundcontrol.data.hostAwareClient
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.queue.DecisionCard
 import com.atomikpanda.groundcontrol.ui.queue.PlanAssumptionCard
@@ -124,5 +127,34 @@ class QueueRepositoryTest {
         assertEquals(2, feed.cards.size)
         assertTrue(feed.cards.all { it.connectionId == "ok" })
         assertEquals(listOf("ws-bad"), feed.errors.map { it.workspaceName })
+    }
+
+    @Test fun rejected_refresh_is_surfaced_as_a_re_pair_action() = runTest {
+        val host = HostConnection(
+            hostId = "h-1",
+            publicUrl = "https://host.example.com",
+            refresh = "rejected",
+        )
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                if (req.url.encodedPath == "/host/token") {
+                    respond("""{"detail":"invalid refresh"}""", HttpStatusCode.Unauthorized, jsonHdr)
+                } else {
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+            },
+            hosts = { listOf(host) },
+        )
+        val connection = WorkspaceConnection(
+            id = "c1",
+            baseUrl = "https://host.example.com/workspaces/ws-1",
+            workspaceName = "ws",
+            hostId = "h-1",
+            workspaceId = "ws-1",
+        )
+
+        val feed = QueueRepository(SpecApi(client.client)).load(listOf(connection))
+
+        assertEquals(WorkspaceErrorAction.RE_PAIR, feed.errors.single().action)
     }
 }

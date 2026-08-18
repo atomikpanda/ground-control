@@ -1,8 +1,10 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
+import com.atomikpanda.groundcontrol.data.hostAwareClient
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceUiState
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 import io.ktor.client.HttpClient
@@ -63,5 +65,35 @@ class WorkspaceViewModelTest {
         assertEquals(listOf("t1"), c.threads.map { it.id })
         assertTrue(c.tasks.isEmpty())
         assertTrue(c.errored)
+    }
+
+    @Test fun rejected_refresh_sets_explicit_re_pair_state() = runTest {
+        val host = HostConnection(
+            hostId = "h-1",
+            publicUrl = "https://host.example.com",
+            refresh = "rejected",
+        )
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                if (req.url.encodedPath == "/host/token") {
+                    respond("""{"detail":"invalid refresh"}""", HttpStatusCode.Unauthorized, jsonHdr)
+                } else {
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+            },
+            hosts = { listOf(host) },
+        )
+        val connection = WorkspaceConnection(
+            id = "c1",
+            baseUrl = "https://host.example.com/workspaces/ws-1",
+            workspaceName = "ws",
+            hostId = "h-1",
+            workspaceId = "ws-1",
+        )
+        val vm = WorkspaceViewModel(SpecApi(client.client), connection, testScope = this)
+
+        vm.refresh().join()
+
+        assertTrue((vm.state.value as WorkspaceUiState.Content).rePairNeeded)
     }
 }

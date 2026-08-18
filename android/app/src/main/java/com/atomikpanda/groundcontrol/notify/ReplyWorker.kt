@@ -15,7 +15,7 @@ import androidx.work.workDataOf
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
-import com.atomikpanda.groundcontrol.data.defaultHttpClient
+import com.atomikpanda.groundcontrol.data.appHttpClient
 
 /**
  * Delivers a notification direct-reply / option post reliably: resolves the [WorkspaceConnection]
@@ -47,7 +47,7 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
             return Result.failure()
         }
 
-        val repo = ThreadsRepository(SpecApi(defaultHttpClient()))
+        val repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         val posted = runCatching { repo.postMessage(conn, threadId, text) }
         return if (posted.isSuccess) {
             val thread = posted.getOrNull()

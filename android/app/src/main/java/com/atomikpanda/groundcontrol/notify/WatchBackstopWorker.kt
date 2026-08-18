@@ -9,14 +9,14 @@ import androidx.work.WorkerParameters
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
-import com.atomikpanda.groundcontrol.data.defaultHttpClient
+import com.atomikpanda.groundcontrol.data.appHttpClient
 import java.util.concurrent.TimeUnit
 
 class WatchBackstopWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val repo = ThreadsRepository(SpecApi(defaultHttpClient()))
+        val repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         val reconciler = NeedsYouReconciler(
             RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),
             AndroidNotifier(applicationContext),

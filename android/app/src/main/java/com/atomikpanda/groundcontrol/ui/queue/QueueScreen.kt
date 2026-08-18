@@ -74,6 +74,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.CoachMarkStore
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.WorkspaceErrorAction
+import com.atomikpanda.groundcontrol.data.workspaceErrorLabel
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard as DecisionPromptCard
 import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
@@ -106,6 +108,7 @@ fun QueueScreen(
     onOpenItem: (connectionId: String, itemId: String) -> Unit,
     onOpenPr: (url: String) -> Unit,
     onOpenTask: (connectionId: String, task: String) -> Unit,
+    onRePair: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     // AC9: initial load + live auto-refresh. The poll is cancelled when the tab
@@ -172,14 +175,14 @@ fun QueueScreen(
                     val card = s.current
                     if (card == null) {
                         Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (s.errors.isNotEmpty()) { WorkspaceErrorLine(s.errors); Spacer(Modifier.height(8.dp)) }
+                            if (s.errors.isNotEmpty()) { WorkspaceErrorLine(s.errors, onRePair); Spacer(Modifier.height(8.dp)) }
                             Text("You're all caught up ✓", textAlign = TextAlign.Center)
                         }
                     } else {
                         // Fixed header + weighted (bounded) card region + pinned Skip footer, so long
                         // card content scrolls inside the card and Skip is never pushed off-screen.
                         Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (s.errors.isNotEmpty()) { WorkspaceErrorLine(s.errors); Spacer(Modifier.height(8.dp)) }
+                            if (s.errors.isNotEmpty()) { WorkspaceErrorLine(s.errors, onRePair); Spacer(Modifier.height(8.dp)) }
                             // Header: position indicator + a small info affordance that re-opens the swipe
                             // coach mark on demand (AC3) — always reachable once onboarding is dismissed.
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -398,13 +401,18 @@ private fun BoxScope.DragStamp(
 
 /** AC11: a compact per-workspace error banner (mirrors HomeScreen's error chips). */
 @Composable
-private fun WorkspaceErrorLine(errors: List<WorkspaceError>) {
-    Text(
-        "⚠ ${errors.size} workspace(s) unreachable: ${errors.joinToString { it.workspaceName }}",
-        color = MaterialTheme.colorScheme.error,
-        style = MaterialTheme.typography.bodySmall,
-        textAlign = TextAlign.Center,
-    )
+private fun WorkspaceErrorLine(errors: List<WorkspaceError>, onRePair: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            errors.joinToString(separator = " · ", transform = ::workspaceErrorLabel),
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+        )
+        if (errors.any { it.action == WorkspaceErrorAction.RE_PAIR }) {
+            TextButton(onClick = onRePair) { Text("Re-pair in Settings") }
+        }
+    }
 }
 
 @Composable

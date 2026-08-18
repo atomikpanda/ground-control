@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.ui.workspace
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
@@ -23,6 +24,7 @@ sealed interface WorkspaceUiState {
         val specs: List<SpecSummary>,
         val tasks: List<TaskSummary>,
         val errored: Boolean,
+        val rePairNeeded: Boolean = false,
     ) : WorkspaceUiState
 }
 
@@ -45,11 +47,13 @@ class WorkspaceViewModel(
         val t = threads.await()
         val s = specs.await()
         val k = tasks.await()
+        val rePairNeeded = listOf(t, s, k).any { it.exceptionOrNull() is RePairNeededException }
         _state.value = WorkspaceUiState.Content(
             threads = t.getOrDefault(emptyList()),
             specs = s.getOrDefault(emptyList()),
             tasks = k.getOrDefault(emptyList()),
             errored = t.isFailure || s.isFailure || k.isFailure,
+            rePairNeeded = rePairNeeded,
         )
     }
 }

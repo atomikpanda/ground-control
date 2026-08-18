@@ -13,7 +13,7 @@ import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
-import com.atomikpanda.groundcontrol.data.defaultHttpClient
+import com.atomikpanda.groundcontrol.data.appHttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,7 +35,7 @@ class WatchService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        repo = ThreadsRepository(SpecApi(defaultHttpClient()))
+        repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         connections = ConnectionsRepository(applicationContext)
         reconciler = NeedsYouReconciler(
             RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),

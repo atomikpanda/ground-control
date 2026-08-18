@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.ladderLabel
 import com.atomikpanda.groundcontrol.notify.WatchController
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -42,6 +43,8 @@ fun SettingsScreen(vm: SettingsViewModel) {
     val connections by vm.connections.collectAsStateWithLifecycle()
     val testResult by vm.testResult.collectAsStateWithLifecycle()
     val discovered by vm.discovered.collectAsStateWithLifecycle()
+    val relayAccount by vm.relayAccount.collectAsStateWithLifecycle()
+    val hostRows by vm.hostRows.collectAsStateWithLifecycle()
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
 
@@ -64,14 +67,51 @@ fun SettingsScreen(vm: SettingsViewModel) {
         ).show()
     }
 
+    val relayScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result?.contents
+        if (contents == null) return@rememberLauncherForActivityResult // user cancelled
+        val ok = vm.addRelayFromLink(contents)
+        Toast.makeText(
+            context,
+            if (ok) "Relay account added" else "Invalid relay code",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
     Column(
         Modifier
             .fillMaxSize()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Workspace connections", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(url, { url = it }, label = { Text("mship serve URL") }, modifier = Modifier.fillMaxWidth())
+        // The primary path (#471): one relay account, then every host in the fleet
+        // arrives by itself — the phone never holds a VM address.
+        Text("Relay account", style = MaterialTheme.typography.titleMedium)
+        relayAccount?.let { Text(it.relayDomain, style = MaterialTheme.typography.bodySmall) }
+        Button(
+            onClick = {
+                relayScanLauncher.launch(
+                    ScanOptions()
+                        .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                        .setPrompt("Scan a Ground Control relay QR")
+                        .setBeepEnabled(false)
+                        .setOrientationLocked(false),
+                )
+            },
+        ) { Text(if (relayAccount == null) "Add relay account" else "Replace relay account") }
+        if (relayAccount != null) {
+            TextButton(onClick = { vm.refreshFleetNow() }) { Text("Refresh fleet") }
+            hostRows.forEach { host ->
+                ListItem(
+                    headlineContent = { Text(host.label) },
+                    supportingContent = { Text(ladderLabel(host.state)) },
+                )
+            }
+        }
+        HorizontalDivider()
+        // Fallback only: a host reachable on LAN/tailnet, or a lone `mship serve`.
+        Text("LAN / tailnet fallback", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(url, { url = it }, label = { Text("Direct URL (LAN/tailnet)") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(token, { token = it }, label = { Text("Bearer token (optional)") }, modifier = Modifier.fillMaxWidth())
         Button(onClick = { vm.addOrUpdate(null, url, token); url = ""; token = "" }) { Text("Add / test") }
         // Host discovery (#472): one host URL + host token lists every workspace

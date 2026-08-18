@@ -30,6 +30,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.HostsRepository
+import com.atomikpanda.groundcontrol.data.appHttpClient
 import com.atomikpanda.groundcontrol.data.DataStoreCoachMarkStore
 import com.atomikpanda.groundcontrol.data.DataStoreNotificationsSetting
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
@@ -39,7 +41,6 @@ import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
-import com.atomikpanda.groundcontrol.data.defaultHttpClient
 import com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller
 import com.atomikpanda.groundcontrol.ui.home.HomeScreen
 import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
@@ -86,7 +87,11 @@ fun GroundControlApp(
 ) {
     val nav = rememberNavController()
     val connRepo = remember { ConnectionsRepository(context.applicationContext) }
-    val api = remember { SpecApi(defaultHttpClient()) }
+    val hostsRepo = remember { HostsRepository(context.applicationContext) }
+    // The client mints and refreshes each host's short-lived bearer itself (#471
+    // AC9), reading the persisted refresh credential off the stored host list.
+    val hostClient = remember { appHttpClient(context.applicationContext) }
+    val api = remember { SpecApi(hostClient.client) }
     val homeRepo = remember { HomeFeedRepository(api) }
     val queueRepo = remember { QueueRepository(api) }
     val detailRepo = remember { SpecDetailRepository(api) }
@@ -128,7 +133,11 @@ fun GroundControlApp(
         NavHost(nav, startDestination = Section.HOME.route, modifier = Modifier.padding(padding)) {
             composable(Section.HOME.route) {
                 val vm = viewModel {
-                    HomeViewModel(homeRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    HomeViewModel(
+                        homeRepo,
+                        connectionsProvider = { runBlockingSnapshot(connRepo) },
+                        hostsProvider = { runBlocking { hostsRepo.snapshot() } },
+                    )
                 }
                 HomeScreen(
                     vm,
@@ -140,11 +149,16 @@ fun GroundControlApp(
                     onCapture = { nav.navigate("capture") },
                     onOpenThreads = { nav.navigate("threads") },
                     onReviewInQueue = { nav.navigate(Section.QUEUE.route) { launchSingleTop = true } },
+                    onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                 )
             }
             composable(Section.QUEUE.route) {
                 val vm = viewModel {
-                    QueueViewModel(queueRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    QueueViewModel(
+                        queueRepo,
+                        connectionsProvider = { runBlockingSnapshot(connRepo) },
+                        hostsProvider = { runBlocking { hostsRepo.snapshot() } },
+                    )
                 }
                 val uriHandler = LocalUriHandler.current
                 QueueScreen(
@@ -153,6 +167,7 @@ fun GroundControlApp(
                     onOpenItem = { connId, itemId -> nav.navigate("item/$connId/$itemId") },
                     onOpenPr = { url -> uriHandler.openUri(url) },
                     onOpenTask = { connId, task -> nav.navigate("taskDetail/$connId/$task") },
+                    onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                 )
             }
             composable("threads") {
@@ -173,11 +188,11 @@ fun GroundControlApp(
                 TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
             }
             composable(Section.PROJECTS.route) {
-                val vm = viewModel { ProjectsViewModel(connRepo) }
+                val vm = viewModel { ProjectsViewModel(connRepo, hostsRepo) }
                 ProjectsScreen(vm, onOpenWorkspace = { connId -> nav.navigate("workspace/$connId") })
             }
             composable(Section.SETTINGS.route) {
-                val vm = viewModel { SettingsViewModel(connRepo, api, notificationsSetting) }
+                val vm = viewModel { SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo) }
                 SettingsScreen(vm)
             }
             composable(
@@ -245,6 +260,7 @@ fun GroundControlApp(
                         onTask = { slug -> nav.navigate("taskDetail/$connectionId/$slug") },
                         onNewConversation = { nav.navigate("newThread?connectionId=$connectionId") },
                         onBack = { nav.popBackStack() },
+                        onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                     )
                 }
             }

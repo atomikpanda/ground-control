@@ -66,6 +66,32 @@ class DeepLinkResolverTest {
         assertTrue(DeepLinkResolver.resolve(uri("task", "http://nope:1", "k1"), conns) is DeepLinkOutcome.AddConnection)
     }
 
+    @Test fun a_pre_migration_notification_link_resolves_after_adoption() {
+        // Adoption rewrites baseUrl to the host-derived one, and the resolver matches
+        // on normalizedBaseUrl(baseUrl) — so PendingIntents already sitting in the
+        // notification shade (built with the old LAN URL) resolve only if the old URL
+        // is still carried. Keeping the row `id` alone does not save them.
+        val adopted = listOf(
+            WorkspaceConnection(
+                id = "c1",
+                baseUrl = "https://h-1.relay.example.com/workspaces/ws-1",
+                workspaceName = "Work",
+                hostId = "h-1",
+                workspaceId = "ws-1",
+                legacyBaseUrls = listOf("http://host:47100"),
+            ),
+        )
+        assertEquals(
+            DeepLinkOutcome.OpenThread("c1", "t1"),
+            DeepLinkResolver.resolve(uri("http://host:47100", "t1"), adopted),
+        )
+        // ...and the new URL keeps resolving, trailing slash and all.
+        assertEquals(
+            DeepLinkOutcome.OpenThread("c1", "t2"),
+            DeepLinkResolver.resolve(uri("https://h-1.relay.example.com/workspaces/ws-1/", "t2"), adopted),
+        )
+    }
+
     @Test fun entity_hosts_missing_or_blank_id_is_ignored() {
         assertEquals(
             DeepLinkOutcome.Ignore,

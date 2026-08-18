@@ -3,6 +3,14 @@ package com.atomikpanda.groundcontrol.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.HostLadderState
+import com.atomikpanda.groundcontrol.data.HostsRepository
+import com.atomikpanda.groundcontrol.data.RelayAccount
+import com.atomikpanda.groundcontrol.data.RePairNeededException
+import com.atomikpanda.groundcontrol.data.displayLabel
+import com.atomikpanda.groundcontrol.data.hostFrom
+import com.atomikpanda.groundcontrol.data.ladderForHost
+import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
 import com.atomikpanda.groundcontrol.data.NotificationsSetting
 import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.SpecApi
@@ -12,7 +20,10 @@ import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -20,17 +31,32 @@ class SettingsViewModel(
     private val repo: ConnectionsRepository,
     private val api: SpecApi,
     private val notifications: NotificationsSetting,
+    private val hosts: HostsRepository,
 ) : ViewModel() {
     val connections: StateFlow<List<WorkspaceConnection>> get() = _connections
     private val _connections = MutableStateFlow<List<WorkspaceConnection>>(emptyList())
     private val _testResult = MutableStateFlow<String?>(null)
     val testResult: StateFlow<String?> = _testResult.asStateFlow()
 
-    init { viewModelScope.launch { repo.connections.collect { _connections.value = it } } }
+    init {
+        viewModelScope.launch { repo.connections.collect { _connections.value = it } }
+        // A relay account paired by deep link (not through this screen) has no
+        // fleet yet — pull it once so the hosts appear without a manual refresh.
+        viewModelScope.launch {
+            if (hosts.relayAccountSnapshot() != null && hosts.snapshot().isEmpty()) refreshFleet()
+        }
+    }
 
     val notificationsEnabled: StateFlow<Boolean> get() = notifications.enabled
     fun setNotificationsEnabled(value: Boolean) {
         viewModelScope.launch { notifications.set(value) }
+    }
+
+    private fun surfaceRePair(error: Throwable?): Boolean {
+        if (error !is RePairNeededException) return false
+        _discovered.value = null
+        _testResult.value = "Re-pair needed — scan the relay account again"
+        return true
     }
 
     /** Validate URL, probe /health, persist with the discovered workspace name. */
@@ -41,27 +67,29 @@ class SettingsViewModel(
         val tok = token?.ifBlank { null }
         viewModelScope.launch {
             val probe = WorkspaceConnection(id ?: UUID.randomUUID().toString(), base, tok, "")
-            runCatching { api.health(probe).workspace }.fold(
-                { name ->
-                    repo.upsert(probe.copy(workspaceName = name))
-                    _testResult.value = name.ifBlank { "Saved (couldn't reach /health)" }
-                },
-                {
-                    // A daemon HOST's /health doesn't decode as a workspace
-                    // HealthResponse. Before the offline-save fallback, check
-                    // whether this is a host: saving a host root as a workspace
-                    // connection would 404 on every workspace call. If it is,
-                    // surface its workspaces for selection instead of saving.
-                    val hostWs = runCatching { api.listWorkspaces(base, tok) }.getOrNull()
-                    if (hostWs != null) {
-                        _discovered.value = DiscoveredWorkspaces(base, tok, hostWs)
-                        _testResult.value = "That's a host URL — pick a workspace below"
-                    } else {
-                        repo.upsert(probe)
-                        _testResult.value = "Saved (couldn't reach /health)"
-                    }
-                },
-            )
+            val health = runCatching { api.health(probe).workspace }
+            if (health.isSuccess) {
+                val name = health.getOrThrow()
+                repo.upsert(probe.copy(workspaceName = name))
+                _testResult.value = name.ifBlank { "Saved (couldn't reach /health)" }
+                return@launch
+            }
+            if (surfaceRePair(health.exceptionOrNull())) return@launch
+            // A daemon HOST's /health doesn't decode as a workspace
+            // HealthResponse. Before the offline-save fallback, check whether
+            // this is a host instead of persisting a root that every call 404s.
+            val hostResult = runCatching { api.listWorkspaces(base, tok) }
+            if (hostResult.isFailure) {
+                if (surfaceRePair(hostResult.exceptionOrNull())) return@launch
+                repo.upsert(probe)
+                _testResult.value = "Saved (couldn't reach /health)"
+                return@launch
+            }
+            val identity = runCatching { api.hostHealth(base).hostId }
+            if (surfaceRePair(identity.exceptionOrNull())) return@launch
+            val hostWs = hostResult.getOrThrow()
+            _discovered.value = DiscoveredWorkspaces(base, tok, hostWs, identity.getOrNull())
+            _testResult.value = "That's a host URL — pick a workspace below"
         }
     }
 
@@ -87,6 +115,8 @@ class SettingsViewModel(
         val hostBase: String,
         val hostToken: String?,
         val workspaces: List<WorkspaceInfo>,
+        /** Verified by this host's own `/health`; null keeps legacy behavior. */
+        val hostId: String? = null,
     )
 
     private val _discovered = MutableStateFlow<DiscoveredWorkspaces?>(null)
@@ -101,27 +131,117 @@ class SettingsViewModel(
         }
         val tok = token?.ifBlank { null }
         viewModelScope.launch {
-            runCatching { api.listWorkspaces(base, tok) }
-                .onSuccess {
-                    _discovered.value = DiscoveredWorkspaces(base, tok, it)
-                    _testResult.value = "Found ${it.size} workspace(s)"
+            val result = runCatching { api.listWorkspaces(base, tok) }
+            if (result.isFailure) {
+                _discovered.value = null
+                if (!surfaceRePair(result.exceptionOrNull())) {
+                    _testResult.value = "Couldn't list workspaces: ${result.exceptionOrNull()?.message}"
                 }
-                .onFailure { _discovered.value = null; _testResult.value = "Couldn't list workspaces: ${it.message}" }
+                return@launch
+            }
+            val identity = runCatching { api.hostHealth(base).hostId }
+            if (surfaceRePair(identity.exceptionOrNull())) return@launch
+            val workspaces = result.getOrThrow()
+            _discovered.value = DiscoveredWorkspaces(base, tok, workspaces, identity.getOrNull())
+            _testResult.value = "Found ${workspaces.size} workspace(s)"
         }
     }
 
-    /** Persist a discovered workspace as a derived connection, using the host
-     *  base/token captured at discovery time. The host base URL doubles as the
-     *  host handle pre-#471 (opaque resolver seam: literal URL today, relay
-     *  identity later — see #471). */
+    // ---- relay account: the fleet, not an address (#471) --------------------
+
+    /** One host row for the Settings fleet list. */
+    data class HostRow(val hostId: String, val label: String, val state: HostLadderState)
+
+    val relayAccount: StateFlow<RelayAccount?> =
+        hosts.relayAccount.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val hostRows: StateFlow<List<HostRow>> = hosts.hosts
+        .map { list ->
+            val now = System.currentTimeMillis()
+            list.map { h ->
+                HostRow(h.hostId, h.displayLabel(), ladderForHost(h, now))
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Store a scanned `groundcontrol://add-relay?...` account and pull the fleet.
+     * Returns false on a malformed link so the caller can say "invalid code".
+     */
+    fun addRelayFromLink(raw: String): Boolean {
+        val account = PairLink.parseRelay(raw) ?: return false
+        viewModelScope.launch {
+            hosts.setRelayAccount(account)
+            refreshFleet()
+        }
+        return true
+    }
+
+    /** Re-read the directory, then each reachable host's workspaces. */
+    fun refreshFleetNow() { viewModelScope.launch { refreshFleet() } }
+
+    private suspend fun refreshFleet() {
+        val account = hosts.relayAccountSnapshot() ?: run {
+            _testResult.value = "No relay account paired yet"; return
+        }
+        val before = hosts.snapshot().map { it.hostId }.toSet()
+        val directory = runCatching { api.listHosts(account.relayDomain, account.fleetToken) }
+        val newHostIds = directory.fold(
+            onSuccess = { entries ->
+                val incoming = entries.mapNotNull { hostFrom(it, account.relayDomain) }
+                hosts.replaceFromRelay(account.relayDomain, incoming)
+                _testResult.value = "Fleet: ${entries.size} host(s)"
+                incoming.map { it.hostId }.filterNotTo(mutableSetOf()) { it in before }
+            },
+            onFailure = {
+                // Missing directory state is its own conservative ladder outcome;
+                // keep cached addresses and refresh credentials for direct reads.
+                hosts.markRelayUnreachable(account.relayDomain)
+                _testResult.value = "Couldn't reach the relay — showing last known hosts"
+                emptySet()
+            },
+        )
+        // A newly added host gets one verified adoption pass; ordinary refreshes
+        // only re-key discovered rows on their established identity tuple.
+        val legacyConnections = if (newHostIds.isEmpty()) emptyList() else repo.snapshot()
+        for (host in hosts.snapshot()) {
+            val refreshed = try {
+                refreshHostWorkspaceConnections(
+                    api,
+                    host,
+                    legacyConnections.takeIf { host.hostId in newHostIds }.orEmpty(),
+                )
+            } catch (_: RePairNeededException) {
+                _testResult.value = "Re-pair needed — scan the relay account again"
+                continue
+            } ?: continue
+            hosts.upsert(host.copy(lastContactAtMillis = System.currentTimeMillis()))
+            if (host.hostId in newHostIds) repo.adopt(refreshed.connections, refreshed.identities)
+            else repo.upsertAll(refreshed.connections)
+        }
+    }
+
+
+    /** Persist a selected direct-host workspace. When `/health` verified a real
+     * host id, the reachable LAN/tailnet address is attached to that host and
+     * will carry forward when the relay later supplies its refresh credential.
+     * A legacy host without identity keeps the pre-#471 URL handle and token. */
     fun addDiscovered(from: DiscoveredWorkspaces, info: WorkspaceInfo) {
         viewModelScope.launch {
+            val hostId = from.hostId ?: from.hostBase
+            if (from.hostId != null) {
+                hosts.setDirectUrl(hostId, from.hostBase, System.currentTimeMillis())
+            }
+            val storedHost = hosts.snapshot().firstOrNull { it.hostId == hostId }
             repo.upsert(
                 deriveConnection(
-                    hostBase = from.hostBase, hostToken = from.hostToken,
-                    hostId = from.hostBase, workspaceId = info.id,
-                    workspaceName = info.name, state = info.state,
-                )
+                    hostBase = from.hostBase,
+                    hostToken = from.hostToken.takeIf { storedHost?.refresh == null },
+                    hostId = hostId,
+                    workspaceId = info.id,
+                    workspaceName = info.name,
+                    state = info.state,
+                ),
             )
         }
     }

@@ -22,13 +22,21 @@ data class WorkspaceConnection(
     val hostId: String? = null,
     /** Last-known discovery state from the host registry (#472); null = unknown/manual. */
     val state: String? = null,
+    /** SERVER workspace id on [hostId]; null for manually paired rows. With
+     *  [hostId] it is the identity tuple everything re-keys on (#471). */
+    val workspaceId: String? = null,
+    /** Base URLs this row used to answer to. [baseUrl] is DERIVED from the host,
+     *  so adoption (and any host move) rewrites it — and every notification
+     *  PendingIntent already sitting in the shade carries the OLD one. Deep-link
+     *  resolution consults these so those taps keep landing. */
+    val legacyBaseUrls: List<String> = emptyList(),
 )
 
-/** Short URL-safe fingerprint of a host base URL. Connection ids are
- *  interpolated raw into nav routes, so host scoping can't embed the URL itself. */
-private fun hostFingerprint(hostBase: String): String =
+/** Short URL-safe fingerprint of a host handle. Connection ids are interpolated
+ *  raw into nav routes, so host scoping can't embed the handle itself. */
+private fun hostFingerprint(handle: String): String =
     MessageDigest.getInstance("SHA-256")
-        .digest(hostBase.trimEnd('/').toByteArray())
+        .digest(handle.trimEnd('/').toByteArray())
         .take(16)
         .joinToString("") { "%02x".format(it) }
 
@@ -48,13 +56,39 @@ fun deriveConnection(
     workspaceName: String,
     state: String,
 ): WorkspaceConnection = WorkspaceConnection(
-    id = workspaceId + "-" + hostFingerprint(hostBase),
-    baseUrl = hostBase.trimEnd('/') + "/workspaces/" + workspaceId,
+    // Scoped by the host HANDLE, not its URL: a host that moves subdomains (or
+    // onto a LAN address) is the same host, and a changed row id would orphan
+    // every nav route and notification already issued for it.
+    id = workspaceId + "-" + hostFingerprint(hostId),
+    baseUrl = workspaceBaseUrl(hostBase, workspaceId),
     token = hostToken,
     workspaceName = workspaceName,
     hostId = hostId,
     state = state,
+    workspaceId = workspaceId,
 )
+
+/**
+ * The one place a workspace's base URL is built (#471): it is DERIVED from
+ * (host base, workspace id), never stored as an independent address. It stays
+ * the single opaque prefix every `SpecApi` call site concatenates onto, so
+ * moving a host between the relay and a LAN URL touches no call site.
+ */
+fun workspaceBaseUrl(hostBase: String, workspaceId: String): String =
+    hostBase.trimEnd('/') + "/workspaces/" + workspaceId
+
+/** Derive a connection from a host and one of its discovered workspaces. No
+ *  token: relay-borne traffic is authorized by the short-lived bearer the
+ *  refresh interceptor mints from [HostConnection.refresh] (AC9). */
+fun deriveConnection(host: HostConnection, info: com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo): WorkspaceConnection =
+    deriveConnection(
+        hostBase = host.hostBase(),
+        hostToken = null,
+        hostId = host.hostId,
+        workspaceId = info.id,
+        workspaceName = info.name,
+        state = info.state,
+    )
 
 /** Pure (de)serialization of the connection list stored in DataStore. */
 object ConnectionsCodec {
@@ -68,23 +102,132 @@ object ConnectionsCodec {
         else runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
 }
 
+/** The identity tuple (#471): the same workspace on the same host, whatever URL
+ *  it currently answers on. Only meaningful when both halves are known. */
+private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boolean =
+    a.hostId != null && a.hostId == b.hostId && a.workspaceId != null && a.workspaceId == b.workspaceId
+
 /**
- * Pure upsert: replace any existing entry matching [conn] by [id] or [baseUrl], else append.
- * Re-pairing carries forward a prior entry's colorOverride/glyphOverride when [conn] omits them,
- * so re-pairing a workspace never silently resets a customized identity (ac5). An explicit
- * override on [conn] still wins.
+ * Pure upsert, keyed on the (hostId, workspaceId) identity tuple — a host that
+ * re-registers on a new subdomain rewrites the derived [WorkspaceConnection.baseUrl],
+ * so the URL can no longer be a key. The id/baseUrl match is retained as a
+ * fallback for manually paired rows, which have no tuple.
+ *
+ * Re-discovery carries forward a prior entry's colorOverride/glyphOverride when
+ * [conn] omits them, so it never silently resets a customized identity (ac5); an
+ * explicit override on [conn] still wins. Previously-used base URLs are
+ * accumulated so already-issued notification intents keep resolving.
  */
 fun upsertConnection(
     existing: List<WorkspaceConnection>,
     conn: WorkspaceConnection,
 ): List<WorkspaceConnection> {
-    val prior = existing.firstOrNull { it.id == conn.id || it.baseUrl == conn.baseUrl }
+    val matches: (WorkspaceConnection) -> Boolean = { prior ->
+        sameWorkspace(prior, conn) || prior.id == conn.id || prior.baseUrl == conn.baseUrl
+    }
+    val prior = existing.firstOrNull(matches)
     val merged = conn.copy(
+        // On an IDENTITY match the row id is the phone's local handle (nav
+        // routes, notification ids) and survives — otherwise the next directory
+        // read would re-mint it and undo an adoption. A legacy URL/id match is a
+        // manual re-pair, where the incoming id is the operator's new one.
+        id = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id,
         colorOverride = conn.colorOverride ?: prior?.colorOverride,
         glyphOverride = conn.glyphOverride ?: prior?.glyphOverride,
+        legacyBaseUrls = carryLegacyUrls(prior, conn),
     )
-    return existing.filterNot { it.id == conn.id || it.baseUrl == conn.baseUrl } + merged
+    return existing.filterNot(matches) + merged
 }
+
+/** Every base URL this row has answered on before its current one. */
+private fun carryLegacyUrls(prior: WorkspaceConnection?, conn: WorkspaceConnection): List<String> {
+    if (prior == null) return conn.legacyBaseUrls
+    return (conn.legacyBaseUrls + prior.legacyBaseUrls + prior.baseUrl)
+        .filter { it != conn.baseUrl }
+        .distinct()
+}
+
+/** The identity a manual row's OWN host reported for it: `GET /health`'s
+ *  `host_id` and the workspace id from that host's `GET /workspaces`. Either
+ *  half null means "unverified" — which merges with nothing. */
+data class VerifiedIdentity(
+    val connectionId: String,
+    val hostId: String?,
+    val workspaceId: String?,
+)
+
+/** Verify the identity of a persisted pre-host-model row through its host root.
+ * A #472-derived legacy row already knows its workspace id even though its
+ * `hostId` is still a URL; that id selects the right workspace when the host
+ * serves several. A truly old row with no id remains adoptable only when the
+ * verified host exposes exactly one workspace. */
+suspend fun verifyLegacyIdentity(
+    api: SpecApi,
+    connection: WorkspaceConnection,
+): VerifiedIdentity? {
+    val base = connection.baseUrl.trimEnd('/')
+    val knownWorkspaceId = connection.workspaceId
+    val workspaceSuffix = knownWorkspaceId?.let { "/workspaces/$it" }
+    val hostRoot = when {
+        workspaceSuffix != null && base.endsWith(workspaceSuffix) -> base.removeSuffix(workspaceSuffix)
+        connection.hostId?.startsWith("http://") == true ||
+            connection.hostId?.startsWith("https://") == true -> connection.hostId.trimEnd('/')
+        else -> base
+    }
+    val hostId = api.hostHealth(hostRoot).hostId ?: return null
+    val workspaces = api.listWorkspaces(hostRoot, connection.token)
+    val workspaceId = if (knownWorkspaceId != null) {
+        knownWorkspaceId.takeIf { id -> workspaces.any { it.id == id } }
+    } else {
+        workspaces.singleOrNull()?.id
+    } ?: return null
+    return VerifiedIdentity(connection.id, hostId, workspaceId)
+}
+
+/**
+ * Fold host-discovered connections into the stored list, merging a manually
+ * paired row into its discovered twin ONLY on a verified (host_id, workspace_id)
+ * tuple (#471).
+ *
+ * Pure over already-fetched identity: the probing is the caller's, so the merge
+ * rule itself is decidable in a test. Names are deliberately not consulted —
+ * by #472's premise the same name can name different workspaces on different
+ * hosts, so a name match yields two rows, which is the honest answer.
+ *
+ * A merged row keeps the operator's [WorkspaceConnection.id] (nav routes and
+ * notification ids already reference it) and identity overrides, gains the host
+ * tuple and state, and retains its pre-adoption URL in
+ * [WorkspaceConnection.legacyBaseUrls].
+ */
+fun adoptManualConnections(
+    existing: List<WorkspaceConnection>,
+    discovered: List<WorkspaceConnection>,
+    identities: List<VerifiedIdentity>,
+): List<WorkspaceConnection> {
+    val verified = identities.filter { it.hostId != null && it.workspaceId != null }
+        .associateBy { it.connectionId }
+    return discovered.fold(existing) { acc, found ->
+        val manual = acc.firstOrNull { row ->
+            !sameWorkspace(row, found) && verified[row.id]
+                ?.let { it.hostId == found.hostId && it.workspaceId == found.workspaceId } == true
+        }
+        if (manual == null) upsertConnection(acc, found)
+        else acc.map { if (it.id == manual.id) adopt(manual, found) else it }
+    }
+}
+
+/** The merge itself. The manual row's standing token is dropped: it is rejected
+ *  for relay-borne requests, and an Authorization header on the row would
+ *  suppress the short-lived bearer the refresh interceptor mints. */
+private fun adopt(manual: WorkspaceConnection, found: WorkspaceConnection): WorkspaceConnection =
+    found.copy(
+        id = manual.id,
+        token = null,
+        workspaceName = found.workspaceName.ifBlank { manual.workspaceName },
+        colorOverride = manual.colorOverride ?: found.colorOverride,
+        glyphOverride = manual.glyphOverride ?: found.glyphOverride,
+        legacyBaseUrls = carryLegacyUrls(manual, found),
+    )
 
 /** Pure override editor: replace the identity override on the entry with [id] (null clears it,
  *  resetting that field to the auto-derived value). Used by the Projects tab edit affordance. */

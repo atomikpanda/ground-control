@@ -23,6 +23,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import com.atomikpanda.groundcontrol.data.ladderLabel
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -56,6 +57,8 @@ fun ProjectsScreen(
                 ListItem(
                     leadingContent = { WorkspaceBadge(row.identity, size = 32.dp) },
                     headlineContent = { Text(row.name, style = MaterialTheme.typography.titleMedium) },
+                    // The ladder's verdict (#471), rendered wherever a workspace is listed.
+                    supportingContent = row.state?.let { { Text(ladderLabel(it)) } },
                     trailingContent = {
                         IconButton(onClick = { editing = row }) {
                             Icon(Icons.Filled.Edit, contentDescription = "Edit ${row.name} identity")

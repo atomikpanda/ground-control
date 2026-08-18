@@ -30,6 +30,15 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="groundcontrol" android:host="add" />
             </intent-filter>
+            <!-- Deep link: groundcontrol://add-relay?... pairs a RELAY ACCOUNT (#471) —
+                 the relay domain plus a per-device fleet token, never a VM address.
+                 Its own filter beside the per-workspace one: both paths stay live. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="groundcontrol" android:host="add-relay" />
+            </intent-filter>
             <!-- Deep link: a notification tap groundcontrol://thread?... opens a conversation. -->
             <intent-filter android:autoVerify="false">
                 <action android:name="android.intent.action.VIEW" />

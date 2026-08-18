@@ -5,8 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.QueueRepository
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.applyHostLadder
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -62,6 +64,7 @@ class QueueViewModel(
     private val repo: QueueRepository,
     private val connectionsProvider: () -> List<WorkspaceConnection>,
     private val testScope: CoroutineScope? = null,
+    private val hostsProvider: () -> List<HostConnection> = { emptyList() },
 ) : ViewModel() {
     private val _state = MutableStateFlow<QueueUiState>(QueueUiState.Loading)
     val state: StateFlow<QueueUiState> = _state.asStateFlow()
@@ -97,21 +100,23 @@ class QueueViewModel(
         val connections = connectionsProvider()
         if (connections.isEmpty()) { _state.value = QueueUiState.EmptyConfig; return null }
         connById = connections.associateBy { it.id }
+        val hosts = hostsProvider()
         val prev = content()
         if (prev == null) _state.value = QueueUiState.Loading
         return scope().launch {
             val feed = repo.load(connections)
+            val errors = applyHostLadder(feed.errors, connections, hosts, System.currentTimeMillis())
             val fresh = feed.cards.filterNot { it.key in resolvedKeys }
             if (prev == null) {
                 _state.value = QueueUiState.Content(
                     cards = fresh, resolved = 0,
-                    errors = feed.errors, undo = null, inFlight = false,
+                    errors = errors, undo = null, inFlight = false,
                 )
             } else {
                 // live refresh: keep the current head stable, merge the rest by urgency
                 val head = prev.current
                 val merged = mergeKeepingHead(head, fresh)
-                _state.value = prev.copy(cards = merged, errors = feed.errors)
+                _state.value = prev.copy(cards = merged, errors = errors)
             }
         }
     }

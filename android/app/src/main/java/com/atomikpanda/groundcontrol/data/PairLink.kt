@@ -4,7 +4,30 @@ import java.net.URI
 import java.net.URLDecoder
 import java.util.UUID
 
+/**
+ * What the phone holds for a whole fleet (#471): a relay domain and a per-device
+ * fleet token — never a VM address. `GET enroll.<relayDomain>/hosts` enumerates
+ * the hosts; each entry carries the refresh credential for that host.
+ */
+data class RelayAccount(val relayDomain: String, val fleetToken: String)
+
 object PairLink {
+    /**
+     * Parse a `groundcontrol://add-relay?relay=&token=` deep link into a
+     * [RelayAccount], or null if the scheme/host is wrong or either param is
+     * missing. Deliberately a SEPARATE link from [parse]: a workspace pairing
+     * link addresses one `mship serve`, this one addresses a fleet, and reading
+     * either as the other would store a relay domain as a base URL.
+     */
+    fun parseRelay(raw: String): RelayAccount? {
+        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
+        if (uri.scheme != "groundcontrol" || uri.host != "add-relay") return null
+        val params = parseQuery(uri.rawQuery ?: return null)
+        val relay = params["relay"]?.takeIf { it.isNotBlank() } ?: return null
+        val token = params["token"]?.takeIf { it.isNotBlank() } ?: return null
+        return RelayAccount(relay, token)
+    }
+
     /**
      * Parse a groundcontrol://add?url=&token=&workspace= deep link into a
      * [WorkspaceConnection], or null if the scheme/host is wrong or `url` is missing.
