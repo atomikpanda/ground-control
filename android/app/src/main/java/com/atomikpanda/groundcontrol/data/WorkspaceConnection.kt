@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.data
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import java.security.MessageDigest
 
 @Serializable
 data class WorkspaceConnection(
@@ -14,6 +15,45 @@ data class WorkspaceConnection(
     val colorOverride: String? = null,
     /** Operator override for the identity badge glyph; null = auto (name's first letter). */
     val glyphOverride: String? = null,
+    /** Host this connection was discovered on (#472); null for manually paired
+     *  connections and for JSON persisted before this field existed — declared
+     *  with a default so old stored lists still deserialize (missing keys are
+     *  NOT covered by ignoreUnknownKeys, only defaults cover them). */
+    val hostId: String? = null,
+    /** Last-known discovery state from the host registry (#472); null = unknown/manual. */
+    val state: String? = null,
+)
+
+/** Short URL-safe fingerprint of a host base URL. Connection ids are
+ *  interpolated raw into nav routes, so host scoping can't embed the URL itself. */
+private fun hostFingerprint(hostBase: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(hostBase.trimEnd('/').toByteArray())
+        .take(16)
+        .joinToString("") { "%02x".format(it) }
+
+/**
+ * Derive a connection from a host's discovered workspace (#472): the connection
+ * id is the SERVER workspace id scoped by a host fingerprint — deterministic, so
+ * re-discovery matches in [upsertConnection] and identity overrides carry
+ * forward, and host-scoped because the same logical workspace may exist on
+ * several hosts. The baseUrl is the workspace-addressed prefix — opaque to
+ * everything downstream.
+ */
+fun deriveConnection(
+    hostBase: String,
+    hostToken: String?,
+    hostId: String,
+    workspaceId: String,
+    workspaceName: String,
+    state: String,
+): WorkspaceConnection = WorkspaceConnection(
+    id = workspaceId + "-" + hostFingerprint(hostBase),
+    baseUrl = hostBase.trimEnd('/') + "/workspaces/" + workspaceId,
+    token = hostToken,
+    workspaceName = workspaceName,
+    hostId = hostId,
+    state = state,
 )
 
 /** Pure (de)serialization of the connection list stored in DataStore. */
@@ -61,5 +101,8 @@ fun normalizedBaseUrl(input: String): String? {
     val t = input.trim().trimEnd('/')
     if (!t.startsWith("http://") && !t.startsWith("https://")) return null
     if (t.substringAfter("://").isBlank()) return null
+    // Endpoints are appended as path segments; a query/fragment would swallow
+    // them ("...?q=1/workspaces" puts the path inside the query string).
+    if (t.contains('?') || t.contains('#')) return null
     return t
 }

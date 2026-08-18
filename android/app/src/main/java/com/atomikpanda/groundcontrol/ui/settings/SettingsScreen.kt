@@ -41,6 +41,7 @@ fun SettingsScreen(vm: SettingsViewModel) {
     val context = LocalContext.current
     val connections by vm.connections.collectAsStateWithLifecycle()
     val testResult by vm.testResult.collectAsStateWithLifecycle()
+    val discovered by vm.discovered.collectAsStateWithLifecycle()
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
 
@@ -73,6 +74,30 @@ fun SettingsScreen(vm: SettingsViewModel) {
         OutlinedTextField(url, { url = it }, label = { Text("mship serve URL") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(token, { token = it }, label = { Text("Bearer token (optional)") }, modifier = Modifier.fillMaxWidth())
         Button(onClick = { vm.addOrUpdate(null, url, token); url = ""; token = "" }) { Text("Add / test") }
+        // Host discovery (#472): one host URL + host token lists every workspace
+        // its daemon discovered; picking one derives a per-workspace connection.
+        Button(onClick = { vm.discoverOnHost(url, token) }) { Text("Discover workspaces on host") }
+        discovered?.let { found ->
+            // Own scrollable, non-greedy region: many discovered workspaces
+            // must neither starve the saved-connections list below nor become
+            // unreachable themselves.
+            LazyColumn(Modifier.weight(1f, fill = false)) {
+                items(found.workspaces, key = { it.id }) { info ->
+                    ListItem(
+                        headlineContent = { Text(info.name) },
+                        supportingContent = {
+                            Text(if (info.state == "healthy") info.path else "${info.state}: ${info.detail}")
+                        },
+                        trailingContent = {
+                            TextButton(
+                                enabled = info.state == "healthy",
+                                onClick = { vm.addDiscovered(found, info) },
+                            ) { Text("Add") }
+                        },
+                    )
+                }
+            }
+        }
         Button(
             onClick = {
                 scanLauncher.launch(

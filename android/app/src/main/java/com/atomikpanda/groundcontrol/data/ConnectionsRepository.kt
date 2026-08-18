@@ -18,15 +18,19 @@ class ConnectionsRepository(private val context: Context) {
     suspend fun snapshot(): List<WorkspaceConnection> =
         ConnectionsCodec.decode(context.dataStore.data.first()[CONNECTIONS] ?: "")
 
-    suspend fun save(list: List<WorkspaceConnection>) {
-        context.dataStore.edit { it[CONNECTIONS] = ConnectionsCodec.encode(list) }
+    /** All writes are read-modify-write inside ONE edit transform — DataStore
+     *  serializes transforms, so concurrent mutations (e.g. two quick "Add"
+     *  taps) can't snapshot the same list and lose each other's write. */
+    private suspend fun mutate(transform: (List<WorkspaceConnection>) -> List<WorkspaceConnection>) {
+        context.dataStore.edit {
+            it[CONNECTIONS] = ConnectionsCodec.encode(transform(ConnectionsCodec.decode(it[CONNECTIONS] ?: "")))
+        }
     }
 
-    suspend fun upsert(conn: WorkspaceConnection) =
-        save(upsertConnection(snapshot(), conn))
+    suspend fun upsert(conn: WorkspaceConnection) = mutate { upsertConnection(it, conn) }
 
-    suspend fun remove(id: String) = save(snapshot().filterNot { it.id == id })
+    suspend fun remove(id: String) = mutate { list -> list.filterNot { it.id == id } }
 
     suspend fun setIdentity(id: String, colorOverride: String?, glyphOverride: String?) =
-        save(applyIdentityOverride(snapshot(), id, colorOverride, glyphOverride))
+        mutate { applyIdentityOverride(it, id, colorOverride, glyphOverride) }
 }
