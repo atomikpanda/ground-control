@@ -302,6 +302,10 @@ class SettingsViewModel(
                 continue
             } catch (_: AuthException) {
                 continue
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                continue
             } ?: continue
             if (!hosts.applyHostWorkspaceRefresh(
                     expectedAccount = account,
