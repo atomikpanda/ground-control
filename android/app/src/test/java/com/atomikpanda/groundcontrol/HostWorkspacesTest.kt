@@ -559,6 +559,16 @@ class HostWorkspacesTest {
         assertEquals(20L, stored.single().lastContactAtMillis)
     }
 
+    @Test fun out_of_order_contact_persistence_cannot_move_freshness_backwards() {
+        val stored = listOf(host.copy(lastContactAtMillis = 20))
+
+        val afterOlderWrite = recordHostContact(stored, host.hostBase(), 10)
+        val afterNewerWrite = recordHostContact(afterOlderWrite, host.hostBase(), 30)
+
+        assertEquals(20L, afterOlderWrite.single().lastContactAtMillis)
+        assertEquals(30L, afterNewerWrite.single().lastContactAtMillis)
+    }
+
     @Test fun contact_persistence_failure_does_not_fail_a_successful_api_call() = runTest {
         val fx = HostFixture()
         val client = hostAwareClient(

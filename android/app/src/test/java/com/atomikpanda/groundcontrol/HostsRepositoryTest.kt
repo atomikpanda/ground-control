@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
 import com.atomikpanda.groundcontrol.data.replaceRelayHosts
+import com.atomikpanda.groundcontrol.data.replaceRelayDirectoryFleet
 import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
 import com.atomikpanda.groundcontrol.data.upsertHost
 import org.junit.Assert.assertEquals
@@ -116,6 +117,55 @@ class HostsRepositoryTest {
 
         assertEquals(listOf("h-2"), replaced.hosts.map { it.hostId })
         assertEquals(listOf("other", "manual"), replaced.connections.map { it.id })
+    }
+
+    @Test fun replacing_a_same_domain_relay_token_clears_the_previous_fleet() {
+        val oldWorkspace = WorkspaceConnection(
+            id = "old",
+            baseUrl = "https://old/workspaces/ws",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+        val manualWorkspace = WorkspaceConnection(id = "manual", baseUrl = "http://lan")
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("relay.example.com", "new-token"),
+            hosts = listOf(host),
+            connections = listOf(oldWorkspace, manualWorkspace),
+        )
+
+        assertEquals(emptyList<HostConnection>(), replaced.hosts)
+        assertEquals(listOf("manual"), replaced.connections.map { it.id })
+    }
+
+    @Test fun authoritative_directory_removal_also_removes_the_hosts_workspaces() {
+        val removedHost = host.copy(hostId = "h-removed")
+        val otherHost = host.copy(hostId = "h-other", relayDomain = "other.example.com")
+        val retainedWorkspace = WorkspaceConnection(
+            id = "retained",
+            baseUrl = "https://retained/workspaces/ws",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+        val removedWorkspace = retainedWorkspace.copy(id = "removed", hostId = removedHost.hostId)
+        val otherWorkspace = retainedWorkspace.copy(id = "other", hostId = otherHost.hostId)
+        val manualWorkspace = WorkspaceConnection(id = "manual", baseUrl = "http://lan")
+
+        val replaced = replaceRelayDirectoryFleet(
+            relayDomain = "relay.example.com",
+            existingHosts = listOf(host, removedHost, otherHost),
+            replacementHosts = listOf(host),
+            connections = listOf(
+                retainedWorkspace,
+                removedWorkspace,
+                otherWorkspace,
+                manualWorkspace,
+            ),
+        )
+
+        assertEquals(listOf("h-other", "h-1"), replaced.hosts.map { it.hostId })
+        assertEquals(listOf("retained", "other", "manual"), replaced.connections.map { it.id })
     }
 
     @Test fun old_persisted_state_without_the_hosts_key_decodes_to_empty() {

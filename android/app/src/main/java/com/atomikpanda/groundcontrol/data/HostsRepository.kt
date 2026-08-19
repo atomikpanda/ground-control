@@ -25,7 +25,7 @@ internal fun replaceRelayAccountFleet(
     hosts: List<HostConnection>,
     connections: List<WorkspaceConnection>,
 ): RelayAccountFleet {
-    if (previous == null || previous.relayDomain == replacement.relayDomain) {
+    if (previous == null || previous == replacement) {
         return RelayAccountFleet(hosts, connections)
     }
     val removedHostIds = hosts
@@ -33,6 +33,23 @@ internal fun replaceRelayAccountFleet(
         .mapTo(mutableSetOf()) { it.hostId }
     return RelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain },
+        connections = connections.filterNot { it.hostId in removedHostIds },
+    )
+}
+
+
+internal fun replaceRelayDirectoryFleet(
+    relayDomain: String,
+    existingHosts: List<HostConnection>,
+    replacementHosts: List<HostConnection>,
+    connections: List<WorkspaceConnection>,
+): RelayAccountFleet {
+    val replacementIds = replacementHosts.mapTo(mutableSetOf()) { it.hostId }
+    val removedHostIds = existingHosts
+        .filter { it.relayDomain == relayDomain && it.hostId !in replacementIds }
+        .mapTo(mutableSetOf()) { it.hostId }
+    return RelayAccountFleet(
+        hosts = replaceRelayHosts(existingHosts, relayDomain, replacementHosts),
         connections = connections.filterNot { it.hostId in removedHostIds },
     )
 }
@@ -86,8 +103,18 @@ class HostsRepository(private val context: Context) {
     suspend fun upsertAll(hosts: List<HostConnection>) =
         mutate { current -> hosts.fold(current) { acc, h -> upsertHost(acc, h) } }
 
-    suspend fun replaceFromRelay(relayDomain: String, hosts: List<HostConnection>) =
-        mutate { current -> replaceRelayHosts(current, relayDomain, hosts) }
+    suspend fun replaceFromRelay(relayDomain: String, hosts: List<HostConnection>) {
+        context.dataStore.edit {
+            val fleet = replaceRelayDirectoryFleet(
+                relayDomain = relayDomain,
+                existingHosts = HostsCodec.decode(it[HOSTS] ?: ""),
+                replacementHosts = hosts,
+                connections = ConnectionsCodec.decode(it[CONNECTIONS] ?: ""),
+            )
+            it[HOSTS] = HostsCodec.encode(fleet.hosts)
+            it[CONNECTIONS] = ConnectionsCodec.encode(fleet.connections)
+        }
+    }
 
     suspend fun markRelayUnreachable(relayDomain: String) =
         mutate { current -> markRelayUnreachable(current, relayDomain) }

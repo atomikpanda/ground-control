@@ -127,8 +127,13 @@ fun recordHostContact(
     hostBase: String,
     contactedAtMillis: Long,
 ): List<HostConnection> = hosts.map { host ->
-    if (hostBase in host.hostBases()) host.copy(lastContactAtMillis = contactedAtMillis)
-    else host
+    if (hostBase in host.hostBases()) {
+        host.copy(
+            lastContactAtMillis = contactedAtMillis.coerceAtLeast(
+                host.lastContactAtMillis ?: contactedAtMillis,
+            ),
+        )
+    } else host
 }
 
 /** What the operator sees: their own name for the host, else the host's. */
