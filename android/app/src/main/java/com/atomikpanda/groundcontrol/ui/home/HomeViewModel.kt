@@ -4,11 +4,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.HomeFeed
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.applyHostLadder
+import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
+import com.atomikpanda.groundcontrol.data.dedupeHostErrors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -32,6 +39,8 @@ class HomeViewModel(
     private val repo: HomeFeedRepository,
     private val connectionsProvider: () -> List<WorkspaceConnection>,
     private val testScope: CoroutineScope? = null,
+    private val hosts: Flow<List<HostConnection>>? = null,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val _state = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
@@ -39,14 +48,29 @@ class HomeViewModel(
     private var feed: HomeFeed = HomeFeed(emptyList(), emptyList(), emptyList())
     private var selected: String? = null
     private var lastConnections: List<WorkspaceConnection> = emptyList()
+    private var lastHosts: List<HostConnection> = emptyList()
+
+    init {
+        hosts?.let { source ->
+            (testScope ?: viewModelScope).launch {
+                source.emitAtStaleDeadlines(nowMillis).collect { current ->
+                    lastHosts = current
+                    if (_state.value is HomeUiState.Content) render(lastConnections)
+                }
+            }
+        }
+    }
 
     fun refresh(): Job? {
         val connections = connectionsProvider()
         if (connections.isEmpty()) { _state.value = HomeUiState.EmptyConfig; return null }
         _state.value = HomeUiState.Loading
-        lastConnections = connections
         return (testScope ?: viewModelScope).launch {
-            feed = repo.load(connections)
+            val loaded = repo.load(connections)
+            val currentHosts = hosts?.first() ?: emptyList()
+            feed = loaded
+            lastConnections = connections
+            lastHosts = currentHosts
             render(connections)
         }
     }
@@ -74,6 +98,14 @@ class HomeViewModel(
         }
         val visible = if (selected == null) feed.items else feed.items.filter { it.connectionId == selected }
         val visibleNotes = if (selected == null) feed.notes else feed.notes.filter { it.connectionId == selected }
-        _state.value = HomeUiState.Content(chips, selected, visible, visibleNotes, feed.errors)
+        // One dead host is one row, and its wording comes from the same ladder
+        // Projects, Queue and Settings render (#471).
+        val errors = applyHostLadder(
+            feed.errors,
+            connections,
+            lastHosts,
+            nowMillis(),
+        )
+        _state.value = HomeUiState.Content(chips, selected, visible, visibleNotes, dedupeHostErrors(errors))
     }
 }

@@ -45,6 +45,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
+import com.atomikpanda.groundcontrol.data.workspaceErrorLabel
+import com.atomikpanda.groundcontrol.data.WorkspaceErrorAction
 import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateChipRow
@@ -66,6 +68,7 @@ fun HomeScreen(
     onCapture: () -> Unit,
     onOpenThreads: () -> Unit,
     onReviewInQueue: () -> Unit,
+    onRePair: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val messagesState by messagesVm.state.collectAsStateWithLifecycle()
@@ -137,8 +140,8 @@ fun HomeScreen(
                 items(s.errors, key = { "err:${it.connectionId}" }) { err ->
                     val colors = LocalSemanticColors.current
                     AssistChip(
-                        onClick = {},
-                        label = { Text("${err.workspaceName} unreachable", color = colors.error) },
+                        onClick = if (err.action == WorkspaceErrorAction.RE_PAIR) onRePair else ({}),
+                        label = { Text(workspaceErrorLabel(err), color = colors.error) },
                         modifier = Modifier.padding(12.dp, 4.dp),
                     )
                 }

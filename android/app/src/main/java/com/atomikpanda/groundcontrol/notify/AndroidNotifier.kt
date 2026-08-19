@@ -11,7 +11,6 @@ import androidx.core.app.Person
 import androidx.core.app.RemoteInput
 import androidx.core.content.LocusIdCompat
 import com.atomikpanda.groundcontrol.MainActivity
-import java.net.URLEncoder
 
 /**
  * Renders a needs-you notification as a `NotificationCompat.MessagingStyle` conversation: a "me"
@@ -36,9 +35,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         val me = Person.Builder().setName("You").setKey(KEY_ME).build()
         val agent = Person.Builder().setName(agentName).setKey(event.connectionId).build()
 
-        // Deep-link tap intent (unchanged): opens the thread in-app.
-        val link = "groundcontrol://thread?workspace=" +
-            URLEncoder.encode(event.baseUrl, "UTF-8") + "&id=" + event.threadId
+        val link = notificationThreadUri(event.connectionId, event.baseUrl, event.threadId)
         val contentIntent = PendingIntent.getActivity(
             context, link.hashCode(),
             Intent(context, MainActivity::class.java).apply {

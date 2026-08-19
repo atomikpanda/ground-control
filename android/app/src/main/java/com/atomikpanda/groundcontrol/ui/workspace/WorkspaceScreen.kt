@@ -38,6 +38,7 @@ fun WorkspaceScreen(
     onTask: (slug: String) -> Unit,
     onNewConversation: () -> Unit,
     onBack: () -> Unit,
+    onRePair: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refresh() }
@@ -68,8 +69,13 @@ fun WorkspaceScreen(
                 if (s.errored) {
                     item {
                         AssistChip(
-                            onClick = {},
-                            label = { Text("Couldn't load everything — pull to refresh.") },
+                            onClick = if (s.rePairNeeded) onRePair else ({}),
+                            label = {
+                                Text(
+                                    if (s.rePairNeeded) "Re-pair needed — open Settings"
+                                    else "Couldn't load everything — pull to refresh.",
+                                )
+                            },
                             modifier = Modifier.padding(12.dp, 4.dp),
                         )
                     }

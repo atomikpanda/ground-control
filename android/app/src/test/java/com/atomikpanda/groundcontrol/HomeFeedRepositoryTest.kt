@@ -1,8 +1,11 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.WorkspaceErrorAction
+import com.atomikpanda.groundcontrol.data.hostAwareClient
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.home.NeedsYouItem
 import io.ktor.client.HttpClient
@@ -91,5 +94,49 @@ class HomeFeedRepositoryTest {
         val feed = HomeFeedRepository(noteApi).load(listOf(conn))
         assertEquals(1, feed.notes.size)
         assertEquals("t1", feed.notes[0].threadId)
+    }
+
+    @Test fun rejected_refresh_is_surfaced_as_a_re_pair_action() = runTest {
+        val host = HostConnection(
+            hostId = "h-1",
+            publicUrl = "https://host.example.com",
+            refresh = "rejected",
+            state = "online",
+        )
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                if (req.url.encodedPath == "/host/token") {
+                    respond("""{"detail":"invalid refresh"}""", HttpStatusCode.Unauthorized, jsonHdr)
+                } else {
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+            },
+            hosts = { listOf(host) },
+        )
+        val connection = WorkspaceConnection(
+            id = "c1",
+            baseUrl = "https://host.example.com/workspaces/ws-1",
+            workspaceName = "ws",
+            hostId = "h-1",
+            workspaceId = "ws-1",
+        )
+
+        val feed = HomeFeedRepository(SpecApi(client.client)).load(listOf(connection))
+
+        assertEquals(WorkspaceErrorAction.RE_PAIR, feed.errors.single().action)
+    }
+
+    @Test fun a_legacy_url_host_id_does_not_claim_a_fleet_host_error() = runTest {
+        val legacy = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "http://bad:47100/workspaces/ws-1",
+            workspaceName = "legacy",
+            hostId = "http://bad:47100",
+            workspaceId = "ws-1",
+        )
+
+        val error = HomeFeedRepository(api()).load(listOf(legacy)).errors.single()
+
+        assertEquals(null, error.hostId)
     }
 }

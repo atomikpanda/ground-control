@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.notify.DeepLinkOutcome
 import com.atomikpanda.groundcontrol.notify.DeepLinkResolver
+import com.atomikpanda.groundcontrol.notify.notificationThreadUri
 import java.net.URLEncoder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -64,6 +65,51 @@ class DeepLinkResolverTest {
         assertTrue(DeepLinkResolver.resolve(uri("item", "http://nope:1", "wi-x"), conns) is DeepLinkOutcome.AddConnection)
         assertTrue(DeepLinkResolver.resolve(uri("spec", "http://nope:1", "s1"), conns) is DeepLinkOutcome.AddConnection)
         assertTrue(DeepLinkResolver.resolve(uri("task", "http://nope:1", "k1"), conns) is DeepLinkOutcome.AddConnection)
+    }
+
+    @Test fun a_pre_migration_notification_link_resolves_after_adoption() {
+        // Adoption rewrites baseUrl to the host-derived one, and the resolver matches
+        // on normalizedBaseUrl(baseUrl) — so PendingIntents already sitting in the
+        // notification shade (built with the old LAN URL) resolve only if the old URL
+        // is still carried. Keeping the row `id` alone does not save them.
+        val adopted = listOf(
+            WorkspaceConnection(
+                id = "c1",
+                baseUrl = "https://h-1.relay.example.com/workspaces/ws-1",
+                workspaceName = "Work",
+                hostId = "h-1",
+                workspaceId = "ws-1",
+                legacyBaseUrls = listOf("http://host:47100"),
+            ),
+        )
+        assertEquals(
+            DeepLinkOutcome.OpenThread("c1", "t1"),
+            DeepLinkResolver.resolve(uri("http://host:47100", "t1"), adopted),
+        )
+        // ...and the new URL keeps resolving, trailing slash and all.
+        assertEquals(
+            DeepLinkOutcome.OpenThread("c1", "t2"),
+            DeepLinkResolver.resolve(uri("https://h-1.relay.example.com/workspaces/ws-1/", "t2"), adopted),
+        )
+    }
+
+    @Test fun notification_connection_id_disambiguates_shared_host_routes() {
+        val shared = "https://shared.example/workspaces/ws-1"
+        val first = WorkspaceConnection("c1", shared, hostId = "host-a", workspaceId = "ws-1")
+        val second = WorkspaceConnection("c two", shared, hostId = "host-b", workspaceId = "ws-1")
+        val link = notificationThreadUri(second.id, second.baseUrl, "thread-1")
+
+        assertEquals(
+            DeepLinkOutcome.OpenThread(second.id, "thread-1"),
+            DeepLinkResolver.resolve(link, listOf(first, second)),
+        )
+        assertTrue("connection=c+two" in link)
+        assertTrue(
+            DeepLinkResolver.resolve(
+                link.replace("connection=c+two", "connection=missing"),
+                listOf(first, second),
+            ) is DeepLinkOutcome.AddConnection,
+        )
     }
 
     @Test fun entity_hosts_missing_or_blank_id_is_ignored() {

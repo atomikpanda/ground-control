@@ -23,50 +23,33 @@ fun evidenceLabels(evidence: List<Evidence>): List<String> =
 private val IMAGE_EXTS = setOf("png", "jpg", "jpeg", "webp")
 private const val ENC_SUFFIX = ".enc"
 
-/** Blob path for an image artifact, or null for everything else (non-image artifacts, and
- *  `test`/`commit` refs, which keep the existing text label from [evidenceLabels]).
- *
- *  An encrypted ref (`…enc`) still yields a path: serve's blob route decrypts it transparently
- *  when the host holds the key, returning real image bytes with the right content-type — it 409s
- *  "locked" otherwise. So the phone always tries; it can't know up front whether this host can
- *  unlock it, and that 409 is a fetch failure for the caller (Task 14) to handle, not something
- *  this helper pre-filters.
- *
- *  A ref is a bare content-hash filename (`store_artifact` in evidence_store.py), never a path, so
- *  it has no separators to escape — always safe to interpolate directly into the URL. */
-fun imageBlobPathOrNull(e: Evidence, specId: String): String? {
+/** Stored ref for an image artifact, or null for everything else. Encrypted image refs remain
+ * eligible: the blob route decrypts them or reports that the workspace has no key. */
+fun imageArtifactRefOrNull(e: Evidence): String? {
     if (e.kind != "artifact") return null
     val logical = e.ref.removeSuffix(ENC_SUFFIX)
-    // Case-sensitive: `evidence_store.py`'s `_REF_RE` (the server's `is_stored_ref`
-    // shape check) requires a lowercase extension, so a ref like `….PNG` will never
-    // resolve at the blob route. Matching that case-sensitivity here means the phone
-    // never optimistically tries a fetch the server is guaranteed to 404.
+    // The server's stored-ref shape requires a lowercase extension.
     val ext = logical.substringAfterLast('.', "")
-    if (ext !in IMAGE_EXTS) return null
-    return "/specs/$specId/evidence/${e.ref}/blob"
+    return e.ref.takeIf { ext in IMAGE_EXTS }
 }
 
-/** One image artifact to render inline: its absolute blob URL, the provenance note (capture kind,
- *  platform, and the revision it came from — including the marker when that revision isn't a real
- *  commit) shown beneath the picture, and [label] — the plain text line this evidence would have
- *  had, which the UI falls back to when the image can't be loaded. */
-data class EvidenceImageRef(val url: String, val note: String?, val label: String)
+/** One image artifact to render inline. [ref] remains opaque here; SpecApi owns route construction
+ * and authentication. [label] is the text fallback when loading or decoding fails. */
+data class EvidenceImageRef(val ref: String, val note: String?, val label: String)
 
 /** A criterion's evidence split for display: artifacts that render as pictures, and everything else
- *  as today's compact text labels. */
+ * as today's compact text labels. */
 data class EvidenceDisplay(val images: List<EvidenceImageRef>, val labels: List<String>)
 
 /** Partition so an artifact shown as a picture never ALSO appears as an "artifact: <hash>.png"
- *  line — the picture is the evidence; its content-hash filename beside it is noise. Everything
- *  [imageBlobPathOrNull] declines (test/commit refs, non-image artifacts) keeps its label. */
-fun evidenceDisplay(evidence: List<Evidence>, specId: String, baseUrl: String): EvidenceDisplay {
+ * line. Everything [imageArtifactRefOrNull] declines keeps its label. */
+fun evidenceDisplay(evidence: List<Evidence>): EvidenceDisplay {
     val images = mutableListOf<EvidenceImageRef>()
     val rest = mutableListOf<Evidence>()
-    val base = baseUrl.trimEnd('/')
     evidence.forEach { e ->
-        when (val path = imageBlobPathOrNull(e, specId)) {
+        when (val ref = imageArtifactRefOrNull(e)) {
             null -> rest += e
-            else -> images += EvidenceImageRef(base + path, e.note, evidenceLabels(listOf(e)).first())
+            else -> images += EvidenceImageRef(ref, e.note, evidenceLabels(listOf(e)).first())
         }
     }
     return EvidenceDisplay(images, evidenceLabels(rest))

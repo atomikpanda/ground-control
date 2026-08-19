@@ -6,7 +6,10 @@
 // the spec), and per-item verdicts applied in place.
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.DIRECTORY_STALE_MS
 import com.atomikpanda.groundcontrol.data.QueueRepository
+import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
@@ -23,11 +26,17 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -45,9 +54,14 @@ class QueueViewModelTest {
 
     private val jsonHdr = headersOf(HttpHeaders.ContentType, "application/json")
 
-    private fun vm(scope: CoroutineScope, conns: List<WorkspaceConnection>, handler: MockRequestHandler): QueueViewModel {
+    private fun vm(
+        scope: CoroutineScope,
+        conns: List<WorkspaceConnection>,
+        handler: MockRequestHandler,
+        hosts: List<HostConnection> = emptyList(),
+    ): QueueViewModel {
         val repo = QueueRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }))
-        return QueueViewModel(repo, { conns }, scope)
+        return QueueViewModel(repo, { conns }, scope, flowOf(hosts))
     }
 
     private val connsAB = listOf(
@@ -76,6 +90,139 @@ class QueueViewModelTest {
         val vm = QueueViewModel(QueueRepository(SpecApi(HttpClient(MockEngine { respond("{}", HttpStatusCode.OK, jsonHdr) }) { mshipDefaults() })), { emptyList() }, this)
         vm.refresh()
         assertEquals(QueueUiState.EmptyConfig, vm.state.value)
+    }
+
+
+    @Test fun shared_host_failures_render_once() = runTest {
+        val connections = listOf(
+            WorkspaceConnection(
+                id = "a",
+                baseUrl = "https://host.example/workspaces/a",
+                workspaceName = "a",
+                hostId = "host-1",
+                workspaceId = "a",
+            ),
+            WorkspaceConnection(
+                id = "b",
+                baseUrl = "https://host.example/workspaces/b",
+                workspaceName = "b",
+                hostId = "host-1",
+                workspaceId = "b",
+            ),
+        )
+        val host = HostConnection(hostId = "host-1", publicUrl = "https://host.example")
+        val vm = vm(
+            this,
+            connections,
+            { throw java.io.IOException("offline") },
+            hosts = listOf(host),
+        )
+
+        vm.refresh()?.join()
+
+        assertEquals(1, (vm.state.value as QueueUiState.Content).errors.size)
+    }
+
+    @Test fun refresh_classifies_errors_with_post_request_host_freshness() = runTest {
+        val connection = WorkspaceConnection(
+            id = "a",
+            baseUrl = "http://a:47100",
+            workspaceName = "ws-a",
+            hostId = "host-a",
+            workspaceId = "ws-a",
+        )
+        val now = DIRECTORY_STALE_MS
+        val hosts = MutableStateFlow(
+            listOf(
+                HostConnection(
+                    hostId = "host-a",
+                    state = "online",
+                    runnerState = "disabled",
+                    lastContactAtMillis = 0L,
+                ),
+            ),
+        )
+        val repo = QueueRepository(
+            SpecApi(
+                HttpClient(
+                    MockEngine { request ->
+                        if (request.url.encodedPath.endsWith("/threads")) {
+                            respond("boom", HttpStatusCode.InternalServerError, jsonHdr)
+                        } else {
+                            hosts.value = hosts.value.map {
+                                it.copy(lastContactAtMillis = now)
+                            }
+                            respond("[]", HttpStatusCode.OK, jsonHdr)
+                        }
+                    },
+                ) { mshipDefaults() },
+            ),
+        )
+        val vm = QueueViewModel(
+            repo = repo,
+            connectionsProvider = { listOf(connection) },
+            testScope = backgroundScope,
+            hosts = hosts,
+            nowMillis = { now },
+        )
+
+        vm.refresh()?.join()
+
+        assertEquals(
+            HostLadderState.WORKSPACE_DEGRADED,
+            (vm.state.value as QueueUiState.Content).errors.single().ladderState,
+        )
+    }
+
+    @Test fun queue_error_labels_recompute_at_the_stale_deadline() = runTest {
+        val connection = WorkspaceConnection(
+            id = "bad",
+            baseUrl = "http://bad:47100",
+            workspaceName = "ws-bad",
+            hostId = "host-a",
+            workspaceId = "ws-a",
+        )
+        val hosts = MutableStateFlow(
+            listOf(
+                HostConnection(
+                    hostId = "host-a",
+                    state = "online",
+                    runnerState = "disabled",
+                    lastContactAtMillis = 0L,
+                ),
+            ),
+        )
+        var now = 0L
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        val repo = QueueRepository(
+            SpecApi(
+                HttpClient(
+                    MockEngine { throw java.io.IOException("offline") },
+                ) { mshipDefaults() },
+            ),
+        )
+        val vm = QueueViewModel(
+            repo = repo,
+            connectionsProvider = { listOf(connection) },
+            testScope = scope,
+            hosts = hosts,
+            nowMillis = { now },
+        )
+        vm.refresh()?.join()
+        assertEquals(
+            HostLadderState.WORKSPACE_DEGRADED,
+            (vm.state.value as QueueUiState.Content).errors.single().ladderState,
+        )
+
+        now = DIRECTORY_STALE_MS
+        advanceTimeBy(DIRECTORY_STALE_MS)
+        runCurrent()
+
+        assertEquals(
+            HostLadderState.STALE,
+            (vm.state.value as QueueUiState.Content).errors.single().ladderState,
+        )
+        scope.cancel()
     }
 
     @Test fun loads_prose_cards_head_first_with_position() = runTest {

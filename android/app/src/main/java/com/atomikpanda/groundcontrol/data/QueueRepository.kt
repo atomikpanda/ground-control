@@ -42,7 +42,17 @@ class QueueRepository(private val api: SpecApi) {
             .onFailure { if (it is CancellationException) throw it }
             .fold(
                 onSuccess = { ConnResult(it, null) },
-                onFailure = { ConnResult(emptyList(), WorkspaceError(conn.id, conn.displayName())) },
+                onFailure = { error ->
+                    ConnResult(
+                        emptyList(),
+                        WorkspaceError(
+                            conn.id,
+                            conn.displayName(),
+                            conn.hostId.takeIf { conn.hasStableIdentityTuple() },
+                            action = WorkspaceErrorAction.RE_PAIR.takeIf { error is RePairNeededException },
+                        ),
+                    )
+                },
             )
 
     /** One workspace's cards: `needs_review` spec chunks + open thread decisions + fleet-wide

@@ -5,9 +5,21 @@ import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 
+
+class EvidenceLockedException : Exception()
 /** Detail-screen seam over SpecApi, scoped to one workspace connection + spec id. */
 class SpecDetailRepository(private val api: SpecApi) {
     suspend fun load(conn: WorkspaceConnection, id: String): SpecRecord = api.getSpec(conn, id)
+    suspend fun loadEvidence(
+        conn: WorkspaceConnection,
+        specId: String,
+        ref: String,
+    ): ByteArray =
+        try {
+            api.getEvidenceBlob(conn, specId, ref)
+        } catch (_: ApiConflictException) {
+            throw EvidenceLockedException()
+        }
     suspend fun loadTask(conn: WorkspaceConnection, slug: String): TaskSummary = api.getTask(conn, slug)
     suspend fun setVerdict(conn: WorkspaceConnection, id: String, criterionId: String, verdict: String): SpecReview =
         api.setVerdict(conn, id, criterionId, verdict)

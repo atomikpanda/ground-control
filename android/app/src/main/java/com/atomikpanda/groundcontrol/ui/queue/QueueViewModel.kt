@@ -5,14 +5,22 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.QueueRepository
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.applyHostLadder
+import com.atomikpanda.groundcontrol.data.dedupeHostErrors
+import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 /**
@@ -62,6 +70,8 @@ class QueueViewModel(
     private val repo: QueueRepository,
     private val connectionsProvider: () -> List<WorkspaceConnection>,
     private val testScope: CoroutineScope? = null,
+    private val hosts: Flow<List<HostConnection>> = flowOf(emptyList()),
+    private val nowMillis: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val _state = MutableStateFlow<QueueUiState>(QueueUiState.Loading)
     val state: StateFlow<QueueUiState> = _state.asStateFlow()
@@ -69,10 +79,33 @@ class QueueViewModel(
     private val resolvedKeys = mutableSetOf<String>()
     private val deferredKeys = LinkedHashSet<String>()
     private var connById: Map<String, WorkspaceConnection> = emptyMap()
+    private var lastConnections: List<WorkspaceConnection> = emptyList()
+    private var lastFeedErrors: List<WorkspaceError> = emptyList()
+    private var lastHosts: List<HostConnection> = emptyList()
 
     private fun scope(): CoroutineScope = testScope ?: viewModelScope
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
     private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
+
+    init {
+        scope().launch {
+            hosts.emitAtStaleDeadlines(nowMillis).collect { currentHosts ->
+                lastHosts = currentHosts
+                val current = content() ?: return@collect
+                _state.value = current.copy(errors = renderedErrors())
+            }
+        }
+    }
+
+    private fun renderedErrors(): List<WorkspaceError> =
+        dedupeHostErrors(
+            applyHostLadder(
+                lastFeedErrors,
+                lastConnections,
+                lastHosts,
+                nowMillis(),
+            ),
+        )
 
     /** The spec a chunk card belongs to (null for a decision or plan-assumption card). */
     private fun QueueV2Card.specId(): String? = when (this) {
@@ -101,17 +134,22 @@ class QueueViewModel(
         if (prev == null) _state.value = QueueUiState.Loading
         return scope().launch {
             val feed = repo.load(connections)
+            val currentHosts = hosts.first()
+            lastConnections = connections
+            lastFeedErrors = feed.errors
+            lastHosts = currentHosts
+            val errors = renderedErrors()
             val fresh = feed.cards.filterNot { it.key in resolvedKeys }
             if (prev == null) {
                 _state.value = QueueUiState.Content(
                     cards = fresh, resolved = 0,
-                    errors = feed.errors, undo = null, inFlight = false,
+                    errors = errors, undo = null, inFlight = false,
                 )
             } else {
                 // live refresh: keep the current head stable, merge the rest by urgency
                 val head = prev.current
                 val merged = mergeKeepingHead(head, fresh)
-                _state.value = prev.copy(cards = merged, errors = feed.errors)
+                _state.value = prev.copy(cards = merged, errors = errors)
             }
         }
     }

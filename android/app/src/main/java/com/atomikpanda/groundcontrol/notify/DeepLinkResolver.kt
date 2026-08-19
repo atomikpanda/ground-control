@@ -24,9 +24,20 @@ object DeepLinkResolver {
         val id = params["id"]?.takeIf { it.isNotBlank() } ?: return DeepLinkOutcome.Ignore
         val key = params["workspace"]?.takeIf { it.isNotBlank() } ?: return DeepLinkOutcome.Ignore
 
-        val normKey = normalizedBaseUrl(key)
-        val match = connections.firstOrNull { normKey != null && normalizedBaseUrl(it.baseUrl) == normKey }
-            ?: connections.firstOrNull { it.workspaceName.isNotBlank() && it.workspaceName == key }
+        val connectionId = params["connection"]?.takeIf { it.isNotBlank() }
+        val match = if (connectionId != null) {
+            connections.firstOrNull { it.id == connectionId }
+        } else {
+            val normKey = normalizedBaseUrl(key)
+            // legacyBaseUrls, not just baseUrl: adoption (#471) rewrites the derived
+            // baseUrl, and every old PendingIntent carries the old one.
+            connections.firstOrNull { conn ->
+                normKey != null && (normalizedBaseUrl(conn.baseUrl) == normKey ||
+                    conn.legacyBaseUrls.any { normalizedBaseUrl(it) == normKey })
+            } ?: connections.firstOrNull {
+                it.workspaceName.isNotBlank() && it.workspaceName == key
+            }
+        }
         if (match == null) return DeepLinkOutcome.AddConnection(key)
         return when (uri.host) {
             "thread" -> DeepLinkOutcome.OpenThread(match.id, id)

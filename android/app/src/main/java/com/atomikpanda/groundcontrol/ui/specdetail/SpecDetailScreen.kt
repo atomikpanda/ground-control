@@ -181,7 +181,7 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
             if (d.criteria.isNotEmpty()) {
                 item { SectionLabel("ACCEPTANCE CRITERIA") }
                 items(d.criteria, key = { it.id }) { criterion ->
-                    CriterionRow(criterion, d.id, interactive, s.inFlight, vm)
+                    CriterionRow(criterion, interactive, s.inFlight, vm)
                 }
             }
             item { SectionLabel("OPEN QUESTIONS") }
@@ -247,7 +247,6 @@ private fun BulletText(text: String) =
 @Composable
 private fun CriterionRow(
     c: ReviewCriterion,
-    specId: String,
     interactive: Boolean,
     inFlight: ActionRef?,
     vm: SpecDetailViewModel,
@@ -293,7 +292,7 @@ private fun CriterionRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                val display = evidenceDisplay(c.evidence, specId, vm.conn.baseUrl)
+                val display = evidenceDisplay(c.evidence)
                 display.labels.forEach { line ->
                     Text(
                         line,
@@ -304,7 +303,7 @@ private fun CriterionRow(
                     )
                 }
                 display.images.forEach { img ->
-                    EvidenceImage(img, vm.conn.token)
+                    EvidenceImage(img, vm::loadEvidence)
                 }
             }
         }
