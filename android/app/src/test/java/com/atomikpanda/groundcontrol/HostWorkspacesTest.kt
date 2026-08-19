@@ -721,6 +721,41 @@ class HostWorkspacesTest {
         assertEquals(listOf(second.hostId to sharedBase), contacts)
     }
 
+    @Test fun an_unscoped_route_does_not_choose_between_hosts_sharing_a_base() = runTest {
+        val sharedBase = "https://contended.relay.example.com"
+        val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")
+        val second = host.copy(hostId = "host-b", publicUrl = sharedBase, refresh = "refresh-b")
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                when (request.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += (request.body as OutgoingContent.ByteArrayContent)
+                            .bytes()
+                            .decodeToString()
+                        respond(
+                            """{"token":"bearer","expires_in":300}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    "/workspaces" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(first, second) },
+        )
+
+        SpecApi(client.client).listWorkspaces(sharedBase, null)
+
+        assertTrue(exchanges.isEmpty())
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
     @Test fun stale_workspace_url_routes_to_the_hosts_current_public_url_before_send() = runTest {
         val urls = mutableListOf<String>()
         val authorizations = mutableListOf<String?>()

@@ -1,8 +1,10 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.AuthException
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.ui.settings.canAdoptDirectHostIdentity
 import com.atomikpanda.groundcontrol.ui.settings.classifyFleetRefreshFailure
 import com.atomikpanda.groundcontrol.ui.settings.observeRelayAccountChanges
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
@@ -107,6 +109,23 @@ class SettingsFleetTest {
         assertTrue(thrown === cancellation)
     }
 
+
+    @Test fun a_new_direct_only_host_can_adopt_its_verified_identity() {
+        assertTrue(canAdoptDirectHostIdentity("host-new", claimedHost = null))
+        assertTrue(
+            canAdoptDirectHostIdentity(
+                "host-direct",
+                HostConnection(hostId = "host-direct", refresh = null),
+            ),
+        )
+        assertFalse(
+            canAdoptDirectHostIdentity(
+                "host-relay",
+                HostConnection(hostId = "host-relay", refresh = "secret"),
+            ),
+        )
+        assertFalse(canAdoptDirectHostIdentity(claimedHostId = null, claimedHost = null))
+    }
     @Test fun unresolved_legacy_rows_remain_eligible_after_the_host_is_known() {
         val legacy = WorkspaceConnection(
             id = "manual",

@@ -95,6 +95,11 @@ internal fun visibleSettingsResult(
     current: RelayAccount?,
 ): String? = message.takeIf { owner == null || owner == current }
 
+internal fun canAdoptDirectHostIdentity(
+    claimedHostId: String?,
+    claimedHost: HostConnection?,
+): Boolean = claimedHostId != null && (claimedHost == null || claimedHost.refresh == null)
+
 private data class SettingsResult(
     val message: String,
     val owner: RelayAccount? = null,
@@ -320,7 +325,7 @@ class SettingsViewModel(
             val claimedHost = from.hostId?.let { claimed ->
                 hosts.snapshot().firstOrNull { it.hostId == claimed }
             }
-            val canAdoptClaimedHost = from.hostId != null && claimedHost?.refresh == null
+            val canAdoptClaimedHost = canAdoptDirectHostIdentity(from.hostId, claimedHost)
             val hostId = from.hostId.takeIf { canAdoptClaimedHost } ?: from.hostBase
             if (canAdoptClaimedHost) {
                 hosts.setDirectUrl(

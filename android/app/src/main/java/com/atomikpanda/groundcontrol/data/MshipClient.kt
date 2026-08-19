@@ -268,7 +268,7 @@ fun hostAwareClient(
             if (cache == null) return@on proceed(request)
             val host = when {
                 routedHostId != null -> knownHosts.firstOrNull { it.hostId == routedHostId }
-                base != null -> knownHosts.firstOrNull { base in it.hostBases() }
+                base != null -> knownHosts.filter { base in it.hostBases() }.singleOrNull()
                 else -> null
             } ?: return@on proceed(request)
             val originalBase = base ?: workspaceRoute?.baseUrl?.trimEnd('/')
