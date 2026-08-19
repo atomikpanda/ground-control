@@ -267,7 +267,11 @@ fun hostAwareClient(
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
             if (cache == null) return@on proceed(request)
             val host = when {
-                routedHostId != null -> knownHosts.firstOrNull { it.hostId == routedHostId }
+                routedHostId != null ->
+                    knownHosts.firstOrNull { it.hostId == routedHostId }
+                        ?: base?.let { candidateBase ->
+                            knownHosts.filter { candidateBase in it.hostBases() }.singleOrNull()
+                        }
                 base != null -> knownHosts.filter { base in it.hostBases() }.singleOrNull()
                 else -> null
             } ?: return@on proceed(request)

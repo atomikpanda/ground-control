@@ -721,6 +721,50 @@ class HostWorkspacesTest {
         assertEquals(listOf(second.hostId to sharedBase), contacts)
     }
 
+    @Test fun a_legacy_url_host_handle_routes_by_its_unambiguous_base() = runTest {
+        val base = "https://host.relay.example.com"
+        val current = host.copy(
+            hostId = "host-stable",
+            publicUrl = base,
+            refresh = "refresh-current",
+        )
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                when (request.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += (request.body as OutgoingContent.ByteArrayContent)
+                            .bytes()
+                            .decodeToString()
+                        respond(
+                            """{"token":"current-bearer","expires_in":300}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    "/workspaces/ws-1/threads/thread-1/seen" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+        )
+        val legacy = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "$base/workspaces/ws-1",
+            hostId = base,
+            workspaceId = "ws-1",
+        )
+
+        SpecApi(client.client).markThreadSeen(legacy, "thread-1", null)
+
+        assertTrue(exchanges.single().contains("refresh-current"))
+        assertEquals(listOf("Bearer current-bearer"), authorizations)
+    }
+
     @Test fun an_unscoped_route_does_not_choose_between_hosts_sharing_a_base() = runTest {
         val sharedBase = "https://contended.relay.example.com"
         val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")
