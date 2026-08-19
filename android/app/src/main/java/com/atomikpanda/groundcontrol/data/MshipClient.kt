@@ -382,6 +382,9 @@ fun hostAwareClient(
                         }
                         return@on call
                     }
+                    if (!retryRequest) {
+                        throw AuthException("request unauthorized")
+                    }
                     val refreshed = try {
                         routeBearer(candidateBase, stale = token)
                     } catch (error: IOException) {

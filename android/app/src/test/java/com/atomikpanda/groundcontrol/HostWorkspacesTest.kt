@@ -432,6 +432,27 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer bearer-1", "Bearer bearer-1", "Bearer bearer-2"), fx.bearers)
     }
 
+    @Test fun a_401_does_not_replay_a_non_idempotent_request() = runTest {
+        val fx = HostFixture(unauthorizedCalls = setOf(2))
+        val client = hostAwareClient(fx.engine) { listOf(host) }
+        val api = SpecApi(client.client)
+        api.listWorkspaces(host.hostBase(), null)
+        val connection = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "${host.hostBase()}/workspaces/ws-1",
+            hostId = host.hostId,
+            workspaceId = "ws-1",
+        )
+
+        val error = runCatching {
+            api.markThreadSeen(connection, "thread-1", null)
+        }.exceptionOrNull()
+
+        assertTrue("$error", error is AuthException)
+        assertEquals(1, fx.mints)
+        assertEquals(2, fx.bearers.size)
+    }
+
     @Test fun two_concurrent_401s_cause_one_refresh() = runBlocking {
         // Real dispatchers and a real barrier: the second caller must find the
         // first exchange in flight, not a virtual clock that already ran it.

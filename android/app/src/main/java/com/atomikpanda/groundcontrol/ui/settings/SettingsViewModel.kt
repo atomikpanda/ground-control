@@ -300,6 +300,8 @@ class SettingsViewModel(
             } catch (_: RePairNeededException) {
                 setTestResult("Re-pair needed — scan the relay account again", account)
                 continue
+            } catch (_: AuthException) {
+                continue
             } ?: continue
             if (!hosts.applyHostWorkspaceRefresh(
                     expectedAccount = account,
