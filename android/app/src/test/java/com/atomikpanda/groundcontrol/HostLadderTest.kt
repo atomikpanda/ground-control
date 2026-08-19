@@ -172,6 +172,20 @@ class HostLadderTest {
         )
     }
 
+    @Test fun a_reached_relay_only_host_uses_public_contact_when_the_directory_is_down() {
+        val now = 100_000L
+        val host = HostConnection(
+            hostId = "hst-relay",
+            relayDomain = "relay.example.com",
+            publicUrl = "https://hst-relay.relay.example.com",
+            state = null,
+            runnerState = "disabled",
+            lastContactAtMillis = now,
+        )
+
+        assertEquals(HostLadderState.ACTIVE, ladderForHost(host, now))
+    }
+
     @Test fun projects_reemits_when_time_alone_crosses_the_stale_deadline() = runTest {
         val host = HostConnection(
             hostId = "hst-1",

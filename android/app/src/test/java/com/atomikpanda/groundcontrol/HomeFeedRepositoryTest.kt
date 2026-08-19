@@ -125,4 +125,18 @@ class HomeFeedRepositoryTest {
 
         assertEquals(WorkspaceErrorAction.RE_PAIR, feed.errors.single().action)
     }
+
+    @Test fun a_legacy_url_host_id_does_not_claim_a_fleet_host_error() = runTest {
+        val legacy = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "http://bad:47100/workspaces/ws-1",
+            workspaceName = "legacy",
+            hostId = "http://bad:47100",
+            workspaceId = "ws-1",
+        )
+
+        val error = HomeFeedRepository(api()).load(listOf(legacy)).errors.single()
+
+        assertEquals(null, error.hostId)
+    }
 }

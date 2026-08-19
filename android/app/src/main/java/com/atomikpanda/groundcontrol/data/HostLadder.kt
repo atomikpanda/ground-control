@@ -109,7 +109,7 @@ fun hostLadder(
 
 internal fun HostConnection.projectedHostState(): String? =
     state ?: "online".takeIf {
-        !directUrl.isNullOrBlank() && lastContactAtMillis != null
+        lastContactAtMillis != null && hostBases().isNotEmpty()
     }
 
 

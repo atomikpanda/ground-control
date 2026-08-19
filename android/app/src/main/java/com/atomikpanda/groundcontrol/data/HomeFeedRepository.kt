@@ -144,7 +144,7 @@ class HomeFeedRepository(private val api: SpecApi) {
             WorkspaceError(
                 conn.id,
                 conn.displayName(),
-                conn.hostId,
+                conn.hostId.takeIf { conn.hasStableIdentityTuple() },
                 action = actionFor(listOf(s, t, k)),
             )
         } else null
