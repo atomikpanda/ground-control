@@ -1,5 +1,7 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -92,5 +94,44 @@ class HomeViewModelTest {
         val c = vm.state.value as HomeUiState.Content
         assertEquals(1, c.rail.first().count)                                 // "All" count excludes errored ws-bad
         assertEquals(listOf("ws-bad"), c.errors.map { it.workspaceName })     // failed workspace surfaced as error
+    }
+
+    @Test fun refresh_classifies_errors_with_post_request_host_freshness() = runTest {
+        val connection = WorkspaceConnection(
+            "a",
+            "http://a:47100",
+            workspaceName = "ws-a",
+            hostId = "host-a",
+            workspaceId = "ws-a",
+        )
+        var hosts = listOf(
+            HostConnection(
+                hostId = "host-a",
+                state = "online",
+                lastContactAtMillis = 0L,
+            ),
+        )
+        val repository = HomeFeedRepository(
+            SpecApi(
+                HttpClient(
+                    MockEngine { request ->
+                        if (request.url.encodedPath.endsWith("/threads")) {
+                            respond("boom", HttpStatusCode.InternalServerError, jsonHdr)
+                        } else {
+                            hosts = hosts.map {
+                                it.copy(lastContactAtMillis = System.currentTimeMillis())
+                            }
+                            respond("[]", HttpStatusCode.OK, jsonHdr)
+                        }
+                    },
+                ) { mshipDefaults() },
+            ),
+        )
+        val vm = HomeViewModel(repository, { listOf(connection) }, this, { hosts })
+
+        vm.refresh()?.join()
+
+        val content = vm.state.value as HomeUiState.Content
+        assertEquals(HostLadderState.WORKSPACE_DEGRADED, content.errors.single().ladderState)
     }
 }

@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
 import java.time.Instant
 import java.time.OffsetDateTime
+import java.net.URLEncoder
 
 /**
  * Pure (Android-free) formatting helpers for the notification render path. Kept out of
@@ -166,3 +167,9 @@ fun decisionOptionsBody(decision: Decision?): String? {
  */
 fun shouldSuppressNotification(openThreadKey: String?, connId: String, threadId: String): Boolean =
     openThreadKey != null && openThreadKey == threadKey(connId, threadId)
+
+/** Stable notification route: [connectionId] disambiguates hosts whose public
+ * routes collide, while `workspace` keeps old clients' re-pair fallback. */
+fun notificationThreadUri(connectionId: String, baseUrl: String, threadId: String): String =
+    "groundcontrol://thread?workspace=${URLEncoder.encode(baseUrl, "UTF-8")}" +
+        "&connection=${URLEncoder.encode(connectionId, "UTF-8")}&id=$threadId"

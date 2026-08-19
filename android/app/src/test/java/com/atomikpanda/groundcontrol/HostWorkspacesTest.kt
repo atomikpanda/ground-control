@@ -211,16 +211,29 @@ class HostWorkspacesTest {
         assertEquals("standing-tok", out.single().token)
     }
 
-    @Test fun verified_adoption_removes_an_existing_discovered_twin() {
-        val discovered = deriveConnection("https://a.relay", null, "host-a", "ws-1", "alpha", "healthy")
+    @Test fun verified_adoption_preserves_urls_from_an_existing_discovered_twin() {
+        val twin = deriveConnection(
+            "https://old.relay", null, "host-a", "ws-1", "alpha", "healthy",
+        ).copy(legacyBaseUrls = listOf("https://older.relay/workspaces/ws-1"))
+        val refreshed = deriveConnection(
+            "https://new.relay", null, "host-a", "ws-1", "alpha", "healthy",
+        )
         val out = adoptManualConnections(
-            existing = listOf(manual, discovered),
-            discovered = listOf(discovered),
+            existing = listOf(manual, twin),
+            discovered = listOf(refreshed),
             identities = listOf(VerifiedIdentity("local-uuid", "host-a", "ws-1")),
         )
 
         assertEquals(1, out.count { it.hostId == "host-a" && it.workspaceId == "ws-1" })
         assertEquals("local-uuid", out.single().id)
+        assertEquals(
+            listOf(
+                "http://host-a:47100",
+                "https://older.relay/workspaces/ws-1",
+                "https://old.relay/workspaces/ws-1",
+            ),
+            out.single().legacyBaseUrls,
+        )
     }
 
     @Test fun a_verified_legacy_host_handle_is_adopted_to_the_real_host_id() {

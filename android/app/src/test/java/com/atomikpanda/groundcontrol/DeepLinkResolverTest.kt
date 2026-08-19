@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.notify.DeepLinkOutcome
 import com.atomikpanda.groundcontrol.notify.DeepLinkResolver
+import com.atomikpanda.groundcontrol.notify.notificationThreadUri
 import java.net.URLEncoder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -89,6 +90,25 @@ class DeepLinkResolverTest {
         assertEquals(
             DeepLinkOutcome.OpenThread("c1", "t2"),
             DeepLinkResolver.resolve(uri("https://h-1.relay.example.com/workspaces/ws-1/", "t2"), adopted),
+        )
+    }
+
+    @Test fun notification_connection_id_disambiguates_shared_host_routes() {
+        val shared = "https://shared.example/workspaces/ws-1"
+        val first = WorkspaceConnection("c1", shared, hostId = "host-a", workspaceId = "ws-1")
+        val second = WorkspaceConnection("c two", shared, hostId = "host-b", workspaceId = "ws-1")
+        val link = notificationThreadUri(second.id, second.baseUrl, "thread-1")
+
+        assertEquals(
+            DeepLinkOutcome.OpenThread(second.id, "thread-1"),
+            DeepLinkResolver.resolve(link, listOf(first, second)),
+        )
+        assertTrue("connection=c+two" in link)
+        assertTrue(
+            DeepLinkResolver.resolve(
+                link.replace("connection=c+two", "connection=missing"),
+                listOf(first, second),
+            ) is DeepLinkOutcome.AddConnection,
         )
     }
 

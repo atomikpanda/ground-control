@@ -149,18 +149,22 @@ fun upsertConnection(
         id = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id,
         colorOverride = conn.colorOverride ?: prior?.colorOverride,
         glyphOverride = conn.glyphOverride ?: prior?.glyphOverride,
-        legacyBaseUrls = carryLegacyUrls(prior, conn),
+        legacyBaseUrls = carryLegacyUrls(listOfNotNull(prior), conn),
     )
     return existing.filterNot(matches) + merged
 }
 
-/** Every base URL this row has answered on before its current one. */
-private fun carryLegacyUrls(prior: WorkspaceConnection?, conn: WorkspaceConnection): List<String> {
-    if (prior == null) return conn.legacyBaseUrls
-    return (conn.legacyBaseUrls + prior.legacyBaseUrls + prior.baseUrl)
+/** Every base URL these rows have answered on before [conn]'s current one. */
+private fun carryLegacyUrls(
+    priors: List<WorkspaceConnection>,
+    conn: WorkspaceConnection,
+): List<String> =
+    (
+        conn.legacyBaseUrls +
+            priors.flatMap { it.legacyBaseUrls + it.baseUrl }
+    )
         .filter { it != conn.baseUrl }
         .distinct()
-}
 
 /** The identity a manual row's OWN host reported for it: `GET /health`'s
  *  `host_id` and the workspace id from that host's `GET /workspaces`. Either
@@ -281,9 +285,14 @@ fun adoptManualConnections(
                 ?.let { it.hostId == found.hostId && it.workspaceId == found.workspaceId } == true
         }
         if (manual == null) upsertConnection(acc, found)
-        else acc
-            .filterNot { it.id != manual.id && sameWorkspace(it, found) }
-            .map { if (it.id == manual.id) adopt(manual, found) else it }
+        else {
+            val twins = acc.filter { it.id != manual.id && sameWorkspace(it, found) }
+            acc
+                .filterNot { it in twins }
+                .map {
+                    if (it.id == manual.id) adopt(listOf(manual) + twins, found) else it
+                }
+        }
     }
 }
 
@@ -306,15 +315,20 @@ fun replaceHostConnections(
 /** The merge itself. Relay discovery supplies no standing token, so relay-borne
  * rows cannot suppress the refresh interceptor's bearer. Verified direct
  * discovery supplies its direct token and retains it. */
-private fun adopt(manual: WorkspaceConnection, found: WorkspaceConnection): WorkspaceConnection =
-    found.copy(
+private fun adopt(
+    priors: List<WorkspaceConnection>,
+    found: WorkspaceConnection,
+): WorkspaceConnection {
+    val manual = priors.first()
+    return found.copy(
         id = manual.id,
         token = found.token,
         workspaceName = found.workspaceName.ifBlank { manual.workspaceName },
         colorOverride = manual.colorOverride ?: found.colorOverride,
         glyphOverride = manual.glyphOverride ?: found.glyphOverride,
-        legacyBaseUrls = carryLegacyUrls(manual, found),
+        legacyBaseUrls = carryLegacyUrls(priors, found),
     )
+}
 
 /** Pure override editor: replace the identity override on the entry with [id] (null clears it,
  *  resetting that field to the auto-derived value). Used by the Projects tab edit affordance. */

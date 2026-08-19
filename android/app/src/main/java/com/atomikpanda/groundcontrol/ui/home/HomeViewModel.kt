@@ -49,10 +49,12 @@ class HomeViewModel(
         val connections = connectionsProvider()
         if (connections.isEmpty()) { _state.value = HomeUiState.EmptyConfig; return null }
         _state.value = HomeUiState.Loading
-        lastConnections = connections
-        lastHosts = hostsProvider()
         return (testScope ?: viewModelScope).launch {
-            feed = repo.load(connections)
+            val loaded = repo.load(connections)
+            val hosts = hostsProvider()
+            feed = loaded
+            lastConnections = connections
+            lastHosts = hosts
             render(connections)
         }
     }
