@@ -103,10 +103,19 @@ object ConnectionsCodec {
         else runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
 }
 
-/** The identity tuple (#471): the same workspace on the same host, whatever URL
- *  it currently answers on. Only meaningful when both halves are known. */
+/** A verified host/workspace tuple, excluding #472's URL-valued legacy handle. */
+fun WorkspaceConnection.hasStableIdentityTuple(): Boolean =
+    !hostId.isNullOrBlank() &&
+        !workspaceId.isNullOrBlank() &&
+        !hostId.startsWith("http://") &&
+        !hostId.startsWith("https://")
+
+/** The same verified workspace on the same host, whatever URL it answers on. */
 private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boolean =
-    a.hostId != null && a.hostId == b.hostId && a.workspaceId != null && a.workspaceId == b.workspaceId
+    a.hasStableIdentityTuple() &&
+        b.hasStableIdentityTuple() &&
+        a.hostId == b.hostId &&
+        a.workspaceId == b.workspaceId
 
 /**
  * Pure upsert, keyed on the (hostId, workspaceId) identity tuple — a host that
@@ -124,7 +133,12 @@ fun upsertConnection(
     conn: WorkspaceConnection,
 ): List<WorkspaceConnection> {
     val matches: (WorkspaceConnection) -> Boolean = { prior ->
-        sameWorkspace(prior, conn) || prior.id == conn.id || prior.baseUrl == conn.baseUrl
+        sameWorkspace(prior, conn) ||
+            (
+                !prior.hasStableIdentityTuple() &&
+                    !conn.hasStableIdentityTuple() &&
+                    (prior.id == conn.id || prior.baseUrl == conn.baseUrl)
+            )
     }
     val prior = existing.firstOrNull(matches)
     val merged = conn.copy(
@@ -161,11 +175,8 @@ data class VerifiedIdentity(
  * adoption on every fleet refresh, including the URL-as-host handles persisted by #472. */
 fun unresolvedLegacyConnections(
     connections: List<WorkspaceConnection>,
-): List<WorkspaceConnection> = connections.filter { connection ->
-    connection.hostId == null ||
-        connection.workspaceId == null ||
-        connection.hostId.startsWith("http://") ||
-        connection.hostId.startsWith("https://")
+): List<WorkspaceConnection> = connections.filterNot {
+    it.hasStableIdentityTuple()
 }
 
 /** Verify the identity of a persisted pre-host-model row through its host root.

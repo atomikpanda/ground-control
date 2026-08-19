@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.projects.projectRows
 import com.atomikpanda.groundcontrol.ui.projects.workspaceRoute
@@ -8,6 +9,7 @@ import com.atomikpanda.groundcontrol.ui.theme.autoColor
 import com.atomikpanda.groundcontrol.ui.theme.colorFromHex
 import com.atomikpanda.groundcontrol.ui.theme.toHex
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ProjectsViewModelTest {
@@ -38,6 +40,31 @@ class ProjectsViewModelTest {
 
     @Test fun directory_builds_offline_from_connections_only() {
         assertEquals(3, projectRows(conns).size)
+    }
+
+    @Test fun unadopted_legacy_connection_has_no_relay_ladder_state() {
+        val legacy = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "http://lan:47100/workspaces/ws",
+            hostId = "http://lan:47100",
+            workspaceId = "ws",
+        )
+
+        assertNull(projectRows(listOf(legacy)).single().state)
+    }
+
+    @Test fun stable_connection_without_a_host_row_reports_directory_unreachable() {
+        val discovered = WorkspaceConnection(
+            id = "discovered",
+            baseUrl = "https://relay/workspaces/ws",
+            hostId = "host-a",
+            workspaceId = "ws",
+        )
+
+        assertEquals(
+            HostLadderState.DIRECTORY_UNREACHABLE,
+            projectRows(listOf(discovered)).single().state,
+        )
     }
 
     @Test fun palette_swatches_encode_to_parseable_hex() {

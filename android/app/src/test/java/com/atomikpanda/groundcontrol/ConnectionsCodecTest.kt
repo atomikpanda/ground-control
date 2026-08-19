@@ -52,6 +52,42 @@ class ConnectionsCodecTest {
         assertEquals("new-id", result[0].id)
     }
 
+    @Test fun upsert_same_baseUrl_different_verified_identities_keeps_both() {
+        val existing = listOf(
+            WorkspaceConnection(
+                id = "host-a-local",
+                baseUrl = "https://shared/workspaces/ws",
+                hostId = "host-a",
+                workspaceId = "ws",
+            ),
+        )
+        val incoming = WorkspaceConnection(
+            id = "host-b-local",
+            baseUrl = "https://shared/workspaces/ws",
+            hostId = "host-b",
+            workspaceId = "ws",
+        )
+
+        assertEquals(2, upsertConnection(existing, incoming).size)
+    }
+
+    @Test fun upsert_does_not_adopt_an_unverified_manual_row_by_baseUrl() {
+        val manual = WorkspaceConnection(
+            id = "manual",
+            baseUrl = "https://shared/workspaces/ws",
+            hostId = "https://shared",
+            workspaceId = "ws",
+        )
+        val discovered = WorkspaceConnection(
+            id = "derived",
+            baseUrl = manual.baseUrl,
+            hostId = "host-a",
+            workspaceId = "ws",
+        )
+
+        assertEquals(listOf(manual, discovered), upsertConnection(listOf(manual), discovered))
+    }
+
     @Test fun upsert_genuinely_new_baseUrl_grows_list() {
         val existing = listOf(
             WorkspaceConnection("id-1", "http://host-a:47100", "tok-a", "ws-a")

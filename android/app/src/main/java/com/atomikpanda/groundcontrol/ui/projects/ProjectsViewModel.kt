@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
+import com.atomikpanda.groundcontrol.data.hasStableIdentityTuple
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
@@ -45,7 +46,11 @@ fun projectRows(
             name = c.workspaceName.ifBlank { c.baseUrl },
             identity = resolveIdentity(c),
             route = workspaceRoute(c.id),
-            state = c.hostId?.let { id -> ladderFor(c, hosts.firstOrNull { it.hostId == id }, nowMillis) },
+            state = if (c.hasStableIdentityTuple()) {
+                ladderFor(c, hosts.firstOrNull { it.hostId == c.hostId }, nowMillis)
+            } else {
+                null
+            },
         )
     }
 
