@@ -84,9 +84,7 @@ private fun SpecRecord.toDetail() = SpecDetail(
 
 class SpecDetailViewModel(
     private val repo: SpecDetailRepository,
-    /** Public because evidence images are fetched by Coil (its own OkHttp stack), not through the
-     *  repository — the screen needs this workspace's baseUrl + bearer to build those requests. */
-    val conn: WorkspaceConnection,
+    private val conn: WorkspaceConnection,
     private val specId: String,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
@@ -95,6 +93,8 @@ class SpecDetailViewModel(
     val state: StateFlow<SpecDetailUiState> = _state.asStateFlow()
 
     private fun scope() = testScope ?: viewModelScope
+    suspend fun loadEvidence(ref: String): ByteArray =
+        repo.loadEvidence(conn, specId, ref)
     private fun content() = _state.value as? SpecDetailUiState.Content
 
     // Unsent free-text drafts kept OUTSIDE the load lifecycle so they survive a leave+return (ac9).

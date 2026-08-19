@@ -74,7 +74,12 @@ suspend fun reachableHostWorkspaces(
 ): Pair<String, List<WorkspaceInfo>>? {
     for (base in host.hostBases()) {
         try {
-            return base to api.listWorkspaces(base, null, allowHostFallback = false)
+            return base to api.listWorkspaces(
+                base,
+                null,
+                allowHostFallback = false,
+                recordContact = false,
+            )
         } catch (error: Exception) {
             if (error is RePairNeededException || error is CancellationException) throw error
         }
@@ -87,6 +92,7 @@ suspend fun reachableHostWorkspaces(
  * adoption is covered through the same host-root, multi-workspace path used in
  * production. */
 data class HostWorkspaceRefresh(
+    val hostBase: String,
     val connections: List<WorkspaceConnection>,
     val identities: List<VerifiedIdentity>,
 )
@@ -94,19 +100,11 @@ data class HostWorkspaceRefresh(
 suspend fun refreshHostWorkspaceConnections(
     api: SpecApi,
     host: HostConnection,
-    legacyConnections: List<WorkspaceConnection> = emptyList(),
+    identities: List<VerifiedIdentity> = emptyList(),
 ): HostWorkspaceRefresh? {
     val (base, workspaces) = reachableHostWorkspaces(api, host) ?: return null
-    val identities = buildList {
-        for (connection in legacyConnections) {
-            try {
-                verifyLegacyIdentity(api, connection)?.let(::add)
-            } catch (error: Exception) {
-                if (error is RePairNeededException || error is CancellationException) throw error
-            }
-        }
-    }
     return HostWorkspaceRefresh(
+        hostBase = base,
         connections = workspaces.map { info ->
             deriveConnection(
                 hostBase = base,

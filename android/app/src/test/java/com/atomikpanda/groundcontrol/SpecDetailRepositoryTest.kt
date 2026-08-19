@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.EvidenceLockedException
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -12,6 +13,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SpecDetailRepositoryTest {
@@ -36,5 +38,21 @@ class SpecDetailRepositoryTest {
         }) { mshipDefaults() }))
         val rev = repo.setVerdict(conn, "s1", "ac1", "approved")
         assertEquals(1, rev.summary.approved)
+    }
+
+    @Test fun evidence_conflict_is_a_locked_state() = runTest {
+        val repo = SpecDetailRepository(SpecApi(HttpClient(MockEngine {
+            respond(
+                """{"detail":"locked"}""",
+                HttpStatusCode.Conflict,
+                jsonHdr,
+            )
+        }) { mshipDefaults() }))
+
+        val error = runCatching {
+            repo.loadEvidence(conn, "s1", "a1b2c3.png.enc")
+        }.exceptionOrNull()
+
+        assertTrue(error is EvidenceLockedException)
     }
 }

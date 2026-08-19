@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
 
 @Serializable
 data class WorkspaceConnection(
@@ -156,6 +157,17 @@ data class VerifiedIdentity(
     val workspaceId: String?,
 )
 
+/** Rows that still lack a stable host/workspace identity tuple remain eligible for verified
+ * adoption on every fleet refresh, including the URL-as-host handles persisted by #472. */
+fun unresolvedLegacyConnections(
+    connections: List<WorkspaceConnection>,
+): List<WorkspaceConnection> = connections.filter { connection ->
+    connection.hostId == null ||
+        connection.workspaceId == null ||
+        connection.hostId.startsWith("http://") ||
+        connection.hostId.startsWith("https://")
+}
+
 /** Verify the identity of a persisted pre-host-model row through its host root.
  * A #472-derived legacy row already knows its workspace id even though its
  * `hostId` is still a URL; that id selects the right workspace when the host
@@ -174,14 +186,46 @@ suspend fun verifyLegacyIdentity(
             connection.hostId?.startsWith("https://") == true -> connection.hostId.trimEnd('/')
         else -> base
     }
-    val hostId = api.hostHealth(hostRoot).hostId ?: return null
-    val workspaces = api.listWorkspaces(hostRoot, connection.token)
+    val hostId = api.hostHealth(hostRoot, recordContact = false).hostId ?: return null
+    val workspaces = api.listWorkspaces(
+        hostRoot,
+        connection.token,
+        recordContact = false,
+    )
     val workspaceId = if (knownWorkspaceId != null) {
         knownWorkspaceId.takeIf { id -> workspaces.any { it.id == id } }
     } else {
         workspaces.singleOrNull()?.id
     } ?: return null
     return VerifiedIdentity(connection.id, hostId, workspaceId)
+}
+
+data class LegacyIdentityVerification(
+    val identities: List<VerifiedIdentity>,
+    val requiresRePair: Boolean,
+)
+
+/** Probe each still-unresolved row once per fleet refresh. One expired credential is reported but
+ * does not prevent unrelated rows from being verified; cancellation still ends the whole refresh. */
+suspend fun verifyLegacyIdentities(
+    api: SpecApi,
+    connections: List<WorkspaceConnection>,
+): LegacyIdentityVerification {
+    var requiresRePair = false
+    val identities = buildList {
+        for (connection in connections) {
+            try {
+                verifyLegacyIdentity(api, connection)?.let(::add)
+            } catch (_: RePairNeededException) {
+                requiresRePair = true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // An unreachable legacy row remains unresolved for the next refresh.
+            }
+        }
+    }
+    return LegacyIdentityVerification(identities, requiresRePair)
 }
 
 /**

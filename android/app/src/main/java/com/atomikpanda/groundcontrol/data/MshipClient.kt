@@ -127,6 +127,7 @@ const val HOST_TOKEN_PATH = "/host/token"
 /** Discovery probes own their direct → public loop and suppress the client's
  * nested fallback so the base they return is the base that actually answered. */
 private val EXPLICIT_HOST_BASE = AttributeKey<Unit>("ExplicitHostBase")
+private val SUPPRESS_HOST_CONTACT = AttributeKey<Unit>("SuppressHostContact")
 private data class WorkspaceRoute(
     val hostId: String,
     val workspaceId: String,
@@ -236,6 +237,8 @@ fun hostAwareClient(
             val knownHosts = hosts()
             val originalUrl = request.url.buildString()
             val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
+            val reportContact =
+                request.attributes.getOrNull(SUPPRESS_HOST_CONTACT) == null
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
             if (cache == null) return@on proceed(request)
             val host = when {
@@ -283,7 +286,7 @@ fun hostAwareClient(
                         lastTransportFailure = error
                         continue
                     }
-                    if (call.response.status.isSuccess()) {
+                    if (call.response.status.isSuccess() && reportContact) {
                         notifyHostContact(onHostContact, candidateBase)
                     }
                     return@on call
@@ -310,7 +313,7 @@ fun hostAwareClient(
                     continue
                 }
                 if (call != null) {
-                    if (call.response.status.isSuccess()) {
+                    if (call.response.status.isSuccess() && reportContact) {
                         notifyHostContact(onHostContact, candidateBase)
                     }
                     return@on call
@@ -329,7 +332,7 @@ fun hostAwareClient(
                     lastTransportFailure = error
                     continue
                 }
-                if (retried.response.status.isSuccess()) {
+                if (retried.response.status.isSuccess() && reportContact) {
                     notifyHostContact(onHostContact, candidateBase)
                 }
                 return@on retried
@@ -371,6 +374,15 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun getSpec(conn: WorkspaceConnection, id: String): SpecRecord =
         client.get("${conn.baseUrl}/specs/$id") { auth(conn) }.body()
+
+    suspend fun getEvidenceBlob(
+        conn: WorkspaceConnection,
+        specId: String,
+        ref: String,
+    ): ByteArray =
+        client.get("${conn.baseUrl}/specs/$specId/evidence/$ref/blob") {
+            auth(conn)
+        }.body()
 
     suspend fun getReview(conn: WorkspaceConnection, id: String): SpecReview =
         client.get("${conn.baseUrl}/specs/$id/review") { auth(conn) }.body()
@@ -492,9 +504,14 @@ class SpecApi(private val client: HttpClient) {
         }.body<HostsResponse>().hosts
 
     /** A host's unauthenticated GET /health: ids and counts, the reachability
-     *  probe and the `host_id` half of an adoption's identity tuple. */
-    suspend fun hostHealth(hostBase: String): HostHealth =
-        client.get("${hostBase.trimEnd('/')}/health").body()
+     * probe and the `host_id` half of an adoption's identity tuple. */
+    suspend fun hostHealth(
+        hostBase: String,
+        recordContact: Boolean = true,
+    ): HostHealth =
+        client.get("${hostBase.trimEnd('/')}/health") {
+            if (!recordContact) attributes.put(SUPPRESS_HOST_CONTACT, Unit)
+        }.body()
 
     /** Host-level list (#472): GET {hostBase}/workspaces with the host token.
      *  Degraded entries are carried with their state, never dropped — the
@@ -503,10 +520,12 @@ class SpecApi(private val client: HttpClient) {
         hostBase: String,
         token: String?,
         allowHostFallback: Boolean = true,
+        recordContact: Boolean = true,
     ): List<WorkspaceInfo> =
         client.get("${hostBase.trimEnd('/')}/workspaces") {
             token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
             if (!allowHostFallback) attributes.put(EXPLICIT_HOST_BASE, Unit)
+            if (!recordContact) attributes.put(SUPPRESS_HOST_CONTACT, Unit)
         }.body<WorkspacesResponse>().workspaces
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {

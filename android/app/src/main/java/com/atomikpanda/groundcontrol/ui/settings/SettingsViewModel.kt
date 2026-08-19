@@ -14,6 +14,8 @@ import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderForHost
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
+import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
+import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
 import com.atomikpanda.groundcontrol.data.NotificationsSetting
 import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.SpecApi
@@ -22,6 +24,7 @@ import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,6 +85,17 @@ internal suspend fun observeRelayAccountChanges(
     }
 }
 
+internal fun visibleSettingsResult(
+    message: String,
+    owner: RelayAccount?,
+    current: RelayAccount?,
+): String? = message.takeIf { owner == null || owner == current }
+
+private data class SettingsResult(
+    val message: String,
+    val owner: RelayAccount? = null,
+)
+
 
 class SettingsViewModel(
     private val repo: ConnectionsRepository,
@@ -91,8 +105,17 @@ class SettingsViewModel(
 ) : ViewModel() {
     val connections: StateFlow<List<WorkspaceConnection>> get() = _connections
     private val _connections = MutableStateFlow<List<WorkspaceConnection>>(emptyList())
-    private val _testResult = MutableStateFlow<String?>(null)
-    val testResult: StateFlow<String?> = _testResult.asStateFlow()
+    private val _testResult = MutableStateFlow<SettingsResult?>(null)
+    val testResult: StateFlow<String?> = combine(
+        _testResult,
+        hosts.relayAccount,
+    ) { result, account ->
+        result?.let { visibleSettingsResult(it.message, it.owner, account) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private fun setTestResult(message: String, owner: RelayAccount? = null) {
+        _testResult.value = SettingsResult(message, owner)
+    }
 
     init {
         viewModelScope.launch { repo.connections.collect { _connections.value = it } }
@@ -116,14 +139,14 @@ class SettingsViewModel(
     private fun surfaceRePair(error: Throwable?): Boolean {
         if (error !is RePairNeededException) return false
         _discovered.value = null
-        _testResult.value = "Re-pair needed — scan the relay account again"
+        setTestResult("Re-pair needed — scan the relay account again")
         return true
     }
 
     /** Validate URL, probe /health, persist with the discovered workspace name. */
     fun addOrUpdate(id: String?, baseUrlInput: String, token: String?) {
         val base = normalizedBaseUrl(baseUrlInput) ?: run {
-            _testResult.value = "Invalid URL (need http:// or https://)"; return
+            setTestResult("Invalid URL (need http:// or https://)"); return
         }
         val tok = token?.ifBlank { null }
         viewModelScope.launch {
@@ -132,7 +155,7 @@ class SettingsViewModel(
             if (health.isSuccess) {
                 val name = health.getOrThrow()
                 repo.upsert(probe.copy(workspaceName = name))
-                _testResult.value = name.ifBlank { "Saved (couldn't reach /health)" }
+                setTestResult(name.ifBlank { "Saved (couldn't reach /health)" })
                 return@launch
             }
             if (surfaceRePair(health.exceptionOrNull())) return@launch
@@ -143,14 +166,14 @@ class SettingsViewModel(
             if (hostResult.isFailure) {
                 if (surfaceRePair(hostResult.exceptionOrNull())) return@launch
                 repo.upsert(probe)
-                _testResult.value = "Saved (couldn't reach /health)"
+                setTestResult("Saved (couldn't reach /health)")
                 return@launch
             }
             val identity = runCatching { api.hostHealth(base).hostId }
             if (surfaceRePair(identity.exceptionOrNull())) return@launch
             val hostWs = hostResult.getOrThrow()
             _discovered.value = DiscoveredWorkspaces(base, tok, hostWs, identity.getOrNull())
-            _testResult.value = "That's a host URL — pick a workspace below"
+            setTestResult("That's a host URL — pick a workspace below")
         }
     }
 
@@ -188,7 +211,7 @@ class SettingsViewModel(
      *  entries are kept (with their state) so the operator can see them. */
     fun discoverOnHost(baseUrlInput: String, token: String?) {
         val base = normalizedBaseUrl(baseUrlInput) ?: run {
-            _testResult.value = "Invalid URL (need http:// or https://)"; return
+            setTestResult("Invalid URL (need http:// or https://)"); return
         }
         val tok = token?.ifBlank { null }
         viewModelScope.launch {
@@ -196,7 +219,7 @@ class SettingsViewModel(
             if (result.isFailure) {
                 _discovered.value = null
                 if (!surfaceRePair(result.exceptionOrNull())) {
-                    _testResult.value = "Couldn't list workspaces: ${result.exceptionOrNull()?.message}"
+                    setTestResult("Couldn't list workspaces: ${result.exceptionOrNull()?.message}")
                 }
                 return@launch
             }
@@ -204,7 +227,7 @@ class SettingsViewModel(
             if (surfaceRePair(identity.exceptionOrNull())) return@launch
             val workspaces = result.getOrThrow()
             _discovered.value = DiscoveredWorkspaces(base, tok, workspaces, identity.getOrNull())
-            _testResult.value = "Found ${workspaces.size} workspace(s)"
+            setTestResult("Found ${workspaces.size} workspace(s)")
         }
     }
 
@@ -231,48 +254,51 @@ class SettingsViewModel(
 
     private suspend fun refreshFleet() {
         val account = hosts.relayAccountSnapshot() ?: run {
-            _testResult.value = "No relay account paired yet"; return
+            setTestResult("No relay account paired yet")
+            return
         }
-        val before = hosts.snapshot().map { it.hostId }.toSet()
-        val directory = runCatching { api.listHosts(account.relayDomain, account.fleetToken) }
-        val newHostIds = directory.fold(
-            onSuccess = { entries ->
-                val incoming = entries.mapNotNull { hostFrom(it, account.relayDomain) }
-                hosts.replaceFromRelay(account.relayDomain, incoming)
-                _testResult.value = "Fleet: ${entries.size} host(s)"
-                incoming.map { it.hostId }.filterNotTo(mutableSetOf()) { it in before }
-            },
-            onFailure = { error ->
-                val failure = classifyFleetRefreshFailure(error)
-                if (!failure.requiresRePair) {
-                    // Missing directory state is its own conservative ladder
-                    // outcome; keep cached addresses and refresh credentials.
-                    hosts.markRelayUnreachable(account.relayDomain)
-                }
-                _testResult.value = failure.message
-                emptySet()
-            },
+        val entries = try {
+            api.listHosts(account.relayDomain, account.fleetToken)
+        } catch (error: Exception) {
+            val failure = classifyFleetRefreshFailure(error)
+            val current = if (failure.requiresRePair) {
+                hosts.relayAccountSnapshot() == account
+            } else {
+                hosts.markRelayUnreachable(account)
+            }
+            if (current) setTestResult(failure.message, account)
+            return
+        }
+        val incoming = entries.mapNotNull { hostFrom(it, account.relayDomain) }
+        if (!hosts.replaceFromRelay(account, incoming)) return
+        setTestResult("Fleet: ${entries.size} host(s)", account)
+
+        val verification = verifyLegacyIdentities(
+            api,
+            unresolvedLegacyConnections(repo.snapshot()),
         )
-        // A newly added host gets one verified adoption pass; ordinary refreshes
-        // only re-key discovered rows on their established identity tuple.
-        val legacyConnections = if (newHostIds.isEmpty()) emptyList() else repo.snapshot()
-        for (host in hosts.snapshot()) {
+        if (verification.requiresRePair) {
+            setTestResult("Re-pair needed — scan the relay account again", account)
+        }
+        val identities = verification.identities
+        for (host in hosts.snapshot().filter { it.relayDomain == account.relayDomain }) {
             val refreshed = try {
-                refreshHostWorkspaceConnections(
-                    api,
-                    host,
-                    legacyConnections.takeIf { host.hostId in newHostIds }.orEmpty(),
-                )
+                refreshHostWorkspaceConnections(api, host, identities)
             } catch (_: RePairNeededException) {
-                _testResult.value = "Re-pair needed — scan the relay account again"
+                setTestResult("Re-pair needed — scan the relay account again", account)
                 continue
             } ?: continue
-            hosts.upsert(host.copy(lastContactAtMillis = System.currentTimeMillis()))
-            repo.replaceHost(
-                hostId = host.hostId,
-                discovered = refreshed.connections,
-                identities = refreshed.identities.takeIf { host.hostId in newHostIds }.orEmpty(),
-            )
+            if (!hosts.applyHostWorkspaceRefresh(
+                    expectedAccount = account,
+                    hostId = host.hostId,
+                    hostBase = refreshed.hostBase,
+                    contactedAtMillis = System.currentTimeMillis(),
+                    discovered = refreshed.connections,
+                    identities = refreshed.identities,
+                )
+            ) {
+                return
+            }
         }
     }
 

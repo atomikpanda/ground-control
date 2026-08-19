@@ -18,6 +18,12 @@ internal data class RelayAccountFleet(
     val connections: List<WorkspaceConnection>,
 )
 
+/** Complete account equality is the optimistic generation for all network-derived fleet writes. */
+internal fun relayAccountMatchesExpected(
+    current: RelayAccount?,
+    expected: RelayAccount,
+): Boolean = current == expected
+
 
 internal fun replaceRelayAccountFleet(
     previous: RelayAccount?,
@@ -103,21 +109,38 @@ class HostsRepository(private val context: Context) {
     suspend fun upsertAll(hosts: List<HostConnection>) =
         mutate { current -> hosts.fold(current) { acc, h -> upsertHost(acc, h) } }
 
-    suspend fun replaceFromRelay(relayDomain: String, hosts: List<HostConnection>) {
+    suspend fun replaceFromRelay(
+        expectedAccount: RelayAccount,
+        hosts: List<HostConnection>,
+    ): Boolean {
+        var applied = false
         context.dataStore.edit {
+            if (!relayAccountMatchesExpected(it.relayAccount(), expectedAccount)) return@edit
             val fleet = replaceRelayDirectoryFleet(
-                relayDomain = relayDomain,
+                relayDomain = expectedAccount.relayDomain,
                 existingHosts = HostsCodec.decode(it[HOSTS] ?: ""),
                 replacementHosts = hosts,
                 connections = ConnectionsCodec.decode(it[CONNECTIONS] ?: ""),
             )
             it[HOSTS] = HostsCodec.encode(fleet.hosts)
             it[CONNECTIONS] = ConnectionsCodec.encode(fleet.connections)
+            applied = true
         }
+        return applied
     }
 
-    suspend fun markRelayUnreachable(relayDomain: String) =
-        mutate { current -> markRelayUnreachable(current, relayDomain) }
+    suspend fun markRelayUnreachable(expectedAccount: RelayAccount): Boolean {
+        var applied = false
+        context.dataStore.edit {
+            if (!relayAccountMatchesExpected(it.relayAccount(), expectedAccount)) return@edit
+            val current = HostsCodec.decode(it[HOSTS] ?: "")
+            it[HOSTS] = HostsCodec.encode(
+                markRelayUnreachable(current, expectedAccount.relayDomain),
+            )
+            applied = true
+        }
+        return applied
+    }
 
     /** Persist a direct address only after the caller reached `/health` and
      * `/workspaces` there. A directory row already holding the refresh
@@ -135,6 +158,43 @@ class HostsRepository(private val context: Context) {
             runnerState,
             contactedAtMillis,
         )
+    }
+
+    /** Atomically apply one host response only while the account that authorized it is current. */
+    suspend fun applyHostWorkspaceRefresh(
+        expectedAccount: RelayAccount,
+        hostId: String,
+        hostBase: String,
+        contactedAtMillis: Long,
+        discovered: List<WorkspaceConnection>,
+        identities: List<VerifiedIdentity>,
+    ): Boolean {
+        var applied = false
+        context.dataStore.edit {
+            if (!relayAccountMatchesExpected(it.relayAccount(), expectedAccount)) return@edit
+            val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
+            if (currentHosts.none { host ->
+                    host.hostId == hostId &&
+                        host.relayDomain == expectedAccount.relayDomain
+                }
+            ) {
+                return@edit
+            }
+            it[HOSTS] = HostsCodec.encode(
+                recordHostContact(currentHosts, hostBase, contactedAtMillis),
+            )
+            val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
+            it[CONNECTIONS] = ConnectionsCodec.encode(
+                replaceHostConnections(
+                    currentConnections,
+                    hostId,
+                    discovered,
+                    identities,
+                ),
+            )
+            applied = true
+        }
+        return applied
     }
 
     /** Every successful request through the shared host-aware client advances

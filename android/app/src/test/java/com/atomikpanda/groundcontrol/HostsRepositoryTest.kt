@@ -12,6 +12,7 @@ import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.replaceRelayDirectoryFleet
 import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
 import com.atomikpanda.groundcontrol.data.recordDirectHostDiscovery
+import com.atomikpanda.groundcontrol.data.relayAccountMatchesExpected
 import com.atomikpanda.groundcontrol.data.upsertHost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -140,6 +141,24 @@ class HostsRepositoryTest {
 
         assertEquals(emptyList<HostConnection>(), replaced.hosts)
         assertEquals(listOf("manual"), replaced.connections.map { it.id })
+    }
+
+    @Test fun stale_refreshes_do_not_match_a_replaced_relay_account() {
+        val expected = RelayAccount("relay.example.com", "old-token")
+
+        assertTrue(relayAccountMatchesExpected(expected, expected))
+        assertTrue(
+            !relayAccountMatchesExpected(
+                RelayAccount("relay.example.com", "new-token"),
+                expected,
+            ),
+        )
+        assertTrue(
+            !relayAccountMatchesExpected(
+                RelayAccount("new.example.com", "old-token"),
+                expected,
+            ),
+        )
     }
 
     @Test fun authoritative_directory_removal_also_removes_the_hosts_workspaces() {

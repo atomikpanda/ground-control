@@ -2,8 +2,11 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.RelayAccount
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.settings.classifyFleetRefreshFailure
 import com.atomikpanda.groundcontrol.ui.settings.observeRelayAccountChanges
+import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
+import com.atomikpanda.groundcontrol.ui.settings.visibleSettingsResult
 import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -11,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -67,5 +71,25 @@ class SettingsFleetTest {
         assertEquals("Re-pair needed — scan the relay account again", rejected.message)
         assertFalse(unreachable.requiresRePair)
         assertEquals("Couldn't reach the relay — showing last known hosts", unreachable.message)
+    }
+
+    @Test fun unresolved_legacy_rows_remain_eligible_after_the_host_is_known() {
+        val legacy = WorkspaceConnection(
+            id = "manual",
+            baseUrl = "http://lan/workspaces/ws-1",
+            hostId = "http://lan",
+            workspaceId = "ws-1",
+        )
+        val adopted = legacy.copy(hostId = "host-a")
+
+        assertEquals(listOf(legacy), unresolvedLegacyConnections(listOf(legacy, adopted)))
+    }
+
+    @Test fun fleet_status_is_hidden_as_soon_as_its_relay_account_is_replaced() {
+        val old = RelayAccount("relay.example", "old-token")
+        val replacement = RelayAccount("relay.example", "new-token")
+
+        assertEquals("Fleet: 2 host(s)", visibleSettingsResult("Fleet: 2 host(s)", old, old))
+        assertNull(visibleSettingsResult("Fleet: 2 host(s)", old, replacement))
     }
 }

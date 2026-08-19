@@ -16,6 +16,7 @@ import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
 import com.atomikpanda.groundcontrol.data.recordHostContact
 import com.atomikpanda.groundcontrol.data.upsertConnection
+import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -586,6 +587,54 @@ class HostWorkspacesTest {
         )
         assertEquals(listOf("Bearer rotated-bearer"), authorizations)
     }
+    @Test fun evidence_blob_uses_the_hosts_current_route_and_a_minted_bearer() = runTest {
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val rotated = host.copy(publicUrl = "https://sub-b.relay.example.com")
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                urls += req.url.toString()
+                when (req.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"rotated-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces/ws-1/specs/spec-1/evidence/a1b2c3.png/blob" -> {
+                        authorizations += req.headers[HttpHeaders.Authorization]
+                        respond(byteArrayOf(1, 2, 3), HttpStatusCode.OK)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(rotated) },
+        )
+        val stale = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "https://sub-a.relay.example.com/workspaces/ws-1",
+            token = null,
+            workspaceName = "ws",
+            hostId = rotated.hostId,
+            workspaceId = "ws-1",
+        )
+
+        val bytes = SpecApi(client.client).getEvidenceBlob(
+            stale,
+            "spec-1",
+            "a1b2c3.png",
+        )
+
+        assertEquals(listOf<Byte>(1, 2, 3), bytes.toList())
+        assertEquals(
+            listOf(
+                "https://sub-b.relay.example.com/host/token",
+                "https://sub-b.relay.example.com/workspaces/ws-1/specs/spec-1/evidence/a1b2c3.png/blob",
+            ),
+            urls,
+        )
+        assertEquals(listOf("Bearer rotated-bearer"), authorizations)
+    }
+
     @Test fun an_ambiguous_write_failure_is_not_replayed_through_the_public_base() = runTest {
         val urls = mutableListOf<String>()
         var directDown = false
@@ -635,6 +684,88 @@ class HostWorkspacesTest {
         )
     }
 
+    @Test fun fleet_workspace_probe_defers_contact_to_the_atomic_fleet_apply() = runTest {
+        val contacts = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when (req.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces" -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(host) },
+            onHostContact = { contacts += it },
+        )
+
+        assertTrue(refreshHostWorkspaceConnections(SpecApi(client.client), host) != null)
+        assertEquals(emptyList<String>(), contacts)
+    }
+
+
+    @Test fun one_legacy_repair_failure_does_not_block_later_verified_adoptions() = runTest {
+        val badHost = host.copy(
+            hostId = "host-bad",
+            publicUrl = "https://bad.relay.example.com",
+            refresh = "bad-refresh",
+        )
+        val goodHost = host.copy(
+            hostId = "host-good",
+            publicUrl = "https://good.relay.example.com",
+            refresh = "good-refresh",
+        )
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when {
+                    req.url.host == "bad.relay.example.com" &&
+                        req.url.encodedPath == "/host/token" ->
+                        respond(
+                            """{"detail":"unauthorized"}""",
+                            HttpStatusCode.Unauthorized,
+                            jsonHdr,
+                        )
+                    req.url.encodedPath == "/host/token" -> respond(
+                        """{"token":"bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    req.url.encodedPath == "/health" -> respond(
+                        """{"status":"ok","host_id":"host-good","workspaces":2,"degraded":0}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    req.url.encodedPath == "/workspaces" ->
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(badHost, goodHost) },
+        )
+        val bad = WorkspaceConnection(
+            id = "bad",
+            baseUrl = "${badHost.publicUrl}/workspaces/ws-1",
+            hostId = badHost.publicUrl,
+            workspaceId = "ws-1",
+        )
+        val good = WorkspaceConnection(
+            id = "good",
+            baseUrl = "${goodHost.publicUrl}/workspaces/ws-1",
+            hostId = goodHost.publicUrl,
+            workspaceId = "ws-1",
+        )
+
+        val verification = verifyLegacyIdentities(
+            SpecApi(client.client),
+            listOf(bad, good),
+        )
+
+        assertTrue(verification.requiresRePair)
+        assertEquals(listOf("good"), verification.identities.map { it.connectionId })
+    }
 
     @Test fun refresh_fleet_adopts_a_legacy_row_through_host_root_with_multiple_workspaces() = runTest {
         val urls = mutableListOf<String>()
@@ -658,10 +789,11 @@ class HostWorkspacesTest {
             hostId = "http://lan:47190",
             workspaceId = "ws-2",
         )
+        val identities = verifyLegacyIdentities(api, listOf(legacy)).identities
         val refreshed = refreshHostWorkspaceConnections(
             api,
             HostConnection(hostId = "host-a", publicUrl = "http://lan:47190"),
-            legacyConnections = listOf(legacy),
+            identities = identities,
         )!!
         val adopted = adoptManualConnections(
             listOf(legacy),
@@ -676,8 +808,8 @@ class HostWorkspacesTest {
         assertEquals(1, adopted.count { it.workspaceId == "ws-2" })
         assertEquals(
             listOf(
-                "http://lan:47190/workspaces",
                 "http://lan:47190/health",
+                "http://lan:47190/workspaces",
                 "http://lan:47190/workspaces",
             ),
             urls,
