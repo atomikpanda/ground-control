@@ -1,5 +1,10 @@
 package com.atomikpanda.groundcontrol.data
 
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.transformLatest
+
 /**
  * Mirrors the relay's `host_contract.DIRECTORY_STALE_S`
  * (`3 * REGISTER_INTERVAL_S + MAX_BACKOFF_S`): how long the directory can still
@@ -7,6 +12,31 @@ package com.atomikpanda.groundcontrol.data
  * the directory's claim, is the honest answer.
  */
 const val DIRECTORY_STALE_S: Long = 240
+const val DIRECTORY_STALE_MS: Long = DIRECTORY_STALE_S * 1_000
+
+/**
+ * Re-emit a persisted host list exactly when one of its phone-contact stamps
+ * crosses [DIRECTORY_STALE_MS]. [transformLatest] makes ownership explicit:
+ * a DataStore update cancels the obsolete deadline, and cancellation of the
+ * collecting ViewModel scope cancels the timer.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun Flow<List<HostConnection>>.emitAtStaleDeadlines(
+    nowMillis: () -> Long = System::currentTimeMillis,
+): Flow<List<HostConnection>> = transformLatest { hosts ->
+    emit(hosts)
+    while (true) {
+        val now = nowMillis()
+        val untilNextDeadline = hosts
+            .mapNotNull { it.lastContactAtMillis }
+            .map { contactedAt -> contactedAt + DIRECTORY_STALE_MS - now }
+            .filter { remaining -> remaining > 0 }
+            .minOrNull()
+            ?: break
+        delay(untilNextDeadline)
+        emit(hosts)
+    }
+}
 
 /**
  * What one connection reads as. Six ladder states — [ACTIVE] plus the five

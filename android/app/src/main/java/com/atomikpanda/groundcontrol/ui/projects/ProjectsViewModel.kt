@@ -6,10 +6,12 @@ import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
+import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
 import com.atomikpanda.groundcontrol.ui.theme.resolveIdentity
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -47,6 +49,15 @@ fun projectRows(
         )
     }
 
+/** Time-aware projection used by the ViewModel and deterministic JVM tests. */
+internal fun projectRowsFlow(
+    connections: Flow<List<WorkspaceConnection>>,
+    hosts: Flow<List<HostConnection>>,
+    nowMillis: () -> Long = System::currentTimeMillis,
+) = connections.combine(hosts.emitAtStaleDeadlines(nowMillis)) { conns, hs ->
+    projectRows(conns, hs, nowMillis())
+}
+
 class ProjectsViewModel(
     private val repo: ConnectionsRepository,
     private val hostsRepo: HostsRepository,
@@ -56,9 +67,8 @@ class ProjectsViewModel(
 
     init {
         viewModelScope.launch {
-            repo.connections.combine(hostsRepo.hosts) { conns, hs ->
-                projectRows(conns, hs, System.currentTimeMillis())
-            }.collect { _rows.value = it }
+            projectRowsFlow(repo.connections, hostsRepo.hosts)
+                .collect { _rows.value = it }
         }
     }
 

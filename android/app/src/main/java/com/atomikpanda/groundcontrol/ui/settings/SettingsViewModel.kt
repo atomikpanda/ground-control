@@ -3,11 +3,13 @@ package com.atomikpanda.groundcontrol.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.data.displayLabel
+import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderForHost
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
@@ -18,6 +20,7 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -26,6 +29,20 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
+
+/** One host row for the Settings fleet list. */
+data class HostRow(val hostId: String, val label: String, val state: HostLadderState)
+
+/** Time-aware projection used by the ViewModel and deterministic JVM tests. */
+internal fun hostRowsFlow(
+    hosts: Flow<List<HostConnection>>,
+    nowMillis: () -> Long = System::currentTimeMillis,
+) = hosts.emitAtStaleDeadlines(nowMillis).map { list ->
+    val now = nowMillis()
+    list.map { host ->
+        HostRow(host.hostId, host.displayLabel(), ladderForHost(host, now))
+    }
+}
 
 class SettingsViewModel(
     private val repo: ConnectionsRepository,
@@ -149,19 +166,10 @@ class SettingsViewModel(
 
     // ---- relay account: the fleet, not an address (#471) --------------------
 
-    /** One host row for the Settings fleet list. */
-    data class HostRow(val hostId: String, val label: String, val state: HostLadderState)
-
     val relayAccount: StateFlow<RelayAccount?> =
         hosts.relayAccount.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    val hostRows: StateFlow<List<HostRow>> = hosts.hosts
-        .map { list ->
-            val now = System.currentTimeMillis()
-            list.map { h ->
-                HostRow(h.hostId, h.displayLabel(), ladderForHost(h, now))
-            }
-        }
+    val hostRows: StateFlow<List<HostRow>> = hostRowsFlow(hosts.hosts)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /**

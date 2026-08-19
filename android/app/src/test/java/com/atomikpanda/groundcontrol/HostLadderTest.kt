@@ -2,8 +2,20 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.DIRECTORY_STALE_S
 import com.atomikpanda.groundcontrol.data.HostLadderState
+import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.hostLadder
+import com.atomikpanda.groundcontrol.ui.projects.projectRowsFlow
+import com.atomikpanda.groundcontrol.ui.settings.hostRowsFlow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -15,6 +27,7 @@ import org.junit.Test
  * ignorant — the directory may be unreachable, or still reporting `online` for up to
  * DIRECTORY_STALE_S after a tunnel died.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class HostLadderTest {
     private val fresh = 5L
 
@@ -111,6 +124,68 @@ class HostLadderTest {
                 hostLadder(host, metarepo.state, metarepo.runner?.state, fresh),
             )
         }
+    }
+
+    @Test fun projects_reemits_when_time_alone_crosses_the_stale_deadline() = runTest {
+        val host = HostConnection(
+            hostId = "hst-1",
+            state = "online",
+            runnerState = "disabled",
+            lastContactAtMillis = 0L,
+        )
+        val connection = WorkspaceConnection(
+            id = "c1",
+            baseUrl = "https://host/workspaces/ws-1",
+            workspaceName = "workspace",
+            hostId = host.hostId,
+            state = "healthy",
+            workspaceId = "ws-1",
+        )
+        val connections = MutableStateFlow(listOf(connection))
+        val hosts = MutableStateFlow(listOf(host))
+        val emissions = mutableListOf<List<com.atomikpanda.groundcontrol.ui.projects.ProjectRow>>()
+        val collecting = launch {
+            projectRowsFlow(connections, hosts) { testScheduler.currentTime }
+                .take(2)
+                .toList(emissions)
+        }
+
+        runCurrent()
+        assertEquals(HostLadderState.ACTIVE, emissions.single().single().state)
+
+        advanceTimeBy(DIRECTORY_STALE_S * 1_000)
+        runCurrent()
+
+        assertEquals(HostLadderState.STALE, emissions[1].single().state)
+        collecting.join()
+    }
+
+    @Test fun settings_reemits_when_time_alone_crosses_the_stale_deadline() = runTest {
+        val hosts = MutableStateFlow(
+            listOf(
+                HostConnection(
+                    hostId = "hst-1",
+                    state = "online",
+                    runnerState = "disabled",
+                    lastContactAtMillis = 0L,
+                )
+            )
+        )
+        val emissions = mutableListOf<List<com.atomikpanda.groundcontrol.ui.settings.HostRow>>()
+        val collecting = launch {
+            hostRowsFlow(hosts) { testScheduler.currentTime }
+                .take(2)
+                .toList(emissions)
+        }
+
+        runCurrent()
+        assertEquals(HostLadderState.ACTIVE, emissions.single().single().state)
+
+        advanceTimeBy(DIRECTORY_STALE_S * 1_000)
+        runCurrent()
+
+        assertEquals(HostLadderState.STALE, emissions[1].single().state)
+        collecting.join()
     }
 
     private fun row(
