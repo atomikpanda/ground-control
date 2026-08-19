@@ -503,6 +503,49 @@ class HostWorkspacesTest {
         )
         assertEquals(listOf("Bearer public-bearer"), authorizations)
     }
+
+    @Test fun stale_workspace_url_routes_to_the_hosts_current_public_url_before_send() = runTest {
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val rotated = host.copy(publicUrl = "https://sub-b.relay.example.com")
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                urls += req.url.toString()
+                when (req.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"rotated-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces/ws-1/threads/thread-1/seen" -> {
+                        authorizations += req.headers[HttpHeaders.Authorization]
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(rotated) },
+        )
+        val stale = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "https://sub-a.relay.example.com/workspaces/ws-1",
+            token = null,
+            workspaceName = "ws",
+            hostId = rotated.hostId,
+            workspaceId = "ws-1",
+        )
+
+        SpecApi(client.client).markThreadSeen(stale, "thread-1", null)
+
+        assertEquals(
+            listOf(
+                "https://sub-b.relay.example.com/host/token",
+                "https://sub-b.relay.example.com/workspaces/ws-1/threads/thread-1/seen",
+            ),
+            urls,
+        )
+        assertEquals(listOf("Bearer rotated-bearer"), authorizations)
+    }
     @Test fun an_ambiguous_write_failure_is_not_replayed_through_the_public_base() = runTest {
         val urls = mutableListOf<String>()
         var directDown = false

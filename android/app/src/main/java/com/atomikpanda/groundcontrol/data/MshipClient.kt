@@ -127,6 +127,12 @@ const val HOST_TOKEN_PATH = "/host/token"
 /** Discovery probes own their direct → public loop and suppress the client's
  * nested fallback so the base they return is the base that actually answered. */
 private val EXPLICIT_HOST_BASE = AttributeKey<Unit>("ExplicitHostBase")
+private data class WorkspaceRoute(
+    val hostId: String,
+    val workspaceId: String,
+    val baseUrl: String,
+)
+private val WORKSPACE_ROUTE = AttributeKey<WorkspaceRoute>("WorkspaceRoute")
 
 
 /** `https://enroll.<relay domain>`: the one enroll server `mship relay enroll`,
@@ -228,23 +234,45 @@ fun hostAwareClient(
         on(Send) { request ->
             val cache = tokens
             val knownHosts = hosts()
-            val base = cache?.let { hostBaseFor(request.url.buildString(), knownHosts) }
-            if (cache == null || base == null) return@on proceed(request)
-            val host = knownHosts.first { base in it.hostBases() }
+            val originalUrl = request.url.buildString()
+            val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
+            val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
+            if (cache == null) return@on proceed(request)
+            val host = when {
+                base != null -> knownHosts.firstOrNull { base in it.hostBases() }
+                workspaceRoute != null -> knownHosts.firstOrNull {
+                    it.hostId == workspaceRoute.hostId
+                }
+                else -> null
+            } ?: return@on proceed(request)
+            val originalBase = base ?: workspaceRoute?.baseUrl?.trimEnd('/')
+                ?.takeIf { originalUrl.startsWith("$it/") }
+                ?: return@on proceed(request)
             val candidateBases = if (
                 request.attributes.getOrNull(EXPLICIT_HOST_BASE) != null
             ) {
-                listOf(base)
-            } else {
+                listOfNotNull(base)
+            } else if (base != null) {
                 listOf(base) + host.hostBases().filterNot { it == base }
+            } else {
+                host.hostBases()
             }
-            val originalUrl = request.url.buildString()
-            val retryRequest = request.method == HttpMethod.Get || request.method == HttpMethod.Head
+            val candidateRequests = candidateBases.map { candidateBase ->
+                val candidateUrl = if (base != null) {
+                    candidateBase + originalUrl.removePrefix(originalBase)
+                } else {
+                    workspaceBaseUrl(candidateBase, workspaceRoute!!.workspaceId) +
+                        originalUrl.removePrefix(originalBase)
+                }
+                candidateBase to candidateUrl
+            }
+            val retryRequest = request.method == HttpMethod.Get ||
+                request.method == HttpMethod.Head
             var lastTransportFailure: IOException? = null
 
-            for (candidateBase in candidateBases) {
+            for ((candidateBase, candidateUrl) in candidateRequests) {
                 val candidateRequest = request.apply {
-                    url.takeFrom(candidateBase + originalUrl.removePrefix(base))
+                    url.takeFrom(candidateUrl)
                 }
                 if (candidateRequest.headers.contains(HttpHeaders.Authorization)) {
                     val call = try {
@@ -305,7 +333,7 @@ fun hostAwareClient(
                 }
                 return@on retried
             }
-            throw lastTransportFailure ?: IOException("no reachable base for $base")
+            throw lastTransportFailure ?: IOException("no reachable base for $originalBase")
         }
     }
     val client = HttpClient(engine) {
@@ -481,7 +509,17 @@ class SpecApi(private val client: HttpClient) {
         }.body<WorkspacesResponse>().workspaces
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {
-        conn.token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+        conn.token?.takeIf { it.isNotBlank() }?.let {
+            header(HttpHeaders.Authorization, "Bearer $it")
+        }
+        val hostId = conn.hostId
+        val workspaceId = conn.workspaceId
+        if (!hostId.isNullOrBlank() && !workspaceId.isNullOrBlank()) {
+            attributes.put(
+                WORKSPACE_ROUTE,
+                WorkspaceRoute(hostId, workspaceId, conn.baseUrl),
+            )
+        }
     }
 
     private fun HttpRequestBuilder.jsonBody(body: Any) {
