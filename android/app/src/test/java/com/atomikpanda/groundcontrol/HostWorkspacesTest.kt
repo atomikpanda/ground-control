@@ -916,6 +916,12 @@ class HostWorkspacesTest {
     }
 
 
+    @Test fun a_re_pair_failure_is_an_authentication_failure() {
+        val error: Exception = RePairNeededException("https://host.example.com")
+
+        assertTrue(error is AuthException)
+    }
+
     @Test fun one_legacy_repair_failure_does_not_block_later_verified_adoptions() = runTest {
         val badHost = host.copy(
             hostId = "host-bad",

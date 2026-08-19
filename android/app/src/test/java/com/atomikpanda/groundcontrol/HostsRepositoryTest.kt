@@ -224,6 +224,20 @@ class HostsRepositoryTest {
         assertEquals(HostLadderState.ACTIVE, ladderFor(connection, stored, now))
     }
 
+    @Test fun delayed_direct_discovery_cannot_move_contact_freshness_backwards() {
+        val existing = host.copy(lastContactAtMillis = 200L)
+
+        val updated = recordDirectHostDiscovery(
+            hosts = listOf(existing),
+            hostId = existing.hostId,
+            directUrl = "http://192.168.1.9:47190",
+            runnerState = "idle",
+            contactedAtMillis = 100L,
+        ).single()
+
+        assertEquals(200L, updated.lastContactAtMillis)
+    }
+
     @Test fun old_persisted_state_without_the_hosts_key_decodes_to_empty() {
         // The key is absent on every install that predates #471.
         assertEquals(emptyList<HostConnection>(), HostsCodec.decode(""))

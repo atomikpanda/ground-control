@@ -73,7 +73,7 @@ class HomeFeedHostErrorTest {
         assertEquals("Host offline", workspaceErrorLabel(error))
     }
 
-    @Test fun a_missing_directory_state_stays_directory_unreachable_not_offline() {
+    @Test fun a_directly_reached_host_projects_phone_contact_when_the_directory_is_down() {
         val connection = WorkspaceConnection(
             id = "a",
             baseUrl = "http://lan/workspaces/ws-a",
@@ -84,6 +84,8 @@ class HomeFeedHostErrorTest {
         )
         val host = HostConnection(
             hostId = "h-1",
+            relayDomain = "relay.example.com",
+            publicUrl = "https://h-1.relay.example.com",
             directUrl = "http://lan",
             state = null,
             lastContactAtMillis = 1_000,
@@ -94,8 +96,8 @@ class HomeFeedHostErrorTest {
             hosts = listOf(host),
             nowMillis = 2_000,
         ).single()
-        assertEquals(HostLadderState.DIRECTORY_UNREACHABLE, error.ladderState)
-        assertEquals("Relay unreachable — last known", workspaceErrorLabel(error))
+        assertEquals(HostLadderState.WORKSPACE_DEGRADED, error.ladderState)
+        assertEquals("Workspace degraded", workspaceErrorLabel(error))
     }
 
     @Test fun re_pair_errors_are_an_explicit_settings_action() {

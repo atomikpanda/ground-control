@@ -136,7 +136,7 @@ fun GroundControlApp(
                     HomeViewModel(
                         homeRepo,
                         connectionsProvider = { runBlockingSnapshot(connRepo) },
-                        hostsProvider = { runBlocking { hostsRepo.snapshot() } },
+                        hosts = hostsRepo.hosts,
                     )
                 }
                 HomeScreen(

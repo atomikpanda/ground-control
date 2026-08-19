@@ -107,9 +107,9 @@ fun hostLadder(
     return HostLadderState.ACTIVE
 }
 
-private fun HostConnection.projectedHostState(): String? =
+internal fun HostConnection.projectedHostState(): String? =
     state ?: "online".takeIf {
-        relayDomain == null && !directUrl.isNullOrBlank() && lastContactAtMillis != null
+        !directUrl.isNullOrBlank() && lastContactAtMillis != null
     }
 
 

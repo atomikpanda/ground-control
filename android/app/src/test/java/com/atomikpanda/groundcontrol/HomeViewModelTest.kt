@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.DIRECTORY_STALE_MS
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
@@ -14,11 +15,17 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -104,11 +111,13 @@ class HomeViewModelTest {
             hostId = "host-a",
             workspaceId = "ws-a",
         )
-        var hosts = listOf(
-            HostConnection(
-                hostId = "host-a",
-                state = "online",
-                lastContactAtMillis = 0L,
+        val hosts = MutableStateFlow(
+            listOf(
+                HostConnection(
+                    hostId = "host-a",
+                    state = "online",
+                    lastContactAtMillis = 0L,
+                ),
             ),
         )
         val repository = HomeFeedRepository(
@@ -118,7 +127,7 @@ class HomeViewModelTest {
                         if (request.url.encodedPath.endsWith("/threads")) {
                             respond("boom", HttpStatusCode.InternalServerError, jsonHdr)
                         } else {
-                            hosts = hosts.map {
+                            hosts.value = hosts.value.map {
                                 it.copy(lastContactAtMillis = System.currentTimeMillis())
                             }
                             respond("[]", HttpStatusCode.OK, jsonHdr)
@@ -127,11 +136,55 @@ class HomeViewModelTest {
                 ) { mshipDefaults() },
             ),
         )
-        val vm = HomeViewModel(repository, { listOf(connection) }, this, { hosts })
+        val vm = HomeViewModel(repository, { listOf(connection) }, backgroundScope, hosts)
 
         vm.refresh()?.join()
 
         val content = vm.state.value as HomeUiState.Content
         assertEquals(HostLadderState.WORKSPACE_DEGRADED, content.errors.single().ladderState)
+    }
+
+    @Test fun home_error_labels_recompute_at_the_stale_deadline() = runTest {
+        val connection = WorkspaceConnection(
+            id = "bad",
+            baseUrl = "http://bad:47100",
+            workspaceName = "ws-bad",
+            hostId = "host-a",
+            workspaceId = "ws-a",
+        )
+        val hosts = MutableStateFlow(
+            listOf(
+                HostConnection(
+                    hostId = "host-a",
+                    state = "online",
+                    runnerState = "disabled",
+                    lastContactAtMillis = 0L,
+                ),
+            ),
+        )
+        var now = 0L
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        val vm = HomeViewModel(
+            repo = repoWithFailingHost(),
+            connectionsProvider = { listOf(connection) },
+            testScope = scope,
+            hosts = hosts,
+            nowMillis = { now },
+        )
+        vm.refresh()?.join()
+        assertEquals(
+            HostLadderState.WORKSPACE_DEGRADED,
+            (vm.state.value as HomeUiState.Content).errors.single().ladderState,
+        )
+
+        now = DIRECTORY_STALE_MS
+        advanceTimeBy(DIRECTORY_STALE_MS)
+        runCurrent()
+
+        assertEquals(
+            HostLadderState.STALE,
+            (vm.state.value as HomeUiState.Content).errors.single().ladderState,
+        )
+        scope.cancel()
     }
 }

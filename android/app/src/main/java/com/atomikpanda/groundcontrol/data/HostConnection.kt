@@ -149,7 +149,9 @@ fun recordDirectHostDiscovery(
     val updated = prior?.copy(
         directUrl = directUrl.trimEnd('/'),
         runnerState = runnerState,
-        lastContactAtMillis = contactedAtMillis,
+        lastContactAtMillis = contactedAtMillis.coerceAtLeast(
+            prior.lastContactAtMillis ?: contactedAtMillis,
+        ),
     ) ?: HostConnection(
         hostId = hostId,
         directUrl = directUrl.trimEnd('/'),

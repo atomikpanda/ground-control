@@ -66,7 +66,7 @@ fun applyHostLadder(
         if (connection == null || error.hostId == null) error
         else error.copy(
             ladderState = hostLadder(
-                hostState = host?.state,
+                hostState = host?.projectedHostState(),
                 workspaceState = null,
                 runnerState = host?.runnerState,
                 secondsSincePhoneContact = host?.lastContactAtMillis?.let { (nowMillis - it) / 1000 },

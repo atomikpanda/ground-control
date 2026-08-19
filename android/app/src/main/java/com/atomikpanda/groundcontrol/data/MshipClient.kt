@@ -78,7 +78,7 @@ import kotlinx.serialization.json.jsonPrimitive
 // break a cockpit's entire load.
 fun buildJson(): Json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
-class AuthException(message: String) : Exception(message)
+open class AuthException(message: String) : Exception(message)
 class NotFoundException(message: String) : Exception(message)
 /** 409 — carries the server's verbatim `detail` (approval blockers or invalid transition). */
 class ApiConflictException(val detail: String) : Exception(detail)
@@ -150,7 +150,7 @@ fun enrollBaseUrl(relayDomain: String): String {
 /** The persisted refresh credential was itself refused: no retry can fix this,
  *  the operator has to re-pair the device. */
 class RePairNeededException(val hostBase: String) :
-    Exception("re-pair needed: $hostBase refused the stored refresh credential")
+    AuthException("re-pair needed: $hostBase refused the stored refresh credential")
 
 /** Client + the token cache its interceptor mints through. */
 class HostClient(val client: HttpClient, val tokens: HostTokens)
