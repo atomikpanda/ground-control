@@ -107,6 +107,12 @@ fun hostLadder(
     return HostLadderState.ACTIVE
 }
 
+private fun HostConnection.projectedHostState(): String? =
+    state ?: "online".takeIf {
+        relayDomain == null && !directUrl.isNullOrBlank() && lastContactAtMillis != null
+    }
+
+
 /** Read [hostLadder]'s four inputs off a stored connection and its host. A
  *  projection, not a second ladder — no decision lives here. [nowMillis] is the
  *  caller's clock so this stays a pure function of its inputs. */
@@ -115,7 +121,7 @@ fun ladderFor(
     host: HostConnection?,
     nowMillis: Long,
 ): HostLadderState = hostLadder(
-    hostState = host?.state,
+    hostState = host?.projectedHostState(),
     workspaceState = conn.state,
     runnerState = host?.runnerState,
     secondsSincePhoneContact = host?.lastContactAtMillis?.let { (nowMillis - it) / 1000 },
@@ -125,7 +131,7 @@ fun ladderFor(
  *  not applicable (a host is not a workspace), so it is passed as healthy and
  *  the verdict comes from the host and runner rungs alone. */
 fun ladderForHost(host: HostConnection, nowMillis: Long): HostLadderState = hostLadder(
-    hostState = host.state,
+    hostState = host.projectedHostState(),
     workspaceState = HEALTHY,
     runnerState = host.runnerState,
     secondsSincePhoneContact = host.lastContactAtMillis?.let { (nowMillis - it) / 1000 },

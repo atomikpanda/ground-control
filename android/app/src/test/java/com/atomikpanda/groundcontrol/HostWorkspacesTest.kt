@@ -483,9 +483,16 @@ class HostWorkspacesTest {
             hosts = { listOf(withLan) },
         )
 
-        val workspaces = SpecApi(client.client).listWorkspaces(withLan.hostBase(), null)
+        val refreshed = refreshHostWorkspaceConnections(
+            SpecApi(client.client),
+            withLan,
+        )!!
 
-        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("ws-1", "ws-2"), refreshed.connections.map { it.workspaceId })
+        assertEquals(
+            "https://sub-a.relay.example.com/workspaces/ws-1",
+            refreshed.connections.first().baseUrl,
+        )
         assertEquals(
             listOf(
                 "http://192.168.1.9:47190/host/token",
@@ -496,6 +503,55 @@ class HostWorkspacesTest {
         )
         assertEquals(listOf("Bearer public-bearer"), authorizations)
     }
+    @Test fun an_ambiguous_write_failure_is_not_replayed_through_the_public_base() = runTest {
+        val urls = mutableListOf<String>()
+        var directDown = false
+        val withLan = host.copy(directUrl = "http://192.168.1.9:47190")
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                urls += req.url.toString()
+                if (directDown && req.url.host == "192.168.1.9") {
+                    throw java.io.IOException("response lost after send")
+                }
+                when (req.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces" -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+                }
+            },
+            hosts = { listOf(withLan) },
+        )
+        val api = SpecApi(client.client)
+        api.listWorkspaces(withLan.directUrl!!, null)
+        directDown = true
+
+        val result = runCatching {
+            api.markThreadSeen(
+                WorkspaceConnection(
+                    id = "ws-1",
+                    baseUrl = "${withLan.directUrl}/workspaces/ws-1",
+                    token = null,
+                    workspaceName = "ws",
+                    hostId = withLan.hostId,
+                    workspaceId = "ws-1",
+                ),
+                "thread-1",
+                null,
+            )
+        }
+
+        assertTrue(result.isFailure)
+        assertTrue(
+            urls.none {
+                it == "https://sub-a.relay.example.com/workspaces/ws-1/threads/thread-1/seen"
+            },
+        )
+    }
+
 
     @Test fun refresh_fleet_adopts_a_legacy_row_through_host_root_with_multiple_workspaces() = runTest {
         val urls = mutableListOf<String>()

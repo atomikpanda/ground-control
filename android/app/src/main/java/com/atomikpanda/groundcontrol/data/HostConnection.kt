@@ -74,7 +74,7 @@ suspend fun reachableHostWorkspaces(
 ): Pair<String, List<WorkspaceInfo>>? {
     for (base in host.hostBases()) {
         try {
-            return base to api.listWorkspaces(base, null)
+            return base to api.listWorkspaces(base, null, allowHostFallback = false)
         } catch (error: Exception) {
             if (error is RePairNeededException || error is CancellationException) throw error
         }

@@ -6,6 +6,8 @@ import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.hostLadder
+import com.atomikpanda.groundcontrol.data.ladderFor
+import com.atomikpanda.groundcontrol.data.ladderForHost
 import com.atomikpanda.groundcontrol.ui.projects.projectRowsFlow
 import com.atomikpanda.groundcontrol.ui.settings.hostRowsFlow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -124,6 +126,31 @@ class HostLadderTest {
                 hostLadder(host, metarepo.state, metarepo.runner?.state, fresh),
             )
         }
+    }
+
+    @Test fun a_direct_only_host_uses_phone_contact_instead_of_relay_state() {
+        val now = 100_000L
+        val host = HostConnection(
+            hostId = "hst-direct",
+            directUrl = "http://192.168.1.9:47190",
+            runnerState = "disabled",
+            lastContactAtMillis = now,
+        )
+        val connection = WorkspaceConnection(
+            id = "c-direct",
+            baseUrl = "${host.directUrl}/workspaces/ws-1",
+            workspaceName = "workspace",
+            hostId = host.hostId,
+            state = "healthy",
+            workspaceId = "ws-1",
+        )
+
+        assertEquals(HostLadderState.ACTIVE, ladderForHost(host, now))
+        assertEquals(HostLadderState.ACTIVE, ladderFor(connection, host, now))
+
+        val staleAt = now + DIRECTORY_STALE_S * 1_000
+        assertEquals(HostLadderState.STALE, ladderForHost(host, staleAt))
+        assertEquals(HostLadderState.STALE, ladderFor(connection, host, staleAt))
     }
 
     @Test fun projects_reemits_when_time_alone_crosses_the_stale_deadline() = runTest {

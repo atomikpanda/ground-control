@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.RelayAccount
+import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.data.displayLabel
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
@@ -21,6 +22,7 @@ import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -44,6 +46,43 @@ internal fun hostRowsFlow(
     }
 }
 
+internal data class FleetRefreshFailure(
+    val requiresRePair: Boolean,
+    val message: String,
+)
+
+internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure =
+    if (error is AuthException) {
+        FleetRefreshFailure(
+            requiresRePair = true,
+            message = "Re-pair needed — scan the relay account again",
+        )
+    } else {
+        FleetRefreshFailure(
+            requiresRePair = false,
+            message = "Couldn't reach the relay — showing last known hosts",
+        )
+    }
+
+internal suspend fun observeRelayAccountChanges(
+    accounts: Flow<RelayAccount?>,
+    hasHosts: suspend () -> Boolean,
+    refreshFleet: suspend () -> Unit,
+) {
+    var initialized = false
+    var previous: RelayAccount? = null
+    accounts.distinctUntilChanged().collect { account ->
+        val shouldRefresh = account != null && (
+            (initialized && account != previous) ||
+                (!initialized && !hasHosts())
+            )
+        previous = account
+        initialized = true
+        if (shouldRefresh) refreshFleet()
+    }
+}
+
+
 class SettingsViewModel(
     private val repo: ConnectionsRepository,
     private val api: SpecApi,
@@ -57,10 +96,15 @@ class SettingsViewModel(
 
     init {
         viewModelScope.launch { repo.connections.collect { _connections.value = it } }
-        // A relay account paired by deep link (not through this screen) has no
-        // fleet yet — pull it once so the hosts appear without a manual refresh.
+        // MainActivity persists relay deep links outside this ViewModel. Observe
+        // the repository owner so an already-open Settings screen pulls the new
+        // fleet exactly once; equal DataStore emissions must not recurse.
         viewModelScope.launch {
-            if (hosts.relayAccountSnapshot() != null && hosts.snapshot().isEmpty()) refreshFleet()
+            observeRelayAccountChanges(
+                accounts = hosts.relayAccount,
+                hasHosts = { hosts.snapshot().isNotEmpty() },
+                refreshFleet = { refreshFleet() },
+            )
         }
     }
 
@@ -178,10 +222,7 @@ class SettingsViewModel(
      */
     fun addRelayFromLink(raw: String): Boolean {
         val account = PairLink.parseRelay(raw) ?: return false
-        viewModelScope.launch {
-            hosts.setRelayAccount(account)
-            refreshFleet()
-        }
+        viewModelScope.launch { hosts.setRelayAccount(account) }
         return true
     }
 
@@ -201,11 +242,14 @@ class SettingsViewModel(
                 _testResult.value = "Fleet: ${entries.size} host(s)"
                 incoming.map { it.hostId }.filterNotTo(mutableSetOf()) { it in before }
             },
-            onFailure = {
-                // Missing directory state is its own conservative ladder outcome;
-                // keep cached addresses and refresh credentials for direct reads.
-                hosts.markRelayUnreachable(account.relayDomain)
-                _testResult.value = "Couldn't reach the relay — showing last known hosts"
+            onFailure = { error ->
+                val failure = classifyFleetRefreshFailure(error)
+                if (!failure.requiresRePair) {
+                    // Missing directory state is its own conservative ladder
+                    // outcome; keep cached addresses and refresh credentials.
+                    hosts.markRelayUnreachable(account.relayDomain)
+                }
+                _testResult.value = failure.message
                 emptySet()
             },
         )

@@ -62,6 +62,7 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.http.takeFrom
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.util.AttributeKey
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
@@ -123,6 +124,10 @@ const val HOSTS_PATH = "/hosts"
 
 /** The host's own bootstrap exchange — never proxied through the relay. */
 const val HOST_TOKEN_PATH = "/host/token"
+/** Discovery probes own their direct → public loop and suppress the client's
+ * nested fallback so the base they return is the base that actually answered. */
+private val EXPLICIT_HOST_BASE = AttributeKey<Unit>("ExplicitHostBase")
+
 
 /** `https://enroll.<relay domain>`: the one enroll server `mship relay enroll`,
  *  the daemon and the phone all address (`host_contract.enroll_base_url`). */
@@ -226,7 +231,13 @@ fun hostAwareClient(
             val base = cache?.let { hostBaseFor(request.url.buildString(), knownHosts) }
             if (cache == null || base == null) return@on proceed(request)
             val host = knownHosts.first { base in it.hostBases() }
-            val candidateBases = listOf(base) + host.hostBases().filterNot { it == base }
+            val candidateBases = if (
+                request.attributes.getOrNull(EXPLICIT_HOST_BASE) != null
+            ) {
+                listOf(base)
+            } else {
+                listOf(base) + host.hostBases().filterNot { it == base }
+            }
             val originalUrl = request.url.buildString()
             val retryRequest = request.method == HttpMethod.Get || request.method == HttpMethod.Head
             var lastTransportFailure: IOException? = null
@@ -459,9 +470,14 @@ class SpecApi(private val client: HttpClient) {
     /** Host-level list (#472): GET {hostBase}/workspaces with the host token.
      *  Degraded entries are carried with their state, never dropped — the
      *  caller decides how to render them. */
-    suspend fun listWorkspaces(hostBase: String, token: String?): List<WorkspaceInfo> =
+    suspend fun listWorkspaces(
+        hostBase: String,
+        token: String?,
+        allowHostFallback: Boolean = true,
+    ): List<WorkspaceInfo> =
         client.get("${hostBase.trimEnd('/')}/workspaces") {
             token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+            if (!allowHostFallback) attributes.put(EXPLICIT_HOST_BASE, Unit)
         }.body<WorkspacesResponse>().workspaces
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {

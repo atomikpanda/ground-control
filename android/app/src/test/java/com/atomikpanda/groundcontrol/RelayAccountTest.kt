@@ -34,6 +34,10 @@ class RelayAccountTest {
         assertNull(PairLink.parseRelay("groundcontrol://add-relay"))
     }
 
+    @Test fun returns_null_on_a_malformed_percent_escape() {
+        assertNull(PairLink.parseRelay("groundcontrol://add-relay?relay=r&token=%ZZ"))
+    }
+
     @Test fun returns_null_on_the_wrong_scheme_or_host() {
         assertNull(PairLink.parseRelay("https://add-relay?relay=r&token=t"))
         // The per-workspace pairing link is NOT a relay account.
