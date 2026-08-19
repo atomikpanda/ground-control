@@ -256,7 +256,9 @@ fun adoptManualConnections(
                 ?.let { it.hostId == found.hostId && it.workspaceId == found.workspaceId } == true
         }
         if (manual == null) upsertConnection(acc, found)
-        else acc.map { if (it.id == manual.id) adopt(manual, found) else it }
+        else acc
+            .filterNot { it.id != manual.id && sameWorkspace(it, found) }
+            .map { if (it.id == manual.id) adopt(manual, found) else it }
     }
 }
 

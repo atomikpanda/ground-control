@@ -188,6 +188,18 @@ class HostWorkspacesTest {
         assertNull(row.token)
     }
 
+    @Test fun verified_adoption_removes_an_existing_discovered_twin() {
+        val discovered = deriveConnection("https://a.relay", null, "host-a", "ws-1", "alpha", "healthy")
+        val out = adoptManualConnections(
+            existing = listOf(manual, discovered),
+            discovered = listOf(discovered),
+            identities = listOf(VerifiedIdentity("local-uuid", "host-a", "ws-1")),
+        )
+
+        assertEquals(1, out.count { it.hostId == "host-a" && it.workspaceId == "ws-1" })
+        assertEquals("local-uuid", out.single().id)
+    }
+
     @Test fun a_verified_legacy_host_handle_is_adopted_to_the_real_host_id() {
         val legacy = WorkspaceConnection(
             id = "legacy-row",

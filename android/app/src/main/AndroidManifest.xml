@@ -11,6 +11,8 @@
     <application
         android:name=".GroundControlApplication"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:label="Ground Control"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"

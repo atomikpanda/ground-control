@@ -21,6 +21,7 @@ import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.deriveConnection
+import com.atomikpanda.groundcontrol.data.dto.HostHealth
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import kotlinx.coroutines.flow.Flow
@@ -169,10 +170,10 @@ class SettingsViewModel(
                 setTestResult("Saved (couldn't reach /health)")
                 return@launch
             }
-            val identity = runCatching { api.hostHealth(base).hostId }
-            if (surfaceRePair(identity.exceptionOrNull())) return@launch
+            val hostHealth = runCatching { api.hostHealth(base) }
+            if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
             val hostWs = hostResult.getOrThrow()
-            _discovered.value = DiscoveredWorkspaces(base, tok, hostWs, identity.getOrNull())
+            _discovered.value = DiscoveredWorkspaces(base, tok, hostWs, hostHealth.getOrNull())
             setTestResult("That's a host URL — pick a workspace below")
         }
     }
@@ -199,9 +200,11 @@ class SettingsViewModel(
         val hostBase: String,
         val hostToken: String?,
         val workspaces: List<WorkspaceInfo>,
-        /** Verified by this host's own `/health`; null keeps legacy behavior. */
-        val hostId: String? = null,
-    )
+        /** This host's own `/health`; null keeps legacy behavior. */
+        val hostHealth: HostHealth? = null,
+    ) {
+        val hostId: String? get() = hostHealth?.hostId
+    }
 
     private val _discovered = MutableStateFlow<DiscoveredWorkspaces?>(null)
     /** What the last [discoverOnHost] found; null = no discovery ran/failed. */
@@ -223,10 +226,10 @@ class SettingsViewModel(
                 }
                 return@launch
             }
-            val identity = runCatching { api.hostHealth(base).hostId }
-            if (surfaceRePair(identity.exceptionOrNull())) return@launch
+            val hostHealth = runCatching { api.hostHealth(base) }
+            if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
             val workspaces = result.getOrThrow()
-            _discovered.value = DiscoveredWorkspaces(base, tok, workspaces, identity.getOrNull())
+            _discovered.value = DiscoveredWorkspaces(base, tok, workspaces, hostHealth.getOrNull())
             setTestResult("Found ${workspaces.size} workspace(s)")
         }
     }
@@ -314,7 +317,7 @@ class SettingsViewModel(
                 hosts.setDirectUrl(
                     hostId,
                     from.hostBase,
-                    info.runner?.state,
+                    from.hostHealth?.runner?.state ?: info.runner?.state,
                     System.currentTimeMillis(),
                 )
             }
