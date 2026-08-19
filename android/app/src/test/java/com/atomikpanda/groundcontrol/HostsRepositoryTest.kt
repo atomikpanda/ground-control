@@ -74,9 +74,21 @@ class HostsRepositoryTest {
         assertEquals(listOf("h-1", "h-2"), out.map { it.hostId })
     }
 
-    @Test fun a_reachable_direct_url_is_preferred_over_the_relay() {
+    @Test fun a_direct_only_host_prefers_its_reachable_direct_url() {
         assertEquals("https://h-1abc.relay.example.com", host.hostBase())
-        assertEquals("http://192.168.1.9:47190", host.copy(directUrl = "http://192.168.1.9:47190/").hostBase())
+        assertEquals(
+            "http://192.168.1.9:47190",
+            host.copy(
+                refresh = null,
+                directUrl = "http://192.168.1.9:47190/",
+            ).hostBase(),
+        )
+    }
+
+    @Test fun an_unverified_direct_url_cannot_receive_a_stored_refresh_credential() {
+        val claimed = host.copy(directUrl = "http://attacker.lan:47190")
+
+        assertEquals(host.publicUrl, claimed.hostBase())
     }
 
     @Test fun a_failed_directory_read_marks_only_that_relays_hosts_unknown() {

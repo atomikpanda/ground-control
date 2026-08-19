@@ -428,9 +428,9 @@ class HostWorkspacesTest {
         assertEquals(2, fx.refreshBodies.size)  // one failed attempt, not a retry loop
     }
 
-    @Test fun relay_down_host_up_keeps_the_workspace_usable() = runBlocking {
-        // GET /hosts fails, but the persisted refresh still mints against the cached
-        // public URL (or the LAN one), so a workspace never goes dark with the relay.
+    @Test fun relay_directory_down_public_host_up_keeps_the_workspace_usable() = runBlocking {
+        // Directory failure does not matter once the public host URL and refresh
+        // are cached. An unverified direct URL is deliberately ignored.
         val fx = HostFixture()
         val lan = host.copy(directUrl = "http://192.168.1.9:47190")
         val engine = MockEngine { req ->
@@ -443,118 +443,93 @@ class HostWorkspacesTest {
         assertNull(runCatching { api.listHosts("relay.example.com", "fleet-tok") }.getOrNull())
         val ws = api.listWorkspaces(lan.hostBase(), null)
         assertEquals(listOf("ws-1"), ws.map { it.id })
-        assertEquals("http://192.168.1.9:47190/host/token", fx.urls.first())
+        assertEquals("https://sub-a.relay.example.com/host/token", fx.urls.first())
     }
 
-    @Test fun direct_down_public_relay_up_uses_the_reachable_public_base() = runTest {
-        val urls = mutableListOf<String>()
-        val api = SpecApi(HttpClient(MockEngine { req ->
-            urls += req.url.toString()
-            if (req.url.host == "192.168.1.9") throw java.io.IOException("left the LAN")
-            respond(listPayload, HttpStatusCode.OK, jsonHdr)
-        }) { mshipDefaults() })
-        val withLan = host.copy(directUrl = "http://192.168.1.9:47190")
-
-        val refreshed = refreshHostWorkspaceConnections(api, withLan)!!
-
-        assertEquals(listOf("ws-1", "ws-2"), refreshed.connections.map { it.workspaceId })
-        assertEquals(
-            "https://sub-a.relay.example.com/workspaces/ws-1",
-            refreshed.connections.first().baseUrl,
+    @Test fun route_snapshot_cannot_gain_a_refresh_before_exchange() = runTest {
+        val directOnly = host.copy(
+            directUrl = "http://attacker.lan:47190",
+            refresh = null,
         )
-        assertEquals(
-            listOf(
-                "http://192.168.1.9:47190/workspaces",
-                "https://sub-a.relay.example.com/workspaces",
-            ),
-            urls,
-        )
-    }
-
-
-    @Test fun host_client_falls_back_from_a_dead_direct_base_to_the_public_base() = runTest {
-        val urls = mutableListOf<String>()
-        val authorizations = mutableListOf<String?>()
-        val withLan = host.copy(directUrl = "http://192.168.1.9:47190")
+        val paired = directOnly.copy(refresh = "newly-stored-refresh")
+        var snapshotReads = 0
+        val refreshBodies = mutableListOf<String>()
         val client = hostAwareClient(
             engine = MockEngine { req ->
-                urls += req.url.toString()
-                if (req.url.host == "192.168.1.9") throw java.io.IOException("left the LAN")
                 when (req.url.encodedPath) {
-                    "/host/token" -> respond(
-                        """{"token":"public-bearer","expires_in":300}""",
-                        HttpStatusCode.OK,
+                    "/host/token" -> {
+                        refreshBodies += (req.body as OutgoingContent.ByteArrayContent)
+                            .bytes().decodeToString()
+                        respond(
+                            """{"token":"stolen","expires_in":300}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    "/workspaces" -> respond(
+                        """{"detail":"unauthorized"}""",
+                        HttpStatusCode.Unauthorized,
                         jsonHdr,
                     )
-                    "/workspaces" -> {
-                        authorizations += req.headers[HttpHeaders.Authorization]
-                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
-                    }
                     else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
                 }
             },
-            hosts = { listOf(withLan) },
+            hosts = {
+                snapshotReads += 1
+                listOf(if (snapshotReads == 1) directOnly else paired)
+            },
         )
 
-        val refreshed = refreshHostWorkspaceConnections(
-            SpecApi(client.client),
-            withLan,
-        )!!
+        val result = runCatching {
+            SpecApi(client.client).listWorkspaces(directOnly.directUrl!!, null)
+        }
 
-        assertEquals(listOf("ws-1", "ws-2"), refreshed.connections.map { it.workspaceId })
-        assertEquals(
-            "https://sub-a.relay.example.com/workspaces/ws-1",
-            refreshed.connections.first().baseUrl,
-        )
-        assertEquals(
-            listOf(
-                "http://192.168.1.9:47190/host/token",
-                "https://sub-a.relay.example.com/host/token",
-                "https://sub-a.relay.example.com/workspaces",
-            ),
-            urls,
-        )
-        assertEquals(listOf("Bearer public-bearer"), authorizations)
+        assertTrue(result.isFailure)
+        assertEquals(emptyList<String>(), refreshBodies)
+        assertEquals(1, snapshotReads)
     }
 
-    @Test fun fallback_mints_a_bearer_for_each_candidate_base() = runTest {
-        val urls = mutableListOf<String>()
-        val publicAuthorizations = mutableListOf<String?>()
-        val withLan = host.copy(directUrl = "http://192.168.1.9:47190")
+    @Test fun a_refused_snapshot_credential_retries_a_current_safe_route() = runTest {
+        val stale = host.copy(refresh = "rotated-out")
+        val current = host.copy(refresh = "current")
+        var snapshotReads = 0
+        val exchanges = mutableListOf<String>()
         val client = hostAwareClient(
             engine = MockEngine { req ->
-                urls += req.url.toString()
-                when {
-                    req.url.encodedPath == "/host/token" -> respond(
-                        """{"token":"${req.url.host}-bearer","expires_in":300}""",
-                        HttpStatusCode.OK,
-                        jsonHdr,
-                    )
-                    req.url.encodedPath == "/workspaces" &&
-                        req.url.host == "192.168.1.9" ->
-                        throw java.io.IOException("response lost")
-                    req.url.encodedPath == "/workspaces" -> {
-                        publicAuthorizations += req.headers[HttpHeaders.Authorization]
-                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        val body = (req.body as OutgoingContent.ByteArrayContent)
+                            .bytes().decodeToString()
+                        val credential = body.substringAfter("\"refresh\":\"").substringBefore('"')
+                        exchanges += credential
+                        if (credential == stale.refresh) {
+                            respond(
+                                """{"detail":"unauthorized"}""",
+                                HttpStatusCode.Unauthorized,
+                                jsonHdr,
+                            )
+                        } else {
+                            respond(
+                                """{"token":"current-bearer","expires_in":300}""",
+                                HttpStatusCode.OK,
+                                jsonHdr,
+                            )
+                        }
                     }
+                    "/workspaces" -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
                     else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
                 }
             },
-            hosts = { listOf(withLan) },
+            hosts = {
+                snapshotReads += 1
+                listOf(if (snapshotReads == 1) stale else current)
+            },
         )
 
-        SpecApi(client.client).listWorkspaces(withLan.directUrl!!, null)
+        val workspaces = SpecApi(client.client).listWorkspaces(stale.publicUrl, null)
 
-        assertEquals(
-            listOf(
-                "http://192.168.1.9:47190/host/token",
-                "http://192.168.1.9:47190/workspaces",
-                "https://sub-a.relay.example.com/host/token",
-                "https://sub-a.relay.example.com/workspaces",
-            ),
-            urls,
-        )
-        assertEquals(listOf("Bearer sub-a.relay.example.com-bearer"), publicAuthorizations)
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("rotated-out", "current"), exchanges)
     }
 
     @Test fun workspace_route_identity_disambiguates_hosts_sharing_a_base() = runTest {
@@ -694,7 +669,10 @@ class HostWorkspacesTest {
     @Test fun an_ambiguous_write_failure_is_not_replayed_through_the_public_base() = runTest {
         val urls = mutableListOf<String>()
         var directDown = false
-        val withLan = host.copy(directUrl = "http://192.168.1.9:47190")
+        val withLan = host.copy(
+            refresh = null,
+            directUrl = "http://192.168.1.9:47190",
+        )
         val client = hostAwareClient(
             engine = MockEngine { req ->
                 urls += req.url.toString()
@@ -823,6 +801,32 @@ class HostWorkspacesTest {
         assertEquals(listOf("good"), verification.identities.map { it.connectionId })
     }
 
+    @Test fun legacy_workspace_health_identity_avoids_host_root_inference() = runTest {
+        val urls = mutableListOf<String>()
+        val api = SpecApi(HttpClient(MockEngine { req ->
+            urls += req.url.toString()
+            respond(
+                """{"status":"ok","workspace":"alpha","host_id":"host-a","workspace_id":"ws-1"}""",
+                HttpStatusCode.OK,
+                jsonHdr,
+            )
+        }) { mshipDefaults() })
+        val legacy = WorkspaceConnection(
+            id = "legacy-row",
+            baseUrl = "http://lan:47100/workspaces/ws-1",
+            token = "standing",
+            workspaceName = "alpha",
+        )
+
+        val identities = verifyLegacyIdentities(api, listOf(legacy)).identities
+
+        assertEquals(
+            listOf(VerifiedIdentity("legacy-row", "host-a", "ws-1")),
+            identities,
+        )
+        assertEquals(listOf("http://lan:47100/workspaces/ws-1/health"), urls)
+    }
+
     @Test fun refresh_fleet_adopts_a_legacy_row_through_host_root_with_multiple_workspaces() = runTest {
         val urls = mutableListOf<String>()
         val api = SpecApi(HttpClient(MockEngine { req ->
@@ -864,6 +868,7 @@ class HostWorkspacesTest {
         assertEquals(1, adopted.count { it.workspaceId == "ws-2" })
         assertEquals(
             listOf(
+                "http://lan:47190/workspaces/ws-2/health",
                 "http://lan:47190/health",
                 "http://lan:47190/workspaces",
                 "http://lan:47190/workspaces",

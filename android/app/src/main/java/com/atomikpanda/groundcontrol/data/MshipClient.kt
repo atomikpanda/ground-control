@@ -165,7 +165,6 @@ class HostClient(val client: HttpClient, val tokens: HostTokens)
  * its bearer to a different transport.
  */
 class HostTokens(
-    private val credentialFor: suspend (hostId: String) -> String?,
     private val exchange: suspend (hostBase: String, credential: String) -> String,
 ) {
     private data class RouteKey(val hostId: String, val hostBase: String)
@@ -177,19 +176,24 @@ class HostTokens(
     fun cached(hostId: String, hostBase: String): String? = cache[RouteKey(hostId, hostBase)]
 
     /**
-     * The current bearer for this host route, minting one if we have none or if
-     * [stale] is the one that just came back 401. Null when no refresh credential
-     * is stored (a manually paired host, say).
+     * The current bearer for this host route, minting one from the refresh
+     * credential captured in the same host snapshot that selected the route.
+     * Null when that snapshot has no credential.
      */
-    suspend fun bearer(hostId: String, hostBase: String, stale: String? = null): String? {
+    suspend fun bearer(
+        hostId: String,
+        hostBase: String,
+        credential: String?,
+        stale: String? = null,
+    ): String? {
         val key = RouteKey(hostId, hostBase)
         val lock = guard.withLock { locks.getOrPut(key) { Mutex() } }
         return lock.withLock {
             val current = cache[key]
             // Someone else already replaced the token we came to replace.
             if (current != null && current != stale) return@withLock current
-            val credential = credentialFor(hostId) ?: return@withLock null
-            exchange(hostBase, credential).also { cache[key] = it }
+            val capturedCredential = credential ?: return@withLock null
+            exchange(hostBase, capturedCredential).also { cache[key] = it }
         }
     }
 }
@@ -279,6 +283,23 @@ fun hostAwareClient(
                 request.method == HttpMethod.Head
             var lastTransportFailure: IOException? = null
 
+            suspend fun routeBearer(candidateBase: String, stale: String? = null): String? =
+                try {
+                    cache.bearer(host.hostId, candidateBase, host.refresh, stale)
+                } catch (error: RePairNeededException) {
+                    val currentHost = hosts().firstOrNull { it.hostId == host.hostId }
+                        ?: throw error
+                    val currentRefresh = currentHost.refresh
+                    if (
+                        currentRefresh == null ||
+                        currentRefresh == host.refresh ||
+                        candidateBase !in currentHost.hostBases()
+                    ) {
+                        throw error
+                    }
+                    cache.bearer(host.hostId, candidateBase, currentRefresh, stale)
+                }
+
             for ((candidateBase, candidateUrl) in candidateRequests) {
                 val candidateRequest = HttpRequestBuilder().apply {
                     takeFrom(request)
@@ -298,7 +319,7 @@ fun hostAwareClient(
                     return@on call
                 }
                 val token = try {
-                    cache.cached(host.hostId, candidateBase) ?: cache.bearer(host.hostId, candidateBase)
+                    cache.cached(host.hostId, candidateBase) ?: routeBearer(candidateBase)
                 } catch (error: IOException) {
                     lastTransportFailure = error
                     continue
@@ -325,7 +346,7 @@ fun hostAwareClient(
                     return@on call
                 }
                 val refreshed = try {
-                    cache.bearer(host.hostId, candidateBase, stale = token)
+                    routeBearer(candidateBase, stale = token)
                 } catch (error: IOException) {
                     lastTransportFailure = error
                     continue
@@ -351,7 +372,6 @@ fun hostAwareClient(
         install(refreshAuth)
     }
     tokens = HostTokens(
-        credentialFor = { hostId -> hosts().firstOrNull { it.hostId == hostId }?.refresh },
         exchange = { base, credential -> mintHostToken(client, base, credential) },
     )
     return HostClient(client, tokens)

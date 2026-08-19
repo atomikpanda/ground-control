@@ -16,6 +16,8 @@ data class SpecSummary(
 data class HealthResponse(
     val status: String,
     val workspace: String,
+    @SerialName("host_id") val hostId: String? = null,
+    @SerialName("workspace_id") val workspaceId: String? = null,
 )
 
 /** The host's runner passthrough (#471 AC6; #473 fills `state` with idle|active|degraded). */

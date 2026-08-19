@@ -30,11 +30,11 @@ data class HostConnection(
     val publicUrl: String = "",
     /** Last-known directory state: online / offline / pending-approval / … */
     val state: String? = null,
-    /** The persisted refresh credential (AC9) — the reason a LAN-reachable host
-     *  survives a relay outage, which is only true if it outlives the process. */
+    /** Persisted refresh credential used to mint short-lived host bearers
+     * across phone process restarts. */
     val refresh: String? = null,
-    /** A LAN/tailnet URL the operator entered and we found reachable. Preferred
-     *  over [publicUrl]: same host, one less failure domain in the path. */
+    /** A LAN/tailnet URL the operator entered and we found reachable. Used
+     * directly only until a relay refresh credential exists. */
     val directUrl: String? = null,
     /** Operator's name for this host; survives every re-read of the directory. */
     val labelOverride: String? = null,
@@ -52,11 +52,12 @@ data class HostConnection(
     val lastContactAtMillis: Long? = null,
 )
 
-/** Candidate bases in reachability order: a verified LAN/tailnet address first,
- * then the relay URL. Callers that touch the network must try in this order,
- * rather than assuming a once-reachable direct URL is reachable forever. */
+/** Candidate bases in reachability order. A LAN/tailnet address is eligible
+ * only before this host owns a persisted refresh credential; once it does,
+ * sending that credential to an address learned from unauthenticated health
+ * would disclose it. */
 fun HostConnection.hostBases(): List<String> =
-    listOfNotNull(directUrl, publicUrl)
+    listOfNotNull(directUrl.takeIf { refresh == null }, publicUrl)
         .map { it.trimEnd('/') }
         .filter { it.isNotBlank() }
         .distinct()
@@ -136,7 +137,7 @@ fun recordHostContact(
     } else host
 }
 
-/** Persist the observations made by one verified direct-host discovery. */
+/** Persist the observations made by one reachable direct-host discovery. */
 fun recordDirectHostDiscovery(
     hosts: List<HostConnection>,
     hostId: String,

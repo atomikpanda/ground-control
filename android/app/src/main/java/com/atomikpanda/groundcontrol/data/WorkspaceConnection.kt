@@ -177,6 +177,18 @@ suspend fun verifyLegacyIdentity(
     api: SpecApi,
     connection: WorkspaceConnection,
 ): VerifiedIdentity? {
+    val workspaceHealth = try {
+        api.health(connection)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        null
+    }
+    val workspaceHostId = workspaceHealth?.hostId?.takeIf { it.isNotBlank() }
+    val workspaceHealthId = workspaceHealth?.workspaceId?.takeIf { it.isNotBlank() }
+    if (workspaceHostId != null && workspaceHealthId != null) {
+        return VerifiedIdentity(connection.id, workspaceHostId, workspaceHealthId)
+    }
     val base = connection.baseUrl.trimEnd('/')
     val knownWorkspaceId = connection.workspaceId
     val workspaceSuffix = knownWorkspaceId?.let { "/workspaces/$it" }

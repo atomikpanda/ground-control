@@ -308,19 +308,27 @@ class SettingsViewModel(
     }
 
 
-    /** Persist a selected direct-host workspace. When `/health` verified a real
-     * host id, the reachable LAN/tailnet address is attached to that host and
-     * will carry forward when the relay later supplies its refresh credential.
-     * A legacy host without identity keeps the pre-#471 URL handle and token. */
+    /** Persist a selected direct-host workspace. A host id learned from
+     * unauthenticated `/health` is adopted only while no relay refresh
+     * credential exists; otherwise the URL remains a separate manual
+     * connection and can never receive that credential. */
     fun addDiscovered(from: DiscoveredWorkspaces, info: WorkspaceInfo) {
         viewModelScope.launch {
-            val hostId = from.hostId ?: from.hostBase
-            if (from.hostId != null) {
+            val claimedHost = from.hostId?.let { claimed ->
+                hosts.snapshot().firstOrNull { it.hostId == claimed }
+            }
+            val canAdoptClaimedHost = from.hostId != null && claimedHost?.refresh == null
+            val hostId = from.hostId.takeIf { canAdoptClaimedHost } ?: from.hostBase
+            if (canAdoptClaimedHost) {
                 hosts.setDirectUrl(
                     hostId,
                     from.hostBase,
                     from.hostHealth?.runner?.state ?: info.runner?.state,
                     System.currentTimeMillis(),
+                )
+            } else if (from.hostId != null) {
+                setTestResult(
+                    "Direct identity is unverified; saved as a separate connection",
                 )
             }
             val storedHost = hosts.snapshot().firstOrNull { it.hostId == hostId }
