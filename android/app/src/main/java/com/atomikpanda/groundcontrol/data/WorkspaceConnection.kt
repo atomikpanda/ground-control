@@ -180,10 +180,10 @@ fun unresolvedLegacyConnections(
 }
 
 /** Verify the identity of a persisted pre-host-model row through its host root.
- * A #472-derived legacy row already knows its workspace id even though its
- * `hostId` is still a URL; that id selects the right workspace when the host
- * serves several. A truly old row with no id remains adoptable only when the
- * verified host exposes exactly one workspace. */
+ * A #472-derived legacy row's workspace-addressed URL can select the right
+ * workspace even when its later-added `workspaceId` field is absent. A truly
+ * old root row with no id remains adoptable only when the verified host exposes
+ * exactly one workspace. */
 suspend fun verifyLegacyIdentity(
     api: SpecApi,
     connection: WorkspaceConnection,
@@ -201,7 +201,9 @@ suspend fun verifyLegacyIdentity(
         return VerifiedIdentity(connection.id, workspaceHostId, workspaceHealthId)
     }
     val base = connection.baseUrl.trimEnd('/')
-    val knownWorkspaceId = connection.workspaceId
+    val knownWorkspaceId = connection.workspaceId ?: base
+        .substringAfterLast("/workspaces/", "")
+        .takeIf { it.isNotBlank() && '/' !in it }
     val workspaceSuffix = knownWorkspaceId?.let { "/workspaces/$it" }
     val hostRoot = when {
         workspaceSuffix != null && base.endsWith(workspaceSuffix) -> base.removeSuffix(workspaceSuffix)
@@ -301,13 +303,13 @@ fun replaceHostConnections(
     }
 }
 
-/** The merge itself. The manual row's standing token is dropped: it is rejected
- *  for relay-borne requests, and an Authorization header on the row would
- *  suppress the short-lived bearer the refresh interceptor mints. */
+/** The merge itself. Relay discovery supplies no standing token, so relay-borne
+ * rows cannot suppress the refresh interceptor's bearer. Verified direct
+ * discovery supplies its direct token and retains it. */
 private fun adopt(manual: WorkspaceConnection, found: WorkspaceConnection): WorkspaceConnection =
     found.copy(
         id = manual.id,
-        token = null,
+        token = found.token,
         workspaceName = found.workspaceName.ifBlank { manual.workspaceName },
         colorOverride = manual.colorOverride ?: found.colorOverride,
         glyphOverride = manual.glyphOverride ?: found.glyphOverride,

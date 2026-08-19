@@ -332,16 +332,19 @@ class SettingsViewModel(
                 )
             }
             val storedHost = hosts.snapshot().firstOrNull { it.hostId == hostId }
-            repo.upsert(
-                deriveConnection(
-                    hostBase = from.hostBase,
-                    hostToken = from.hostToken.takeIf { storedHost?.refresh == null },
-                    hostId = hostId,
-                    workspaceId = info.id,
-                    workspaceName = info.name,
-                    state = info.state,
-                ),
+            val discovered = deriveConnection(
+                hostBase = from.hostBase,
+                hostToken = from.hostToken.takeIf { storedHost?.refresh == null },
+                hostId = hostId,
+                workspaceId = info.id,
+                workspaceName = info.name,
+                state = info.state,
             )
+            val sameUrlLegacyRows = unresolvedLegacyConnections(repo.snapshot()).filter {
+                it.baseUrl.trimEnd('/') == discovered.baseUrl
+            }
+            val identities = verifyLegacyIdentities(api, sameUrlLegacyRows).identities
+            repo.upsertDiscovered(discovered, identities)
         }
     }
 }

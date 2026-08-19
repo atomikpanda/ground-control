@@ -274,111 +274,142 @@ fun hostAwareClient(
             val originalBase = base ?: workspaceRoute?.baseUrl?.trimEnd('/')
                 ?.takeIf { originalUrl.startsWith("$it/") }
                 ?: return@on proceed(request)
-            val candidateBases = if (
+            val explicitHostBase =
                 request.attributes.getOrNull(EXPLICIT_HOST_BASE) != null
-            ) {
-                listOfNotNull(base)
-            } else if (base != null) {
-                listOf(base) + host.hostBases().filterNot { it == base }
-            } else {
-                host.hostBases()
-            }
-            val candidateRequests = candidateBases.map { candidateBase ->
-                val candidateUrl = if (base != null) {
-                    candidateBase + originalUrl.removePrefix(originalBase)
-                } else {
-                    workspaceBaseUrl(candidateBase, workspaceRoute!!.workspaceId) +
-                        originalUrl.removePrefix(originalBase)
-                }
-                candidateBase to candidateUrl
-            }
             val retryRequest = request.method == HttpMethod.Get ||
                 request.method == HttpMethod.Head
             var lastTransportFailure: IOException? = null
+            var routedHost = host
+            var snapshotRefreshed = false
 
-            suspend fun routeBearer(candidateBase: String, stale: String? = null): String? =
-                try {
-                    cache.bearer(host.hostId, candidateBase, host.refresh, stale)
-                } catch (error: RePairNeededException) {
-                    val currentHost = hosts().firstOrNull { it.hostId == host.hostId }
-                        ?: throw error
-                    val currentRefresh = currentHost.refresh
-                    if (
-                        currentRefresh == null ||
-                        currentRefresh == host.refresh ||
-                        candidateBase !in currentHost.hostBases()
-                    ) {
-                        throw error
+            while (true) {
+                val preferredBase = base?.takeIf { it in routedHost.hostBases() }
+                val candidateBases = when {
+                    explicitHostBase -> listOfNotNull(preferredBase)
+                    preferredBase != null ->
+                        listOf(preferredBase) + routedHost.hostBases().filterNot { it == preferredBase }
+                    else -> routedHost.hostBases()
+                }
+                val candidateRequests = candidateBases.map { candidateBase ->
+                    val candidateUrl = if (base != null) {
+                        candidateBase + originalUrl.removePrefix(originalBase)
+                    } else {
+                        workspaceBaseUrl(candidateBase, workspaceRoute!!.workspaceId) +
+                            originalUrl.removePrefix(originalBase)
                     }
-                    cache.bearer(host.hostId, candidateBase, currentRefresh, stale)
+                    candidateBase to candidateUrl
                 }
+                var snapshotRestart: HostConnection? = null
 
-            for ((candidateBase, candidateUrl) in candidateRequests) {
-                val candidateRequest = HttpRequestBuilder().apply {
-                    takeFrom(request)
-                    url.takeFrom(candidateUrl)
-                }
-                if (candidateRequest.headers.contains(HttpHeaders.Authorization)) {
+                suspend fun routeBearer(candidateBase: String, stale: String? = null): String? =
+                    try {
+                        cache.bearer(
+                            routedHost.hostId,
+                            candidateBase,
+                            routedHost.refresh,
+                            stale,
+                        )
+                    } catch (error: RePairNeededException) {
+                        if (snapshotRefreshed || explicitHostBase) throw error
+                        val currentHost = hosts().firstOrNull {
+                            it.hostId == routedHost.hostId
+                        } ?: throw error
+                        val routeChanged = currentHost.hostBases() != routedHost.hostBases()
+                        if (
+                            currentHost.refresh == null ||
+                            (currentHost.refresh == routedHost.refresh && !routeChanged)
+                        ) {
+                            throw error
+                        }
+                        // Abandon every URL from the refused snapshot. A changed
+                        // refresh credential may only be sent to a route from
+                        // the same new snapshot.
+                        snapshotRestart = currentHost
+                        null
+                    }
+
+                for ((candidateBase, candidateUrl) in candidateRequests) {
+                    val candidateRequest = HttpRequestBuilder().apply {
+                        takeFrom(request)
+                        url.takeFrom(candidateUrl)
+                    }
+                    if (candidateRequest.headers.contains(HttpHeaders.Authorization)) {
+                        val call = try {
+                            proceed(candidateRequest)
+                        } catch (error: IOException) {
+                            if (!retryRequest) throw error
+                            lastTransportFailure = error
+                            continue
+                        }
+                        if (call.response.status.isSuccess() && reportContact) {
+                            notifyHostContact(onHostContact, routedHost.hostId, candidateBase)
+                        }
+                        return@on call
+                    }
+                    val token = try {
+                        cache.cached(
+                            routedHost.hostId,
+                            candidateBase,
+                            routedHost.refresh,
+                        ) ?: routeBearer(candidateBase)
+                    } catch (error: IOException) {
+                        lastTransportFailure = error
+                        continue
+                    }
+                    if (snapshotRestart != null) break
+                    token?.let {
+                        candidateRequest.headers[HttpHeaders.Authorization] = "Bearer $it"
+                    }
+                    // The response validator turns a 401 into an AuthException,
+                    // and it may fire here or when the caller reads the body.
                     val call = try {
+                        proceed(candidateRequest)
+                            .takeIf { it.response.status != HttpStatusCode.Unauthorized }
+                    } catch (_: AuthException) {
+                        null
+                    } catch (error: IOException) {
+                        if (!retryRequest) throw error
+                        lastTransportFailure = error
+                        continue
+                    }
+                    if (call != null) {
+                        if (call.response.status.isSuccess() && reportContact) {
+                            notifyHostContact(onHostContact, routedHost.hostId, candidateBase)
+                        }
+                        return@on call
+                    }
+                    val refreshed = try {
+                        routeBearer(candidateBase, stale = token)
+                    } catch (error: IOException) {
+                        lastTransportFailure = error
+                        continue
+                    }
+                    if (snapshotRestart != null) break
+                    if (refreshed == null) {
+                        throw AuthException("no credential for $candidateBase")
+                    }
+                    candidateRequest.headers[HttpHeaders.Authorization] = "Bearer $refreshed"
+                    val retried = try {
                         proceed(candidateRequest)
                     } catch (error: IOException) {
                         if (!retryRequest) throw error
                         lastTransportFailure = error
                         continue
                     }
-                    if (call.response.status.isSuccess() && reportContact) {
-                        notifyHostContact(onHostContact, host.hostId, candidateBase)
+                    if (retried.response.status.isSuccess() && reportContact) {
+                        notifyHostContact(onHostContact, routedHost.hostId, candidateBase)
                     }
-                    return@on call
+                    return@on retried
                 }
-                val token = try {
-                    cache.cached(host.hostId, candidateBase, host.refresh) ?:
-                        routeBearer(candidateBase)
-                } catch (error: IOException) {
-                    lastTransportFailure = error
+                val currentHost = snapshotRestart
+                if (currentHost != null) {
+                    routedHost = currentHost
+                    snapshotRefreshed = true
                     continue
                 }
-                token?.let {
-                    candidateRequest.headers[HttpHeaders.Authorization] = "Bearer $it"
-                }
-                // The response validator turns a 401 into an AuthException, and
-                // it may fire either here or when the caller reads the body.
-                val call = try {
-                    proceed(candidateRequest)
-                        .takeIf { it.response.status != HttpStatusCode.Unauthorized }
-                } catch (_: AuthException) {
-                    null
-                } catch (error: IOException) {
-                    if (!retryRequest) throw error
-                    lastTransportFailure = error
-                    continue
-                }
-                if (call != null) {
-                    if (call.response.status.isSuccess() && reportContact) {
-                        notifyHostContact(onHostContact, host.hostId, candidateBase)
-                    }
-                    return@on call
-                }
-                val refreshed = try {
-                    routeBearer(candidateBase, stale = token)
-                } catch (error: IOException) {
-                    lastTransportFailure = error
-                    continue
-                } ?: throw AuthException("no credential for $candidateBase")
-                candidateRequest.headers[HttpHeaders.Authorization] = "Bearer $refreshed"
-                val retried = try {
-                    proceed(candidateRequest)
-                } catch (error: IOException) {
-                    if (!retryRequest) throw error
-                    lastTransportFailure = error
-                    continue
-                }
-                if (retried.response.status.isSuccess() && reportContact) {
-                    notifyHostContact(onHostContact, host.hostId, candidateBase)
-                }
-                return@on retried
+                throw lastTransportFailure ?: IOException("no reachable base for $originalBase")
             }
-            throw lastTransportFailure ?: IOException("no reachable base for $originalBase")
+            error("host route loop exited")
         }
     }
     val client = HttpClient(engine) {

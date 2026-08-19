@@ -32,6 +32,13 @@ class ConnectionsRepository(private val context: Context) {
 
     suspend fun upsert(conn: WorkspaceConnection) = mutate { upsertConnection(it, conn) }
 
+    /** Upsert one explicitly selected discovery, adopting only identities the
+     * selected row's own host verified before this serialized write. */
+    suspend fun upsertDiscovered(
+        conn: WorkspaceConnection,
+        identities: List<VerifiedIdentity>,
+    ) = mutate { adoptManualConnections(it, listOf(conn), identities) }
+
     suspend fun remove(id: String) = mutate { list -> list.filterNot { it.id == id } }
 
     /** Replace one host's authoritative workspace set, adopting verified manual

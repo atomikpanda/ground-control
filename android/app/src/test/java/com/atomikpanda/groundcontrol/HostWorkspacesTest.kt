@@ -188,6 +188,29 @@ class HostWorkspacesTest {
         assertNull(row.token)
     }
 
+    @Test fun verified_direct_adoption_keeps_the_direct_token() {
+        val directManual = manual.copy(
+            baseUrl = "http://host-a:47100/workspaces/ws-1",
+        )
+        val discovered = deriveConnection(
+            "http://host-a:47100",
+            "standing-tok",
+            "host-a",
+            "ws-1",
+            "alpha",
+            "healthy",
+        )
+        val out = adoptManualConnections(
+            existing = listOf(directManual),
+            discovered = listOf(discovered),
+            identities = listOf(VerifiedIdentity("local-uuid", "host-a", "ws-1")),
+        )
+
+        assertEquals(1, out.size)
+        assertEquals("local-uuid", out.single().id)
+        assertEquals("standing-tok", out.single().token)
+    }
+
     @Test fun verified_adoption_removes_an_existing_discovered_twin() {
         val discovered = deriveConnection("https://a.relay", null, "host-a", "ws-1", "alpha", "healthy")
         val out = adoptManualConnections(
@@ -530,6 +553,72 @@ class HostWorkspacesTest {
 
         assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
         assertEquals(listOf("rotated-out", "current"), exchanges)
+    }
+
+    @Test fun a_refused_snapshot_route_retries_the_current_host_route() = runTest {
+        val stale = host.copy(
+            publicUrl = "https://old.relay.example.com",
+            refresh = "old-refresh",
+        )
+        val current = stale.copy(
+            publicUrl = "https://new.relay.example.com",
+            refresh = "new-refresh",
+        )
+        var snapshotReads = 0
+        val exchanges = mutableListOf<Pair<String, String>>()
+        val urls = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                urls += req.url.toString()
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        val body = (req.body as OutgoingContent.ByteArrayContent)
+                            .bytes().decodeToString()
+                        val credential = Regex(""""refresh":"([^"]+)"""")
+                            .find(body)!!.groupValues[1]
+                        exchanges += req.url.host to credential
+                        if (req.url.host == "old.relay.example.com") {
+                            respond(
+                                """{"detail":"unauthorized"}""",
+                                HttpStatusCode.Unauthorized,
+                                jsonHdr,
+                            )
+                        } else {
+                            respond(
+                                """{"token":"current-bearer","expires_in":300}""",
+                                HttpStatusCode.OK,
+                                jsonHdr,
+                            )
+                        }
+                    }
+                    "/workspaces" -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = {
+                snapshotReads += 1
+                listOf(if (snapshotReads == 1) stale else current)
+            },
+        )
+
+        val workspaces = SpecApi(client.client).listWorkspaces(stale.publicUrl, null)
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(
+            listOf(
+                "old.relay.example.com" to "old-refresh",
+                "new.relay.example.com" to "new-refresh",
+            ),
+            exchanges,
+        )
+        assertEquals(
+            listOf(
+                "https://old.relay.example.com/host/token",
+                "https://new.relay.example.com/host/token",
+                "https://new.relay.example.com/workspaces",
+            ),
+            urls,
+        )
     }
 
     @Test fun replacing_an_account_credential_invalidates_its_cached_bearer() = runTest {
@@ -888,7 +977,7 @@ class HostWorkspacesTest {
             token = "standing",
             workspaceName = "internal",
             hostId = "http://lan:47190",
-            workspaceId = "ws-2",
+            workspaceId = null,
         )
         val identities = verifyLegacyIdentities(api, listOf(legacy)).identities
         val refreshed = refreshHostWorkspaceConnections(
