@@ -12,6 +12,31 @@ private val HOSTS = stringPreferencesKey("hosts")
 private val RELAY_DOMAIN = stringPreferencesKey("relay_domain")
 private val RELAY_FLEET_TOKEN = stringPreferencesKey("relay_fleet_token")
 
+
+internal data class RelayAccountFleet(
+    val hosts: List<HostConnection>,
+    val connections: List<WorkspaceConnection>,
+)
+
+
+internal fun replaceRelayAccountFleet(
+    previous: RelayAccount?,
+    replacement: RelayAccount,
+    hosts: List<HostConnection>,
+    connections: List<WorkspaceConnection>,
+): RelayAccountFleet {
+    if (previous == null || previous.relayDomain == replacement.relayDomain) {
+        return RelayAccountFleet(hosts, connections)
+    }
+    val removedHostIds = hosts
+        .filter { it.relayDomain == previous.relayDomain }
+        .mapTo(mutableSetOf()) { it.hostId }
+    return RelayAccountFleet(
+        hosts = hosts.filterNot { it.relayDomain == previous.relayDomain },
+        connections = connections.filterNot { it.hostId in removedHostIds },
+    )
+}
+
 /**
  * The fleet the phone knows about: one relay account plus the hosts it
  * enumerates. Mirrors [ConnectionsRepository] — same DataStore file, its own
@@ -34,6 +59,14 @@ class HostsRepository(private val context: Context) {
 
     suspend fun setRelayAccount(account: RelayAccount) {
         context.dataStore.edit {
+            val fleet = replaceRelayAccountFleet(
+                previous = it.relayAccount(),
+                replacement = account,
+                hosts = HostsCodec.decode(it[HOSTS] ?: ""),
+                connections = ConnectionsCodec.decode(it[CONNECTIONS] ?: ""),
+            )
+            it[HOSTS] = HostsCodec.encode(fleet.hosts)
+            it[CONNECTIONS] = ConnectionsCodec.encode(fleet.connections)
             it[RELAY_DOMAIN] = account.relayDomain
             it[RELAY_FLEET_TOKEN] = account.fleetToken
         }

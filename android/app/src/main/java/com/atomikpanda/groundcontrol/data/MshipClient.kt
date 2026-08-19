@@ -57,9 +57,12 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.HttpMethod
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import io.ktor.http.takeFrom
 import io.ktor.serialization.kotlinx.json.json
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -219,32 +222,79 @@ fun hostAwareClient(
     val refreshAuth = createClientPlugin("HostRefreshAuth") {
         on(Send) { request ->
             val cache = tokens
-            val base = cache?.let { hostBaseFor(request.url.buildString(), hosts()) }
+            val knownHosts = hosts()
+            val base = cache?.let { hostBaseFor(request.url.buildString(), knownHosts) }
             if (cache == null || base == null) return@on proceed(request)
-            if (request.headers.contains(HttpHeaders.Authorization)) {
-                val call = proceed(request)
-                if (call.response.status.isSuccess()) notifyHostContact(onHostContact, base)
-                return@on call
+            val host = knownHosts.first { base in it.hostBases() }
+            val candidateBases = listOf(base) + host.hostBases().filterNot { it == base }
+            val originalUrl = request.url.buildString()
+            val retryRequest = request.method == HttpMethod.Get || request.method == HttpMethod.Head
+            var lastTransportFailure: IOException? = null
+
+            for (candidateBase in candidateBases) {
+                val candidateRequest = request.apply {
+                    url.takeFrom(candidateBase + originalUrl.removePrefix(base))
+                }
+                if (candidateRequest.headers.contains(HttpHeaders.Authorization)) {
+                    val call = try {
+                        proceed(candidateRequest)
+                    } catch (error: IOException) {
+                        if (!retryRequest) throw error
+                        lastTransportFailure = error
+                        continue
+                    }
+                    if (call.response.status.isSuccess()) {
+                        notifyHostContact(onHostContact, candidateBase)
+                    }
+                    return@on call
+                }
+                val token = try {
+                    cache.cached(candidateBase) ?: cache.bearer(candidateBase)
+                } catch (error: IOException) {
+                    lastTransportFailure = error
+                    continue
+                }
+                token?.let {
+                    candidateRequest.headers[HttpHeaders.Authorization] = "Bearer $it"
+                }
+                // The response validator turns a 401 into an AuthException, and
+                // it may fire either here or when the caller reads the body.
+                val call = try {
+                    proceed(candidateRequest)
+                        .takeIf { it.response.status != HttpStatusCode.Unauthorized }
+                } catch (_: AuthException) {
+                    null
+                } catch (error: IOException) {
+                    if (!retryRequest) throw error
+                    lastTransportFailure = error
+                    continue
+                }
+                if (call != null) {
+                    if (call.response.status.isSuccess()) {
+                        notifyHostContact(onHostContact, candidateBase)
+                    }
+                    return@on call
+                }
+                val refreshed = try {
+                    cache.bearer(candidateBase, stale = token)
+                } catch (error: IOException) {
+                    lastTransportFailure = error
+                    continue
+                } ?: throw AuthException("no credential for $candidateBase")
+                candidateRequest.headers[HttpHeaders.Authorization] = "Bearer $refreshed"
+                val retried = try {
+                    proceed(candidateRequest)
+                } catch (error: IOException) {
+                    if (!retryRequest) throw error
+                    lastTransportFailure = error
+                    continue
+                }
+                if (retried.response.status.isSuccess()) {
+                    notifyHostContact(onHostContact, candidateBase)
+                }
+                return@on retried
             }
-            val token = cache.cached(base) ?: cache.bearer(base)
-            token?.let { request.headers[HttpHeaders.Authorization] = "Bearer $it" }
-            // The response validator turns a 401 into an AuthException, and it
-            // may fire either here or when the caller reads the body — so both
-            // shapes have to mean the same thing.
-            val call = try {
-                proceed(request).takeIf { it.response.status != HttpStatusCode.Unauthorized }
-            } catch (_: AuthException) {
-                null
-            }
-            if (call != null) {
-                if (call.response.status.isSuccess()) notifyHostContact(onHostContact, base)
-                return@on call
-            }
-            val refreshed = cache.bearer(base, stale = token) ?: throw AuthException("no credential for $base")
-            request.headers[HttpHeaders.Authorization] = "Bearer $refreshed"
-            val retried = proceed(request)
-            if (retried.response.status.isSuccess()) notifyHostContact(onHostContact, base)
-            retried
+            throw lastTransportFailure ?: IOException("no reachable base for $base")
         }
     }
     val client = HttpClient(engine) {

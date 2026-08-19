@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.map
  *  a second `preferencesDataStore(name = "ground_control")` delegate would open
  *  the same file twice and fail at runtime. */
 internal val Context.dataStore by preferencesDataStore(name = "ground_control")
-private val CONNECTIONS = stringPreferencesKey("connections")
+internal val CONNECTIONS = stringPreferencesKey("connections")
 
 class ConnectionsRepository(private val context: Context) {
     val connections: Flow<List<WorkspaceConnection>> =
@@ -32,15 +32,15 @@ class ConnectionsRepository(private val context: Context) {
 
     suspend fun upsert(conn: WorkspaceConnection) = mutate { upsertConnection(it, conn) }
 
-    suspend fun upsertAll(connections: List<WorkspaceConnection>) =
-        mutate { current -> connections.fold(current, ::upsertConnection) }
-
     suspend fun remove(id: String) = mutate { list -> list.filterNot { it.id == id } }
 
-    /** Fold a host's discovered workspaces in, adopting manual rows whose identity
-     *  was verified (#471). Inside the same one transform as every other write. */
-    suspend fun adopt(discovered: List<WorkspaceConnection>, identities: List<VerifiedIdentity>) =
-        mutate { adoptManualConnections(it, discovered, identities) }
+    /** Replace one host's authoritative workspace set, adopting verified manual
+     * rows inside the same serialized transform. */
+    suspend fun replaceHost(
+        hostId: String,
+        discovered: List<WorkspaceConnection>,
+        identities: List<VerifiedIdentity>,
+    ) = mutate { replaceHostConnections(it, hostId, discovered, identities) }
 
     suspend fun setIdentity(id: String, colorOverride: String?, glyphOverride: String?) =
         mutate { applyIdentityOverride(it, id, colorOverride, glyphOverride) }

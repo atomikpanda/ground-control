@@ -1,10 +1,13 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.RelayAccount
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
 import com.atomikpanda.groundcontrol.data.replaceRelayHosts
+import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
 import com.atomikpanda.groundcontrol.data.upsertHost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -90,6 +93,29 @@ class HostsRepositoryTest {
         val out = replaceRelayHosts(listOf(pending), "relay.example.com", listOf(host))
         assertEquals(listOf("h-1"), out.map { it.hostId })
         assertEquals("refresh-credential", out.single().refresh)
+    }
+
+
+    @Test fun replacing_a_relay_account_clears_only_the_previous_fleet() {
+        val otherHost = host.copy(hostId = "h-2", relayDomain = "other.example.com")
+        val oldWorkspace = WorkspaceConnection(
+            id = "old",
+            baseUrl = "https://old/workspaces/ws",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+        val otherWorkspace = oldWorkspace.copy(id = "other", hostId = otherHost.hostId)
+        val manualWorkspace = WorkspaceConnection(id = "manual", baseUrl = "http://lan")
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host, otherHost),
+            connections = listOf(oldWorkspace, otherWorkspace, manualWorkspace),
+        )
+
+        assertEquals(listOf("h-2"), replaced.hosts.map { it.hostId })
+        assertEquals(listOf("other", "manual"), replaced.connections.map { it.id })
     }
 
     @Test fun old_persisted_state_without_the_hosts_key_decodes_to_empty() {

@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.applyIdentityOverride
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
+import com.atomikpanda.groundcontrol.data.replaceHostConnections
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -58,6 +59,53 @@ class ConnectionsCodecTest {
         val incoming = WorkspaceConnection("id-2", "http://host-b:47100", "tok-b", "ws-b")
         val result = upsertConnection(existing, incoming)
         assertEquals(2, result.size)
+    }
+
+
+    @Test fun host_refresh_replaces_the_authoritative_workspace_set() {
+        val current = listOf(
+            WorkspaceConnection(
+                id = "kept",
+                baseUrl = "https://old/workspaces/a",
+                workspaceName = "a",
+                colorOverride = "#FF1976D2",
+                hostId = "host-a",
+                workspaceId = "a",
+            ),
+            WorkspaceConnection(
+                id = "stale",
+                baseUrl = "https://old/workspaces/deleted",
+                hostId = "host-a",
+                workspaceId = "deleted",
+            ),
+            WorkspaceConnection(
+                id = "other-host",
+                baseUrl = "https://other/workspaces/a",
+                hostId = "host-b",
+                workspaceId = "a",
+            ),
+            WorkspaceConnection(id = "manual", baseUrl = "http://lan"),
+        )
+        val discovered = listOf(
+            WorkspaceConnection(
+                id = "new-derived-id",
+                baseUrl = "https://new/workspaces/a",
+                workspaceName = "a",
+                hostId = "host-a",
+                workspaceId = "a",
+            ),
+        )
+
+        val replaced = replaceHostConnections(
+            existing = current,
+            hostId = "host-a",
+            discovered = discovered,
+            identities = emptyList(),
+        )
+
+        assertEquals(listOf("other-host", "manual", "kept"), replaced.map { it.id })
+        assertEquals("https://new/workspaces/a", replaced.last().baseUrl)
+        assertEquals("#FF1976D2", replaced.last().colorOverride)
     }
 
     @Test fun upsert_same_id_replaces_entry() {

@@ -6,6 +6,7 @@
 // the spec), and per-item verdicts applied in place.
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -45,9 +46,14 @@ class QueueViewModelTest {
 
     private val jsonHdr = headersOf(HttpHeaders.ContentType, "application/json")
 
-    private fun vm(scope: CoroutineScope, conns: List<WorkspaceConnection>, handler: MockRequestHandler): QueueViewModel {
+    private fun vm(
+        scope: CoroutineScope,
+        conns: List<WorkspaceConnection>,
+        handler: MockRequestHandler,
+        hosts: List<HostConnection> = emptyList(),
+    ): QueueViewModel {
         val repo = QueueRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }))
-        return QueueViewModel(repo, { conns }, scope)
+        return QueueViewModel(repo, { conns }, scope, { hosts })
     }
 
     private val connsAB = listOf(
@@ -76,6 +82,37 @@ class QueueViewModelTest {
         val vm = QueueViewModel(QueueRepository(SpecApi(HttpClient(MockEngine { respond("{}", HttpStatusCode.OK, jsonHdr) }) { mshipDefaults() })), { emptyList() }, this)
         vm.refresh()
         assertEquals(QueueUiState.EmptyConfig, vm.state.value)
+    }
+
+
+    @Test fun shared_host_failures_render_once() = runTest {
+        val connections = listOf(
+            WorkspaceConnection(
+                id = "a",
+                baseUrl = "https://host.example/workspaces/a",
+                workspaceName = "a",
+                hostId = "host-1",
+                workspaceId = "a",
+            ),
+            WorkspaceConnection(
+                id = "b",
+                baseUrl = "https://host.example/workspaces/b",
+                workspaceName = "b",
+                hostId = "host-1",
+                workspaceId = "b",
+            ),
+        )
+        val host = HostConnection(hostId = "host-1", publicUrl = "https://host.example")
+        val vm = vm(
+            this,
+            connections,
+            { throw java.io.IOException("offline") },
+            hosts = listOf(host),
+        )
+
+        vm.refresh()?.join()
+
+        assertEquals(1, (vm.state.value as QueueUiState.Content).errors.size)
     }
 
     @Test fun loads_prose_cards_head_first_with_position() = runTest {

@@ -9,6 +9,7 @@ import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
 import com.atomikpanda.groundcontrol.data.applyHostLadder
+import com.atomikpanda.groundcontrol.data.dedupeHostErrors
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -105,7 +106,9 @@ class QueueViewModel(
         if (prev == null) _state.value = QueueUiState.Loading
         return scope().launch {
             val feed = repo.load(connections)
-            val errors = applyHostLadder(feed.errors, connections, hosts, System.currentTimeMillis())
+            val errors = dedupeHostErrors(
+                applyHostLadder(feed.errors, connections, hosts, System.currentTimeMillis())
+            )
             val fresh = feed.cards.filterNot { it.key in resolvedKeys }
             if (prev == null) {
                 _state.value = QueueUiState.Content(

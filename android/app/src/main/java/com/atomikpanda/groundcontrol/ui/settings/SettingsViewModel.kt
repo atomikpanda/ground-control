@@ -224,8 +224,11 @@ class SettingsViewModel(
                 continue
             } ?: continue
             hosts.upsert(host.copy(lastContactAtMillis = System.currentTimeMillis()))
-            if (host.hostId in newHostIds) repo.adopt(refreshed.connections, refreshed.identities)
-            else repo.upsertAll(refreshed.connections)
+            repo.replaceHost(
+                hostId = host.hostId,
+                discovered = refreshed.connections,
+                identities = refreshed.identities.takeIf { host.hostId in newHostIds }.orEmpty(),
+            )
         }
     }
 

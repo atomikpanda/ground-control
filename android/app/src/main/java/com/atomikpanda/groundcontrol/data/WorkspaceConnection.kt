@@ -216,6 +216,22 @@ fun adoptManualConnections(
     }
 }
 
+
+/** Reconcile one host from an authoritative `GET /workspaces` response.
+ * Existing rows missing from [discovered] are gone on the host and must not
+ * remain as permanent false failures; other hosts and manual rows are untouched. */
+fun replaceHostConnections(
+    existing: List<WorkspaceConnection>,
+    hostId: String,
+    discovered: List<WorkspaceConnection>,
+    identities: List<VerifiedIdentity>,
+): List<WorkspaceConnection> {
+    val liveWorkspaceIds = discovered.mapNotNullTo(mutableSetOf()) { it.workspaceId }
+    return adoptManualConnections(existing, discovered, identities).filterNot {
+        it.hostId == hostId && it.workspaceId !in liveWorkspaceIds
+    }
+}
+
 /** The merge itself. The manual row's standing token is dropped: it is rejected
  *  for relay-borne requests, and an Authorization header on the row would
  *  suppress the short-lived bearer the refresh interceptor mints. */

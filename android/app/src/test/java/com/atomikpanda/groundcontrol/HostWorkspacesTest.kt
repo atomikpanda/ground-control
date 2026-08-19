@@ -458,6 +458,45 @@ class HostWorkspacesTest {
         )
     }
 
+
+    @Test fun host_client_falls_back_from_a_dead_direct_base_to_the_public_base() = runTest {
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val withLan = host.copy(directUrl = "http://192.168.1.9:47190")
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                urls += req.url.toString()
+                if (req.url.host == "192.168.1.9") throw java.io.IOException("left the LAN")
+                when (req.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"public-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces" -> {
+                        authorizations += req.headers[HttpHeaders.Authorization]
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(withLan) },
+        )
+
+        val workspaces = SpecApi(client.client).listWorkspaces(withLan.hostBase(), null)
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(
+            listOf(
+                "http://192.168.1.9:47190/host/token",
+                "https://sub-a.relay.example.com/host/token",
+                "https://sub-a.relay.example.com/workspaces",
+            ),
+            urls,
+        )
+        assertEquals(listOf("Bearer public-bearer"), authorizations)
+    }
+
     @Test fun refresh_fleet_adopts_a_legacy_row_through_host_root_with_multiple_workspaces() = runTest {
         val urls = mutableListOf<String>()
         val api = SpecApi(HttpClient(MockEngine { req ->
