@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /** One host row for the Settings fleet list. */
@@ -115,6 +117,7 @@ class SettingsViewModel(
     val connections: StateFlow<List<WorkspaceConnection>> get() = _connections
     private val _connections = MutableStateFlow<List<WorkspaceConnection>>(emptyList())
     private val _testResult = MutableStateFlow<SettingsResult?>(null)
+    private val refreshFleetMutex = Mutex()
     val testResult: StateFlow<String?> = combine(
         _testResult,
         hosts.relayAccount,
@@ -265,7 +268,7 @@ class SettingsViewModel(
     /** Re-read the directory, then each reachable host's workspaces. */
     fun refreshFleetNow() { viewModelScope.launch { refreshFleet() } }
 
-    private suspend fun refreshFleet() {
+    private suspend fun refreshFleet() = refreshFleetMutex.withLock {
         val account = hosts.relayAccountSnapshot() ?: run {
             setTestResult("No relay account paired yet")
             return
