@@ -181,7 +181,7 @@ class HostsRepository(private val context: Context) {
                 return@edit
             }
             it[HOSTS] = HostsCodec.encode(
-                recordHostContact(currentHosts, hostBase, contactedAtMillis),
+                recordHostContact(currentHosts, hostId, hostBase, contactedAtMillis),
             )
             val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
             it[CONNECTIONS] = ConnectionsCodec.encode(
@@ -199,8 +199,11 @@ class HostsRepository(private val context: Context) {
 
     /** Every successful request through the shared host-aware client advances
      * the phone's own freshness evidence, regardless of which UI initiated it. */
-    suspend fun recordContact(hostBase: String, contactedAtMillis: Long = System.currentTimeMillis()) =
-        mutate { current -> recordHostContact(current, hostBase, contactedAtMillis) }
+    suspend fun recordContact(
+        hostId: String,
+        hostBase: String,
+        contactedAtMillis: Long = System.currentTimeMillis(),
+    ) = mutate { current -> recordHostContact(current, hostId, hostBase, contactedAtMillis) }
 
     suspend fun remove(hostId: String) = mutate { list -> list.filterNot { it.hostId == hostId } }
 }
@@ -222,6 +225,6 @@ fun appHttpClient(context: Context): HostClient {
     return hostAwareClient(
         engine = OkHttp.create(),
         hosts = { repo.snapshot() },
-        onHostContact = { repo.recordContact(it) },
+        onHostContact = { hostId, base -> repo.recordContact(hostId, base) },
     )
 }

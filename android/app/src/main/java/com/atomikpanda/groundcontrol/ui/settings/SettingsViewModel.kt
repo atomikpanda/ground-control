@@ -70,7 +70,7 @@ internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure 
 
 internal suspend fun observeRelayAccountChanges(
     accounts: Flow<RelayAccount?>,
-    hasHosts: suspend () -> Boolean,
+    hasHostsForAccount: suspend (RelayAccount) -> Boolean,
     refreshFleet: suspend () -> Unit,
 ) {
     var initialized = false
@@ -78,7 +78,7 @@ internal suspend fun observeRelayAccountChanges(
     accounts.distinctUntilChanged().collect { account ->
         val shouldRefresh = account != null && (
             (initialized && account != previous) ||
-                (!initialized && !hasHosts())
+                (!initialized && !hasHostsForAccount(account))
             )
         previous = account
         initialized = true
@@ -126,7 +126,9 @@ class SettingsViewModel(
         viewModelScope.launch {
             observeRelayAccountChanges(
                 accounts = hosts.relayAccount,
-                hasHosts = { hosts.snapshot().isNotEmpty() },
+                hasHostsForAccount = { account ->
+                    hosts.snapshot().any { it.relayDomain == account.relayDomain }
+                },
                 refreshFleet = { refreshFleet() },
             )
         }

@@ -134,6 +134,7 @@ private data class WorkspaceRoute(
     val baseUrl: String,
 )
 private val WORKSPACE_ROUTE = AttributeKey<WorkspaceRoute>("WorkspaceRoute")
+private val HOST_ROUTE_ID = AttributeKey<String>("HostRouteId")
 
 
 /** `https://enroll.<relay domain>`: the one enroll server `mship relay enroll`,
@@ -155,36 +156,40 @@ class RePairNeededException(val hostBase: String) :
 class HostClient(val client: HttpClient, val tokens: HostTokens)
 
 /**
- * Short-lived host bearers (AC9), one cache entry per host base URL.
+ * Short-lived host bearers (AC9), keyed by host identity and candidate base.
  *
- * The exchange is serialized per host: two requests that discover the same
+ * The exchange is serialized per route: two requests that discover the same
  * expired bearer at the same moment must produce ONE exchange, not two — the
- * loser reads the winner's token. That is the whole reason this is a class and
- * not a function.
+ * loser reads the winner's token. Identity disambiguates contended hosts that
+ * publish the same base; the base prevents a failed direct route from lending
+ * its bearer to a different transport.
  */
 class HostTokens(
-    private val credentialFor: suspend (hostBase: String) -> String?,
+    private val credentialFor: suspend (hostId: String) -> String?,
     private val exchange: suspend (hostBase: String, credential: String) -> String,
 ) {
-    private val cache = ConcurrentHashMap<String, String>()
-    private val guard = Mutex()
-    private val locks = mutableMapOf<String, Mutex>()
+    private data class RouteKey(val hostId: String, val hostBase: String)
 
-    fun cached(hostBase: String): String? = cache[hostBase]
+    private val cache = ConcurrentHashMap<RouteKey, String>()
+    private val guard = Mutex()
+    private val locks = mutableMapOf<RouteKey, Mutex>()
+
+    fun cached(hostId: String, hostBase: String): String? = cache[RouteKey(hostId, hostBase)]
 
     /**
-     * The current bearer for [hostBase], minting one if we have none or if
-     * [stale] is the one that just came back 401. Null when no refresh
-     * credential is stored (a manually paired host, say).
+     * The current bearer for this host route, minting one if we have none or if
+     * [stale] is the one that just came back 401. Null when no refresh credential
+     * is stored (a manually paired host, say).
      */
-    suspend fun bearer(hostBase: String, stale: String? = null): String? {
-        val lock = guard.withLock { locks.getOrPut(hostBase) { Mutex() } }
+    suspend fun bearer(hostId: String, hostBase: String, stale: String? = null): String? {
+        val key = RouteKey(hostId, hostBase)
+        val lock = guard.withLock { locks.getOrPut(key) { Mutex() } }
         return lock.withLock {
-            val current = cache[hostBase]
+            val current = cache[key]
             // Someone else already replaced the token we came to replace.
             if (current != null && current != stale) return@withLock current
-            val credential = credentialFor(hostBase) ?: return@withLock null
-            exchange(hostBase, credential).also { cache[hostBase] = it }
+            val credential = credentialFor(hostId) ?: return@withLock null
+            exchange(hostBase, credential).also { cache[key] = it }
         }
     }
 }
@@ -201,11 +206,12 @@ fun hostBaseFor(url: String, hosts: List<HostConnection>): String? {
 }
 
 private suspend fun notifyHostContact(
-    callback: suspend (hostBase: String) -> Unit,
+    callback: suspend (hostId: String, hostBase: String) -> Unit,
+    hostId: String,
     hostBase: String,
 ) {
     try {
-        callback(hostBase)
+        callback(hostId, hostBase)
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {
@@ -227,7 +233,7 @@ private suspend fun notifyHostContact(
 
 fun hostAwareClient(
     engine: HttpClientEngine,
-    onHostContact: suspend (hostBase: String) -> Unit = {},
+    onHostContact: suspend (hostId: String, hostBase: String) -> Unit = { _, _ -> },
     hosts: suspend () -> List<HostConnection>,
 ): HostClient {
     var tokens: HostTokens? = null
@@ -237,15 +243,15 @@ fun hostAwareClient(
             val knownHosts = hosts()
             val originalUrl = request.url.buildString()
             val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
+            val routedHostId = workspaceRoute?.hostId
+                ?: request.attributes.getOrNull(HOST_ROUTE_ID)
             val reportContact =
                 request.attributes.getOrNull(SUPPRESS_HOST_CONTACT) == null
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
             if (cache == null) return@on proceed(request)
             val host = when {
+                routedHostId != null -> knownHosts.firstOrNull { it.hostId == routedHostId }
                 base != null -> knownHosts.firstOrNull { base in it.hostBases() }
-                workspaceRoute != null -> knownHosts.firstOrNull {
-                    it.hostId == workspaceRoute.hostId
-                }
                 else -> null
             } ?: return@on proceed(request)
             val originalBase = base ?: workspaceRoute?.baseUrl?.trimEnd('/')
@@ -287,12 +293,12 @@ fun hostAwareClient(
                         continue
                     }
                     if (call.response.status.isSuccess() && reportContact) {
-                        notifyHostContact(onHostContact, candidateBase)
+                        notifyHostContact(onHostContact, host.hostId, candidateBase)
                     }
                     return@on call
                 }
                 val token = try {
-                    cache.cached(candidateBase) ?: cache.bearer(candidateBase)
+                    cache.cached(host.hostId, candidateBase) ?: cache.bearer(host.hostId, candidateBase)
                 } catch (error: IOException) {
                     lastTransportFailure = error
                     continue
@@ -314,12 +320,12 @@ fun hostAwareClient(
                 }
                 if (call != null) {
                     if (call.response.status.isSuccess() && reportContact) {
-                        notifyHostContact(onHostContact, candidateBase)
+                        notifyHostContact(onHostContact, host.hostId, candidateBase)
                     }
                     return@on call
                 }
                 val refreshed = try {
-                    cache.bearer(candidateBase, stale = token)
+                    cache.bearer(host.hostId, candidateBase, stale = token)
                 } catch (error: IOException) {
                     lastTransportFailure = error
                     continue
@@ -333,7 +339,7 @@ fun hostAwareClient(
                     continue
                 }
                 if (retried.response.status.isSuccess() && reportContact) {
-                    notifyHostContact(onHostContact, candidateBase)
+                    notifyHostContact(onHostContact, host.hostId, candidateBase)
                 }
                 return@on retried
             }
@@ -345,7 +351,7 @@ fun hostAwareClient(
         install(refreshAuth)
     }
     tokens = HostTokens(
-        credentialFor = { base -> hosts().firstOrNull { base in it.hostBases() }?.refresh },
+        credentialFor = { hostId -> hosts().firstOrNull { it.hostId == hostId }?.refresh },
         exchange = { base, credential -> mintHostToken(client, base, credential) },
     )
     return HostClient(client, tokens)
@@ -521,11 +527,13 @@ class SpecApi(private val client: HttpClient) {
         token: String?,
         allowHostFallback: Boolean = true,
         recordContact: Boolean = true,
+        hostId: String? = null,
     ): List<WorkspaceInfo> =
         client.get("${hostBase.trimEnd('/')}/workspaces") {
             token?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
             if (!allowHostFallback) attributes.put(EXPLICIT_HOST_BASE, Unit)
             if (!recordContact) attributes.put(SUPPRESS_HOST_CONTACT, Unit)
+            hostId?.let { attributes.put(HOST_ROUTE_ID, it) }
         }.body<WorkspacesResponse>().workspaces
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {

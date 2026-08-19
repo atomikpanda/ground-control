@@ -557,6 +557,50 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer sub-a.relay.example.com-bearer"), publicAuthorizations)
     }
 
+    @Test fun workspace_route_identity_disambiguates_hosts_sharing_a_base() = runTest {
+        val sharedBase = "https://contended.relay.example.com"
+        val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")
+        val second = host.copy(hostId = "host-b", publicUrl = sharedBase, refresh = "refresh-b")
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val contacts = mutableListOf<Pair<String, String>>()
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        val body = (req.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
+                        val credential = body.substringAfter("\"refresh\":\"").substringBefore('"')
+                        exchanges += credential
+                        respond(
+                            """{"token":"bearer-${credential.removePrefix("refresh-")}","expires_in":300}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    "/workspaces/ws-1/threads/thread-1/seen" -> {
+                        authorizations += req.headers[HttpHeaders.Authorization]
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(first, second) },
+            onHostContact = { hostId, base -> contacts += hostId to base },
+        )
+        val connection = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "$sharedBase/workspaces/ws-1",
+            hostId = second.hostId,
+            workspaceId = "ws-1",
+        )
+
+        SpecApi(client.client).markThreadSeen(connection, "thread-1", null)
+
+        assertEquals(listOf("refresh-b"), exchanges)
+        assertEquals(listOf("Bearer bearer-b"), authorizations)
+        assertEquals(listOf(second.hostId to sharedBase), contacts)
+    }
+
     @Test fun stale_workspace_url_routes_to_the_hosts_current_public_url_before_send() = runTest {
         val urls = mutableListOf<String>()
         val authorizations = mutableListOf<String?>()
@@ -711,7 +755,7 @@ class HostWorkspacesTest {
                 }
             },
             hosts = { listOf(host) },
-            onHostContact = { contacts += it },
+            onHostContact = { _, base -> contacts += base },
         )
 
         assertTrue(refreshHostWorkspaceConnections(SpecApi(client.client), host) != null)
@@ -834,7 +878,9 @@ class HostWorkspacesTest {
         val client = hostAwareClient(
             engine = fx.engine,
             hosts = { stored },
-            onHostContact = { base -> stored = recordHostContact(stored, base, 20) },
+            onHostContact = { hostId, base ->
+                stored = recordHostContact(stored, hostId, base, 20)
+            },
         )
 
         SpecApi(client.client).listWorkspaces(host.hostBase(), null)
@@ -845,11 +891,22 @@ class HostWorkspacesTest {
     @Test fun out_of_order_contact_persistence_cannot_move_freshness_backwards() {
         val stored = listOf(host.copy(lastContactAtMillis = 20))
 
-        val afterOlderWrite = recordHostContact(stored, host.hostBase(), 10)
-        val afterNewerWrite = recordHostContact(afterOlderWrite, host.hostBase(), 30)
+        val afterOlderWrite = recordHostContact(stored, host.hostId, host.hostBase(), 10)
+        val afterNewerWrite = recordHostContact(afterOlderWrite, host.hostId, host.hostBase(), 30)
 
         assertEquals(20L, afterOlderWrite.single().lastContactAtMillis)
         assertEquals(30L, afterNewerWrite.single().lastContactAtMillis)
+    }
+
+    @Test fun contact_freshness_updates_only_the_contacted_host_when_bases_collide() {
+        val sharedBase = "https://contended.relay.example.com"
+        val first = host.copy(hostId = "host-a", publicUrl = sharedBase, lastContactAtMillis = null)
+        val second = host.copy(hostId = "host-b", publicUrl = sharedBase, lastContactAtMillis = null)
+
+        val updated = recordHostContact(listOf(first, second), second.hostId, sharedBase, 30)
+
+        assertNull(updated.single { it.hostId == first.hostId }.lastContactAtMillis)
+        assertEquals(30L, updated.single { it.hostId == second.hostId }.lastContactAtMillis)
     }
 
     @Test fun contact_persistence_failure_does_not_fail_a_successful_api_call() = runTest {
@@ -857,7 +914,7 @@ class HostWorkspacesTest {
         val client = hostAwareClient(
             engine = fx.engine,
             hosts = { listOf(host) },
-            onHostContact = { throw IllegalStateException("DataStore write failed") },
+            onHostContact = { _, _ -> throw IllegalStateException("DataStore write failed") },
         )
 
         val workspaces = SpecApi(client.client).listWorkspaces(host.hostBase(), null)
@@ -870,7 +927,7 @@ class HostWorkspacesTest {
         val client = hostAwareClient(
             engine = fx.engine,
             hosts = { listOf(host) },
-            onHostContact = { throw CancellationException("cancelled") },
+            onHostContact = { _, _ -> throw CancellationException("cancelled") },
         )
 
         val error = runCatching {

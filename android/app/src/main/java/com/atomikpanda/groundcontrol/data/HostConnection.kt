@@ -79,6 +79,7 @@ suspend fun reachableHostWorkspaces(
                 null,
                 allowHostFallback = false,
                 recordContact = false,
+                hostId = host.hostId,
             )
         } catch (error: Exception) {
             if (error is RePairNeededException || error is CancellationException) throw error
@@ -122,10 +123,11 @@ suspend fun refreshHostWorkspaceConnections(
 /** Pure freshness update used by both DataStore and the host-aware-client test. */
 fun recordHostContact(
     hosts: List<HostConnection>,
+    hostId: String,
     hostBase: String,
     contactedAtMillis: Long,
 ): List<HostConnection> = hosts.map { host ->
-    if (hostBase in host.hostBases()) {
+    if (host.hostId == hostId && hostBase in host.hostBases()) {
         host.copy(
             lastContactAtMillis = contactedAtMillis.coerceAtLeast(
                 host.lastContactAtMillis ?: contactedAtMillis,

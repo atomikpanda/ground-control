@@ -27,7 +27,7 @@ class SettingsFleetTest {
         val collecting = backgroundScope.launch {
             observeRelayAccountChanges(
                 accounts = accounts,
-                hasHosts = { false },
+                hasHostsForAccount = { false },
                 refreshFleet = { refreshes += 1 },
             )
         }
@@ -49,7 +49,7 @@ class SettingsFleetTest {
         val collecting = backgroundScope.launch {
             observeRelayAccountChanges(
                 accounts = accounts,
-                hasHosts = { true },
+                hasHostsForAccount = { true },
                 refreshFleet = { refreshes += 1 },
             )
         }
@@ -59,6 +59,29 @@ class SettingsFleetTest {
         accounts.value = RelayAccount("new.example", "new")
         runCurrent()
 
+        assertEquals(1, refreshes)
+        collecting.cancel()
+    }
+
+    @Test fun an_initial_relay_account_refreshes_when_only_direct_hosts_exist() = runTest {
+        val account = RelayAccount("relay.example", "fleet-token")
+        val accounts = MutableStateFlow<RelayAccount?>(account)
+        var inspected: RelayAccount? = null
+        var refreshes = 0
+        val collecting = backgroundScope.launch {
+            observeRelayAccountChanges(
+                accounts = accounts,
+                hasHostsForAccount = {
+                    inspected = it
+                    false
+                },
+                refreshFleet = { refreshes += 1 },
+            )
+        }
+
+        runCurrent()
+
+        assertEquals(account, inspected)
         assertEquals(1, refreshes)
         collecting.cancel()
     }
