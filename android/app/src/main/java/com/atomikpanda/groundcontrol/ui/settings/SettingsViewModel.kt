@@ -285,7 +285,12 @@ class SettingsViewModel(
         viewModelScope.launch {
             val hostId = from.hostId ?: from.hostBase
             if (from.hostId != null) {
-                hosts.setDirectUrl(hostId, from.hostBase, System.currentTimeMillis())
+                hosts.setDirectUrl(
+                    hostId,
+                    from.hostBase,
+                    info.runner?.state,
+                    System.currentTimeMillis(),
+                )
             }
             val storedHost = hosts.snapshot().firstOrNull { it.hostId == hostId }
             repo.upsert(

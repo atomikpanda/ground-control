@@ -504,6 +504,46 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer public-bearer"), authorizations)
     }
 
+    @Test fun fallback_mints_a_bearer_for_each_candidate_base() = runTest {
+        val urls = mutableListOf<String>()
+        val publicAuthorizations = mutableListOf<String?>()
+        val withLan = host.copy(directUrl = "http://192.168.1.9:47190")
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                urls += req.url.toString()
+                when {
+                    req.url.encodedPath == "/host/token" -> respond(
+                        """{"token":"${req.url.host}-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    req.url.encodedPath == "/workspaces" &&
+                        req.url.host == "192.168.1.9" ->
+                        throw java.io.IOException("response lost")
+                    req.url.encodedPath == "/workspaces" -> {
+                        publicAuthorizations += req.headers[HttpHeaders.Authorization]
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(withLan) },
+        )
+
+        SpecApi(client.client).listWorkspaces(withLan.directUrl!!, null)
+
+        assertEquals(
+            listOf(
+                "http://192.168.1.9:47190/host/token",
+                "http://192.168.1.9:47190/workspaces",
+                "https://sub-a.relay.example.com/host/token",
+                "https://sub-a.relay.example.com/workspaces",
+            ),
+            urls,
+        )
+        assertEquals(listOf("Bearer sub-a.relay.example.com-bearer"), publicAuthorizations)
+    }
+
     @Test fun stale_workspace_url_routes_to_the_hosts_current_public_url_before_send() = runTest {
         val urls = mutableListOf<String>()
         val authorizations = mutableListOf<String?>()

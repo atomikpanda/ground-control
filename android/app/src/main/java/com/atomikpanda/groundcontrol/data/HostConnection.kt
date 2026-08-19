@@ -136,6 +136,28 @@ fun recordHostContact(
     } else host
 }
 
+/** Persist the observations made by one verified direct-host discovery. */
+fun recordDirectHostDiscovery(
+    hosts: List<HostConnection>,
+    hostId: String,
+    directUrl: String,
+    runnerState: String?,
+    contactedAtMillis: Long,
+): List<HostConnection> {
+    val prior = hosts.firstOrNull { it.hostId == hostId }
+    val updated = prior?.copy(
+        directUrl = directUrl.trimEnd('/'),
+        runnerState = runnerState,
+        lastContactAtMillis = contactedAtMillis,
+    ) ?: HostConnection(
+        hostId = hostId,
+        directUrl = directUrl.trimEnd('/'),
+        runnerState = runnerState,
+        lastContactAtMillis = contactedAtMillis,
+    )
+    return upsertHost(hosts, updated)
+}
+
 /** What the operator sees: their own name for the host, else the host's. */
 fun HostConnection.displayLabel(): String =
     labelOverride?.takeIf { it.isNotBlank() } ?: label.ifBlank { hostId }

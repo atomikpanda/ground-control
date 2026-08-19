@@ -1,14 +1,17 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
+import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
 import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.replaceRelayDirectoryFleet
 import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
+import com.atomikpanda.groundcontrol.data.recordDirectHostDiscovery
 import com.atomikpanda.groundcontrol.data.upsertHost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -166,6 +169,28 @@ class HostsRepositoryTest {
 
         assertEquals(listOf("h-other", "h-1"), replaced.hosts.map { it.hostId })
         assertEquals(listOf("retained", "other", "manual"), replaced.connections.map { it.id })
+    }
+
+    @Test fun direct_discovery_persists_the_runner_observation_on_the_host() {
+        val now = 100_000L
+        val stored = recordDirectHostDiscovery(
+            hosts = emptyList(),
+            hostId = "h-direct",
+            directUrl = "http://192.168.1.9:47190",
+            runnerState = "idle",
+            contactedAtMillis = now,
+        ).single()
+        val connection = WorkspaceConnection(
+            id = "ws-direct",
+            baseUrl = "${stored.directUrl}/workspaces/ws-1",
+            workspaceName = "workspace",
+            hostId = stored.hostId,
+            workspaceId = "ws-1",
+            state = "healthy",
+        )
+
+        assertEquals("idle", stored.runnerState)
+        assertEquals(HostLadderState.ACTIVE, ladderFor(connection, stored, now))
     }
 
     @Test fun old_persisted_state_without_the_hosts_key_decodes_to_empty() {

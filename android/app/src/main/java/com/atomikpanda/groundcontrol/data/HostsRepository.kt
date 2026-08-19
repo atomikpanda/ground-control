@@ -122,19 +122,20 @@ class HostsRepository(private val context: Context) {
     /** Persist a direct address only after the caller reached `/health` and
      * `/workspaces` there. A directory row already holding the refresh
      * credential keeps every relay-owned field. */
-    suspend fun setDirectUrl(hostId: String, directUrl: String, contactedAtMillis: Long) =
-        mutate { current ->
-            val prior = current.firstOrNull { it.hostId == hostId }
-            val updated = prior?.copy(
-                directUrl = directUrl.trimEnd('/'),
-                lastContactAtMillis = contactedAtMillis,
-            ) ?: HostConnection(
-                hostId = hostId,
-                directUrl = directUrl.trimEnd('/'),
-                lastContactAtMillis = contactedAtMillis,
-            )
-            upsertHost(current, updated)
-        }
+    suspend fun setDirectUrl(
+        hostId: String,
+        directUrl: String,
+        runnerState: String?,
+        contactedAtMillis: Long,
+    ) = mutate { current ->
+        recordDirectHostDiscovery(
+            current,
+            hostId,
+            directUrl,
+            runnerState,
+            contactedAtMillis,
+        )
+    }
 
     /** Every successful request through the shared host-aware client advances
      * the phone's own freshness evidence, regardless of which UI initiated it. */

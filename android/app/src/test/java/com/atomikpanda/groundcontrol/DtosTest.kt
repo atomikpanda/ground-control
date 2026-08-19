@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
+import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -32,5 +33,13 @@ class DtosTest {
         val h = json.decodeFromString<HealthResponse>("""{"status":"ok","workspace":"mship-workspace"}""")
         assertEquals("ok", h.status)
         assertEquals("mship-workspace", h.workspace)
+    }
+
+    @Test fun missing_runner_state_stays_unknown() {
+        val workspace = json.decodeFromString<WorkspaceInfo>(
+            """{"id":"ws","name":"workspace","state":"healthy","runner":{"enabled":true}}"""
+        )
+
+        assertEquals(null, workspace.runner?.state)
     }
 }

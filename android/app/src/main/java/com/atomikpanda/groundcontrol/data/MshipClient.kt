@@ -271,7 +271,8 @@ fun hostAwareClient(
             var lastTransportFailure: IOException? = null
 
             for ((candidateBase, candidateUrl) in candidateRequests) {
-                val candidateRequest = request.apply {
+                val candidateRequest = HttpRequestBuilder().apply {
+                    takeFrom(request)
                     url.takeFrom(candidateUrl)
                 }
                 if (candidateRequest.headers.contains(HttpHeaders.Authorization)) {

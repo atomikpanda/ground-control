@@ -22,7 +22,7 @@ data class HealthResponse(
 @Serializable
 data class RunnerBlock(
     val enabled: Boolean = false,
-    val state: String = "disabled",
+    val state: String? = null,
 )
 
 /** One workspace discovered by a host daemon's registry (#472, GET /workspaces). */
