@@ -19,6 +19,7 @@ import com.atomikpanda.groundcontrol.data.reachableHostWorkspaces
 import com.atomikpanda.groundcontrol.data.recordHostContact
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
+import com.atomikpanda.groundcontrol.ui.settings.legacyConnectionsForDiscovery
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -348,6 +349,8 @@ class HostWorkspacesTest {
         val unauthorizedCalls: Set<Int> = emptySet(),
         val failRefreshFrom: Int = Int.MAX_VALUE,
         val barrierCalls: Set<Int> = emptySet(),
+        val expiresInSeconds: Int = 300,
+        val onMint: () -> Unit = {},
     ) {
         private val lock = Any()
         val urls = mutableListOf<String>()
@@ -374,7 +377,12 @@ class HostWorkspacesTest {
                     )
                 }
                 val n = synchronized(lock) { mints += 1; mints }
-                return@handler respond("""{"token":"bearer-$n","expires_in":300}""", HttpStatusCode.OK, jsonHeaders)
+                onMint()
+                return@handler respond(
+                    """{"token":"bearer-$n","expires_in":$expiresInSeconds}""",
+                    HttpStatusCode.OK,
+                    jsonHeaders,
+                )
             }
             val index = synchronized(lock) {
                 bearers += req.headers[HttpHeaders.Authorization]
@@ -451,6 +459,62 @@ class HostWorkspacesTest {
         assertTrue("$error", error is AuthException)
         assertEquals(1, fx.mints)
         assertEquals(2, fx.bearers.size)
+    }
+
+    @Test fun an_expired_cached_bearer_is_replaced_before_a_write() = runTest {
+        var now = 0L
+        val fx = HostFixture(expiresInSeconds = 1)
+        val client = hostAwareClient(
+            engine = fx.engine,
+            nowMillis = { now },
+            hosts = { listOf(host) },
+        )
+        val api = SpecApi(client.client)
+        api.listWorkspaces(host.hostBase(), null)
+        now = 1_000L
+        api.markThreadSeen(
+            WorkspaceConnection(
+                id = "ws-1",
+                baseUrl = "${host.hostBase()}/workspaces/ws-1",
+                hostId = host.hostId,
+                workspaceId = "ws-1",
+            ),
+            "thread-1",
+            null,
+        )
+
+        assertEquals(2, fx.mints)
+        assertEquals("Bearer bearer-2", fx.bearers.last())
+    }
+
+    @Test fun exchange_latency_is_not_added_to_a_bearers_write_lifetime() = runTest {
+        var now = 0L
+        val fx = HostFixture(
+            expiresInSeconds = 3,
+            onMint = { now += 2_000L },
+        )
+        val client = hostAwareClient(
+            engine = fx.engine,
+            nowMillis = { now },
+            hosts = { listOf(host) },
+        )
+        val api = SpecApi(client.client)
+        api.listWorkspaces(host.hostBase(), null)
+        now = 2_800L
+
+        api.markThreadSeen(
+            WorkspaceConnection(
+                id = "ws-1",
+                baseUrl = "${host.hostBase()}/workspaces/ws-1",
+                hostId = host.hostId,
+                workspaceId = "ws-1",
+            ),
+            "thread-1",
+            null,
+        )
+
+        assertEquals(2, fx.mints)
+        assertEquals("Bearer bearer-2", fx.bearers.last())
     }
 
     @Test fun two_concurrent_401s_cause_one_refresh() = runBlocking {
@@ -786,6 +850,49 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer current-bearer"), authorizations)
     }
 
+    @Test fun a_legacy_url_host_handle_follows_a_recorded_public_url_rotation() = runTest {
+        val oldBase = "https://old.relay.example.com"
+        val current = host.copy(
+            hostId = "host-stable",
+            publicUrl = "https://new.relay.example.com",
+            refresh = "refresh-current",
+            legacyPublicUrls = listOf(oldBase),
+        )
+        val urls = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                when (request.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"current-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces/ws-1/threads/thread-1/seen" ->
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+        )
+        val legacy = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "$oldBase/workspaces/ws-1",
+            hostId = oldBase,
+            workspaceId = "ws-1",
+        )
+
+        SpecApi(client.client).markThreadSeen(legacy, "thread-1", null)
+
+        assertEquals(
+            listOf(
+                "https://new.relay.example.com/host/token",
+                "https://new.relay.example.com/workspaces/ws-1/threads/thread-1/seen",
+            ),
+            urls,
+        )
+    }
+
     @Test fun an_unscoped_route_does_not_choose_between_hosts_sharing_a_base() = runTest {
         val sharedBase = "https://contended.relay.example.com"
         val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")
@@ -1013,6 +1120,98 @@ class HostWorkspacesTest {
 
         assertTrue(error is AuthException)
         assertEquals(listOf("direct.example"), attempted)
+    }
+
+    @Test fun settings_discovery_returns_the_known_host_base_that_answered() = runTest {
+        val direct = "http://direct.example"
+        val public = "https://public.example"
+        val known = HostConnection(
+            hostId = "host-a",
+            directUrl = direct,
+            publicUrl = public,
+        )
+        val attempted = mutableListOf<String>()
+        val api = SpecApi(
+            HttpClient(
+                MockEngine { request ->
+                    attempted += request.url.host
+                    if (request.url.host == "direct.example") {
+                        throw java.io.IOException("direct unavailable")
+                    }
+                    respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                },
+            ) { mshipDefaults() },
+        )
+
+        val (reachedBase, workspaces) = reachableHostWorkspaces(
+            api = api,
+            requestedBase = direct,
+            token = null,
+            hosts = listOf(known),
+        )
+
+        assertEquals(public, reachedBase)
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("direct.example", "public.example"), attempted)
+    }
+
+    @Test fun requested_root_is_verified_and_adopted_after_public_fallback() = runTest {
+        val direct = "http://direct.example"
+        val public = "https://public.example"
+        val known = HostConnection(
+            hostId = "host-a",
+            directUrl = direct,
+            publicUrl = public,
+        )
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                if (request.url.host == "direct.example") {
+                    throw java.io.IOException("direct unavailable")
+                }
+                when (request.url.encodedPath) {
+                    "/health" -> respond(
+                        """{"status":"ok","host_id":"host-a","workspace_count":1}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces" -> respond(
+                        """{"workspaces":[{"id":"ws-1","name":"alpha","state":"healthy"}]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(known) },
+        )
+        val api = SpecApi(client.client)
+        val legacy = WorkspaceConnection("legacy", direct)
+        val candidates = legacyConnectionsForDiscovery(
+            connections = listOf(legacy),
+            hostBases = listOf(direct, public),
+            workspaceId = "ws-1",
+        )
+        val identities = verifyLegacyIdentities(api, candidates).identities
+        val discovered = deriveConnection(
+            hostBase = public,
+            hostToken = null,
+            hostId = known.hostId,
+            workspaceId = "ws-1",
+            workspaceName = "alpha",
+            state = "healthy",
+        )
+
+        val adopted = adoptManualConnections(
+            existing = listOf(legacy),
+            discovered = listOf(discovered),
+            identities = identities,
+        )
+
+        assertEquals(1, adopted.size)
+        assertEquals(legacy.id, adopted.single().id)
+        assertEquals(known.hostId, adopted.single().hostId)
+        assertEquals("ws-1", adopted.single().workspaceId)
+        assertEquals("$public/workspaces/ws-1", adopted.single().baseUrl)
     }
 
 

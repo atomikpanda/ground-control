@@ -58,6 +58,7 @@ class HostsRepositoryTest {
         assertEquals("h-1zzz", out[0].subdomain)
         assertEquals("kitchen box", out[0].labelOverride)
         assertEquals("http://192.168.1.9:47190", out[0].directUrl)
+        assertEquals(listOf(host.publicUrl), out[0].legacyPublicUrls)
     }
 
     @Test fun upsert_keeps_a_prior_refresh_when_the_directory_omits_one() {

@@ -50,6 +50,9 @@ data class HostConnection(
      *  ladder's staleness input, and the phone's own evidence rather than the
      *  directory's claim. */
     val lastContactAtMillis: Long? = null,
+    /** Prior relay-published bases for this stable host id. These are identity
+     * aliases only: requests route to [publicUrl], never back to a stale base. */
+    val legacyPublicUrls: List<String> = emptyList(),
 )
 
 /** Candidate bases in reachability order. A LAN/tailnet address is eligible
@@ -72,14 +75,16 @@ fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
 suspend fun reachableHostWorkspaces(
     api: SpecApi,
     host: HostConnection,
+    token: String? = null,
+    recordContact: Boolean = false,
 ): Pair<String, List<WorkspaceInfo>>? {
     for (base in host.hostBases()) {
         try {
             return base to api.listWorkspaces(
                 base,
-                null,
+                token,
                 allowHostFallback = false,
-                recordContact = false,
+                recordContact = recordContact,
                 hostId = host.hostId,
             )
         } catch (_: IOException) {
@@ -87,6 +92,29 @@ suspend fun reachableHostWorkspaces(
         }
     }
     return null
+}
+
+/** Probe a Settings discovery input without losing which known-host fallback
+ * actually answered. Unknown inputs remain a single explicit-base probe. */
+suspend fun reachableHostWorkspaces(
+    api: SpecApi,
+    requestedBase: String,
+    token: String?,
+    hosts: List<HostConnection>,
+): Pair<String, List<WorkspaceInfo>> {
+    val base = requestedBase.trimEnd('/')
+    val knownHost = hosts.filter { base in it.hostBases() }.singleOrNull()
+        ?: return base to api.listWorkspaces(
+            base,
+            token,
+            allowHostFallback = false,
+        )
+    return reachableHostWorkspaces(
+        api = api,
+        host = knownHost,
+        token = token.takeIf { knownHost.refresh == null },
+        recordContact = true,
+    ) ?: throw IOException("no reachable base for $base")
 }
 
 /** The network-derived inputs for one host's atomic connection update. This is
@@ -194,6 +222,19 @@ fun upsertHost(existing: List<HostConnection>, host: HostConnection): List<HostC
         directUrl = host.directUrl ?: prior?.directUrl,
         refresh = host.refresh ?: prior?.refresh,
         lastContactAtMillis = host.lastContactAtMillis ?: prior?.lastContactAtMillis,
+        legacyPublicUrls = (
+            host.legacyPublicUrls +
+                prior?.legacyPublicUrls.orEmpty() +
+                listOfNotNull(
+                    prior?.publicUrl?.takeIf {
+                        host.publicUrl.isNotBlank() &&
+                            it.isNotBlank() &&
+                            it != host.publicUrl
+                    },
+                )
+            )
+            .filter { it.isNotBlank() && it != host.publicUrl }
+            .distinct(),
     )
     return if (prior == null) existing + merged
     else existing.map { if (it.hostId == host.hostId) merged else it }

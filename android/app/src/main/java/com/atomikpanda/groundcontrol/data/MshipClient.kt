@@ -155,6 +155,9 @@ class RePairNeededException(val hostBase: String) :
 /** Client + the token cache its interceptor mints through. */
 class HostClient(val client: HttpClient, val tokens: HostTokens)
 
+private const val MILLIS_PER_SECOND = 1_000L
+private const val BEARER_EXPIRY_SAFETY_MARGIN_MILLIS = 5_000L
+
 /**
  * Short-lived host bearers (AC9), keyed by host identity and candidate base.
  *
@@ -165,19 +168,29 @@ class HostClient(val client: HttpClient, val tokens: HostTokens)
  * its bearer to a different transport.
  */
 class HostTokens(
-    private val exchange: suspend (hostBase: String, credential: String) -> String,
+    private val exchange: suspend (
+        hostBase: String,
+        credential: String,
+    ) -> HostTokenResponse,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
     private data class RouteKey(val hostId: String, val hostBase: String)
-    private data class CachedBearer(val credential: String, val token: String)
-
+    private data class CachedBearer(
+        val credential: String,
+        val token: String,
+        val expiresAtMillis: Long,
+    )
 
     private val cache = ConcurrentHashMap<RouteKey, CachedBearer>()
     private val guard = Mutex()
     private val locks = mutableMapOf<RouteKey, Mutex>()
 
+    private fun CachedBearer.isCurrent(credential: String?): Boolean =
+        this.credential == credential && nowMillis() < expiresAtMillis
+
     fun cached(hostId: String, hostBase: String, credential: String?): String? =
         cache[RouteKey(hostId, hostBase)]
-            ?.takeIf { it.credential == credential }
+            ?.takeIf { it.isCurrent(credential) }
             ?.token
 
     /**
@@ -198,15 +211,31 @@ class HostTokens(
             // Someone else already refreshed this credential after our request.
             if (
                 current != null &&
-                current.credential == credential &&
+                current.isCurrent(credential) &&
                 current.token != stale
             ) {
                 return@withLock current.token
             }
             val capturedCredential = credential ?: return@withLock null
-            val token = exchange(hostBase, capturedCredential)
-            cache[key] = CachedBearer(capturedCredential, token)
-            token
+            val issuedAtMillis = nowMillis()
+            val response = exchange(hostBase, capturedCredential)
+            val lifetimeMillis =
+                response.expiresIn.coerceAtLeast(0).toLong() * MILLIS_PER_SECOND
+            val safetyMarginMillis = minOf(
+                BEARER_EXPIRY_SAFETY_MARGIN_MILLIS,
+                lifetimeMillis / 10,
+            )
+            val expiresAtMillis =
+                issuedAtMillis + lifetimeMillis - safetyMarginMillis
+            if (nowMillis() >= expiresAtMillis) {
+                throw AuthException("minted host bearer expired before use")
+            }
+            cache[key] = CachedBearer(
+                credential = capturedCredential,
+                token = response.token,
+                expiresAtMillis = expiresAtMillis,
+            )
+            response.token
         }
     }
 }
@@ -251,6 +280,7 @@ private suspend fun notifyHostContact(
 fun hostAwareClient(
     engine: HttpClientEngine,
     onHostContact: suspend (hostId: String, hostBase: String) -> Unit = { _, _ -> },
+    nowMillis: () -> Long = System::currentTimeMillis,
     hosts: suspend () -> List<HostConnection>,
 ): HostClient {
     var tokens: HostTokens? = null
@@ -269,6 +299,12 @@ fun hostAwareClient(
             val host = when {
                 routedHostId != null ->
                     knownHosts.firstOrNull { it.hostId == routedHostId }
+                        ?: knownHosts.filter { candidate ->
+                            val handle = routedHostId.trimEnd('/')
+                            candidate.legacyPublicUrls.any {
+                                it.trimEnd('/') == handle
+                            }
+                        }.singleOrNull()
                         ?: base?.let { candidateBase ->
                             knownHosts.filter { candidateBase in it.hostBases() }.singleOrNull()
                         }
@@ -425,18 +461,23 @@ fun hostAwareClient(
     }
     tokens = HostTokens(
         exchange = { base, credential -> mintHostToken(client, base, credential) },
+        nowMillis = nowMillis,
     )
     return HostClient(client, tokens)
 }
 
 /** The bootstrap exchange itself: no Authorization header, the credential in the
  *  body, and every failure is a uniform 401 — which can only mean re-pair. */
-private suspend fun mintHostToken(client: HttpClient, hostBase: String, credential: String): String =
+private suspend fun mintHostToken(
+    client: HttpClient,
+    hostBase: String,
+    credential: String,
+): HostTokenResponse =
     try {
         client.post("${hostBase.trimEnd('/')}$HOST_TOKEN_PATH") {
             contentType(ContentType.Application.Json)
             setBody(HostTokenBody(credential))
-        }.body<HostTokenResponse>().token
+        }.body()
     } catch (_: AuthException) {
         throw RePairNeededException(hostBase)
     }

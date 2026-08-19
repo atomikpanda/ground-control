@@ -6,8 +6,10 @@ import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.settings.canAdoptDirectHostIdentity
 import com.atomikpanda.groundcontrol.ui.settings.classifyFleetRefreshFailure
+import com.atomikpanda.groundcontrol.ui.settings.directUrlForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.observeRelayAccountChanges
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
+import com.atomikpanda.groundcontrol.ui.settings.legacyConnectionsForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.visibleSettingsResult
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
@@ -136,6 +138,47 @@ class SettingsFleetTest {
         val adopted = legacy.copy(hostId = "host-a")
 
         assertEquals(listOf(legacy), unresolvedLegacyConnections(listOf(legacy, adopted)))
+    }
+
+    @Test fun direct_discovery_verifies_requested_and_reached_legacy_rows() {
+        val requestedRoot = WorkspaceConnection("root", "http://host:47190")
+        val requestedWorkspace =
+            WorkspaceConnection("workspace", "http://host:47190/workspaces/ws-1")
+        val reachedWorkspace =
+            WorkspaceConnection("public", "https://host.example/workspaces/ws-1")
+        val unrelated = WorkspaceConnection("other", "http://other:47190")
+
+        val matches = legacyConnectionsForDiscovery(
+            connections = listOf(
+                requestedRoot,
+                requestedWorkspace,
+                reachedWorkspace,
+                unrelated,
+            ),
+            hostBases = listOf("http://host:47190/", "https://host.example"),
+            workspaceId = "ws-1",
+        )
+
+        assertEquals(
+            listOf(requestedRoot, requestedWorkspace, reachedWorkspace),
+            matches,
+        )
+    }
+
+    @Test fun public_fallback_is_not_persisted_as_a_direct_url() {
+        assertNull(
+            directUrlForDiscovery(
+                requestedBase = "http://host:47190",
+                reachedBase = "https://host.example",
+            ),
+        )
+        assertEquals(
+            "http://host:47190",
+            directUrlForDiscovery(
+                requestedBase = "http://host:47190/",
+                reachedBase = "http://host:47190",
+            ),
+        )
     }
 
     @Test fun fleet_status_is_hidden_as_soon_as_its_relay_account_is_replaced() {

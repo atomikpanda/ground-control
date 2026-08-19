@@ -108,6 +108,11 @@ fun GroundControlApp(
     val messagesVm = viewModel {
         MessagesViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
     }
+    // Activity-scoped so relay links received on Home immediately trigger fleet
+    // discovery; tying this observer to the Settings destination delays pairing.
+    val settingsVm = viewModel {
+        SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo)
+    }
 
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -157,7 +162,7 @@ fun GroundControlApp(
                     QueueViewModel(
                         queueRepo,
                         connectionsProvider = { runBlockingSnapshot(connRepo) },
-                        hostsProvider = { runBlocking { hostsRepo.snapshot() } },
+                        hosts = hostsRepo.hosts,
                     )
                 }
                 val uriHandler = LocalUriHandler.current
@@ -192,8 +197,7 @@ fun GroundControlApp(
                 ProjectsScreen(vm, onOpenWorkspace = { connId -> nav.navigate("workspace/$connId") })
             }
             composable(Section.SETTINGS.route) {
-                val vm = viewModel { SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo) }
-                SettingsScreen(vm)
+                SettingsScreen(settingsVm)
             }
             composable(
                 route = "specDetail/{connectionId}/{specId}",

@@ -14,6 +14,7 @@ import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderForHost
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
+import com.atomikpanda.groundcontrol.data.reachableHostWorkspaces
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
 import com.atomikpanda.groundcontrol.data.NotificationsSetting
@@ -24,9 +25,11 @@ import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.HostHealth
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
+import com.atomikpanda.groundcontrol.data.workspaceBaseUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -102,6 +105,28 @@ internal fun canAdoptDirectHostIdentity(
     claimedHost: HostConnection?,
 ): Boolean = claimedHostId != null && (claimedHost == null || claimedHost.refresh == null)
 
+internal fun directUrlForDiscovery(
+    requestedBase: String,
+    reachedBase: String,
+): String? {
+    val requested = normalizedBaseUrl(requestedBase) ?: return null
+    val reached = normalizedBaseUrl(reachedBase) ?: return null
+    return reached.takeIf { it == requested }
+}
+
+internal fun legacyConnectionsForDiscovery(
+    connections: List<WorkspaceConnection>,
+    hostBases: List<String>,
+    workspaceId: String,
+): List<WorkspaceConnection> {
+    val matchingBases = hostBases.mapNotNull(::normalizedBaseUrl)
+        .flatMap { listOf(it, workspaceBaseUrl(it, workspaceId)) }
+        .toSet()
+    return unresolvedLegacyConnections(connections).filter {
+        normalizedBaseUrl(it.baseUrl)?.let(matchingBases::contains) == true
+    }
+}
+
 private data class SettingsResult(
     val message: String,
     val owner: RelayAccount? = null,
@@ -176,17 +201,25 @@ class SettingsViewModel(
             // A daemon HOST's /health doesn't decode as a workspace
             // HealthResponse. Before the offline-save fallback, check whether
             // this is a host instead of persisting a root that every call 404s.
-            val hostResult = runCatching { api.listWorkspaces(base, tok) }
+            val hostResult = runCatching {
+                reachableHostWorkspaces(api, base, tok, hosts.snapshot())
+            }
             if (hostResult.isFailure) {
                 if (surfaceRePair(hostResult.exceptionOrNull())) return@launch
                 repo.upsert(probe)
                 setTestResult("Saved (couldn't reach /health)")
                 return@launch
             }
-            val hostHealth = runCatching { api.hostHealth(base) }
+            val (reachedBase, hostWs) = hostResult.getOrThrow()
+            val hostHealth = runCatching { api.hostHealth(reachedBase) }
             if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
-            val hostWs = hostResult.getOrThrow()
-            _discovered.value = DiscoveredWorkspaces(base, tok, hostWs, hostHealth.getOrNull())
+            _discovered.value = DiscoveredWorkspaces(
+                reachedBase,
+                tok,
+                hostWs,
+                hostHealth.getOrNull(),
+                requestedBase = base,
+            )
             setTestResult("That's a host URL — pick a workspace below")
         }
     }
@@ -215,6 +248,8 @@ class SettingsViewModel(
         val workspaces: List<WorkspaceInfo>,
         /** This host's own `/health`; null keeps legacy behavior. */
         val hostHealth: HostHealth? = null,
+        /** The operator-entered base, retained when [hostBase] is a fallback. */
+        val requestedBase: String = hostBase,
     ) {
         val hostId: String? get() = hostHealth?.hostId
     }
@@ -231,7 +266,9 @@ class SettingsViewModel(
         }
         val tok = token?.ifBlank { null }
         viewModelScope.launch {
-            val result = runCatching { api.listWorkspaces(base, tok) }
+            val result = runCatching {
+                reachableHostWorkspaces(api, base, tok, hosts.snapshot())
+            }
             if (result.isFailure) {
                 _discovered.value = null
                 if (!surfaceRePair(result.exceptionOrNull())) {
@@ -239,10 +276,16 @@ class SettingsViewModel(
                 }
                 return@launch
             }
-            val hostHealth = runCatching { api.hostHealth(base) }
+            val (reachedBase, workspaces) = result.getOrThrow()
+            val hostHealth = runCatching { api.hostHealth(reachedBase) }
             if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
-            val workspaces = result.getOrThrow()
-            _discovered.value = DiscoveredWorkspaces(base, tok, workspaces, hostHealth.getOrNull())
+            _discovered.value = DiscoveredWorkspaces(
+                reachedBase,
+                tok,
+                workspaces,
+                hostHealth.getOrNull(),
+                requestedBase = base,
+            )
             setTestResult("Found ${workspaces.size} workspace(s)")
         }
     }
@@ -336,14 +379,15 @@ class SettingsViewModel(
             }
             val canAdoptClaimedHost = canAdoptDirectHostIdentity(from.hostId, claimedHost)
             val hostId = from.hostId.takeIf { canAdoptClaimedHost } ?: from.hostBase
-            if (canAdoptClaimedHost) {
+            val directUrl = directUrlForDiscovery(from.requestedBase, from.hostBase)
+            if (canAdoptClaimedHost && directUrl != null) {
                 hosts.setDirectUrl(
                     hostId,
-                    from.hostBase,
+                    directUrl,
                     from.hostHealth?.runner?.state ?: info.runner?.state,
                     System.currentTimeMillis(),
                 )
-            } else if (from.hostId != null) {
+            } else if (!canAdoptClaimedHost && from.hostId != null) {
                 setTestResult(
                     "Direct identity is unverified; saved as a separate connection",
                 )
@@ -357,10 +401,12 @@ class SettingsViewModel(
                 workspaceName = info.name,
                 state = info.state,
             )
-            val sameUrlLegacyRows = unresolvedLegacyConnections(repo.snapshot()).filter {
-                it.baseUrl.trimEnd('/') == discovered.baseUrl
-            }
-            val identities = verifyLegacyIdentities(api, sameUrlLegacyRows).identities
+            val legacyRows = legacyConnectionsForDiscovery(
+                connections = repo.snapshot(),
+                hostBases = listOf(from.requestedBase, from.hostBase),
+                workspaceId = info.id,
+            )
+            val identities = verifyLegacyIdentities(api, legacyRows).identities
             repo.upsertDiscovered(discovered, identities)
         }
     }
