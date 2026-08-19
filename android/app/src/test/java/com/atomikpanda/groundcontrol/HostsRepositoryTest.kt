@@ -37,8 +37,8 @@ class HostsRepositoryTest {
     }
 
     @Test fun the_refresh_credential_is_persisted() {
-        // AC9: a host reachable on LAN stays usable while the relay is down, which
-        // is only true if the refresh credential survives a process death — it is
+        // AC9: a cached public host stays usable while directory discovery is
+        // down only if the refresh credential survives a process death — it is
         // stored, not held in memory beside the directory response.
         val out = HostsCodec.decode(HostsCodec.encode(listOf(host)))
         assertEquals("refresh-credential", out[0].refresh)

@@ -168,12 +168,17 @@ class HostTokens(
     private val exchange: suspend (hostBase: String, credential: String) -> String,
 ) {
     private data class RouteKey(val hostId: String, val hostBase: String)
+    private data class CachedBearer(val credential: String, val token: String)
 
-    private val cache = ConcurrentHashMap<RouteKey, String>()
+
+    private val cache = ConcurrentHashMap<RouteKey, CachedBearer>()
     private val guard = Mutex()
     private val locks = mutableMapOf<RouteKey, Mutex>()
 
-    fun cached(hostId: String, hostBase: String): String? = cache[RouteKey(hostId, hostBase)]
+    fun cached(hostId: String, hostBase: String, credential: String?): String? =
+        cache[RouteKey(hostId, hostBase)]
+            ?.takeIf { it.credential == credential }
+            ?.token
 
     /**
      * The current bearer for this host route, minting one from the refresh
@@ -190,10 +195,18 @@ class HostTokens(
         val lock = guard.withLock { locks.getOrPut(key) { Mutex() } }
         return lock.withLock {
             val current = cache[key]
-            // Someone else already replaced the token we came to replace.
-            if (current != null && current != stale) return@withLock current
+            // Someone else already refreshed this credential after our request.
+            if (
+                current != null &&
+                current.credential == credential &&
+                current.token != stale
+            ) {
+                return@withLock current.token
+            }
             val capturedCredential = credential ?: return@withLock null
-            exchange(hostBase, capturedCredential).also { cache[key] = it }
+            val token = exchange(hostBase, capturedCredential)
+            cache[key] = CachedBearer(capturedCredential, token)
+            token
         }
     }
 }
@@ -319,7 +332,8 @@ fun hostAwareClient(
                     return@on call
                 }
                 val token = try {
-                    cache.cached(host.hostId, candidateBase) ?: routeBearer(candidateBase)
+                    cache.cached(host.hostId, candidateBase, host.refresh) ?:
+                        routeBearer(candidateBase)
                 } catch (error: IOException) {
                     lastTransportFailure = error
                     continue

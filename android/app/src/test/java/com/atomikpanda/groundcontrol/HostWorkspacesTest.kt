@@ -532,6 +532,47 @@ class HostWorkspacesTest {
         assertEquals(listOf("rotated-out", "current"), exchanges)
     }
 
+    @Test fun replacing_an_account_credential_invalidates_its_cached_bearer() = runTest {
+        var current = host.copy(refresh = "old-refresh")
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        val body = (req.body as OutgoingContent.ByteArrayContent)
+                            .bytes().decodeToString()
+                        val credential = Regex(""""refresh":"([^"]+)"""")
+                            .find(body)!!.groupValues[1]
+                        exchanges += credential
+                        respond(
+                            """{"token":"$credential-bearer","expires_in":300}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    "/workspaces" -> {
+                        authorizations += req.headers[HttpHeaders.Authorization]
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+        )
+        val api = SpecApi(client.client)
+
+        api.listWorkspaces(current.publicUrl!!, null)
+        current = current.copy(refresh = "new-refresh")
+        api.listWorkspaces(current.publicUrl!!, null)
+
+        assertEquals(listOf("old-refresh", "new-refresh"), exchanges)
+        assertEquals(
+            listOf("Bearer old-refresh-bearer", "Bearer new-refresh-bearer"),
+            authorizations,
+        )
+    }
+
     @Test fun workspace_route_identity_disambiguates_hosts_sharing_a_base() = runTest {
         val sharedBase = "https://contended.relay.example.com"
         val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")

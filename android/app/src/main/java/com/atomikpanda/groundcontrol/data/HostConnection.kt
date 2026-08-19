@@ -12,9 +12,9 @@ import kotlinx.serialization.json.Json
  *
  * A host — not a workspace — is what the relay directory enumerates and what a
  * credential belongs to: [refresh] is the standing credential the phone
- * exchanges at the host's own `POST /host/token` for a short-lived bearer, so
- * nothing here authorizes traffic by itself and a host stays usable on LAN
- * while the relay is down (AC9).
+ * exchanges at the host's authenticated public `POST /host/token` for a
+ * short-lived bearer. Persisting it keeps the cached public route usable when
+ * directory discovery is unavailable (AC9).
  *
  * Every field has a default: an install that predates #471 has no "hosts" key
  * at all, and a field added later must decode against JSON written before it
