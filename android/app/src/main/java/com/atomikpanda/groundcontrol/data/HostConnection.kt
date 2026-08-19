@@ -2,7 +2,7 @@ package com.atomikpanda.groundcontrol.data
 
 import com.atomikpanda.groundcontrol.data.dto.HostInfo
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
-import kotlinx.coroutines.CancellationException
+import java.io.IOException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -82,8 +82,8 @@ suspend fun reachableHostWorkspaces(
                 recordContact = false,
                 hostId = host.hostId,
             )
-        } catch (error: Exception) {
-            if (error is RePairNeededException || error is CancellationException) throw error
+        } catch (_: IOException) {
+            // Only a transport failure justifies trying another candidate.
         }
     }
     return null

@@ -24,6 +24,7 @@ import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.HostHealth
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -55,8 +56,9 @@ internal data class FleetRefreshFailure(
     val message: String,
 )
 
-internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure =
-    if (error is AuthException) {
+internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure {
+    if (error is CancellationException) throw error
+    return if (error is AuthException) {
         FleetRefreshFailure(
             requiresRePair = true,
             message = "Re-pair needed — scan the relay account again",
@@ -67,6 +69,7 @@ internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure 
             message = "Couldn't reach the relay — showing last known hosts",
         )
     }
+}
 
 internal suspend fun observeRelayAccountChanges(
     accounts: Flow<RelayAccount?>,

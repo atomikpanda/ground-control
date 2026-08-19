@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.FLEET_TOKEN_HEADER
 import com.atomikpanda.groundcontrol.data.HostConnection
@@ -14,6 +15,7 @@ import com.atomikpanda.groundcontrol.data.hostAwareClient
 import com.atomikpanda.groundcontrol.data.hostBase
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
+import com.atomikpanda.groundcontrol.data.reachableHostWorkspaces
 import com.atomikpanda.groundcontrol.data.recordHostContact
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
@@ -881,6 +883,36 @@ class HostWorkspacesTest {
 
         assertTrue(refreshHostWorkspaceConnections(SpecApi(client.client), host) != null)
         assertEquals(emptyList<String>(), contacts)
+    }
+
+    @Test fun fleet_workspace_probe_does_not_fail_over_after_authentication_rejection() = runTest {
+        val attempted = mutableListOf<String>()
+        val probeHost = HostConnection(
+            hostId = "host-a",
+            directUrl = "http://direct.example",
+            publicUrl = "https://public.example",
+        )
+        val api = SpecApi(
+            HttpClient(
+                MockEngine { request ->
+                    attempted += request.url.host
+                    respond(
+                        if (request.url.host == "direct.example") "unauthorized" else "[]",
+                        if (request.url.host == "direct.example") {
+                            HttpStatusCode.Unauthorized
+                        } else {
+                            HttpStatusCode.OK
+                        },
+                        jsonHdr,
+                    )
+                },
+            ) { mshipDefaults() },
+        )
+
+        val error = runCatching { reachableHostWorkspaces(api, probeHost) }.exceptionOrNull()
+
+        assertTrue(error is AuthException)
+        assertEquals(listOf("direct.example"), attempted)
     }
 
 

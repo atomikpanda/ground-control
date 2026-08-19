@@ -8,6 +8,7 @@ import com.atomikpanda.groundcontrol.ui.settings.observeRelayAccountChanges
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import com.atomikpanda.groundcontrol.ui.settings.visibleSettingsResult
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -94,6 +95,16 @@ class SettingsFleetTest {
         assertEquals("Re-pair needed — scan the relay account again", rejected.message)
         assertFalse(unreachable.requiresRePair)
         assertEquals("Couldn't reach the relay — showing last known hosts", unreachable.message)
+    }
+
+    @Test fun fleet_refresh_failure_classification_propagates_cancellation() {
+        val cancellation = CancellationException("scope cancelled")
+
+        val thrown = runCatching {
+            classifyFleetRefreshFailure(cancellation)
+        }.exceptionOrNull()
+
+        assertTrue(thrown === cancellation)
     }
 
     @Test fun unresolved_legacy_rows_remain_eligible_after_the_host_is_known() {
