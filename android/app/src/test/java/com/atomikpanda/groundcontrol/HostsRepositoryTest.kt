@@ -6,6 +6,7 @@ import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
+import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
 import com.atomikpanda.groundcontrol.data.replaceRelayHosts
@@ -14,6 +15,8 @@ import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
 import com.atomikpanda.groundcontrol.data.recordDirectHostDiscovery
 import com.atomikpanda.groundcontrol.data.relayAccountMatchesExpected
 import com.atomikpanda.groundcontrol.data.upsertHost
+import com.atomikpanda.groundcontrol.data.upsertConnection
+import com.atomikpanda.groundcontrol.data.dto.HostInfo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -113,6 +116,18 @@ class HostsRepositoryTest {
         assertEquals("refresh-credential", out.single().refresh)
     }
 
+    @Test fun directory_entries_require_a_non_blank_host_or_request_identity() {
+        assertNull(hostFrom(HostInfo(hostId = ""), "relay.example.com"))
+        assertNull(hostFrom(HostInfo(hostId = "  ", requestId = " "), "relay.example.com"))
+        assertEquals(
+            "pending:req-1",
+            hostFrom(
+                HostInfo(hostId = "", requestId = "req-1"),
+                "relay.example.com",
+            )?.hostId,
+        )
+    }
+
 
     @Test fun replacing_a_relay_account_clears_only_the_previous_fleet() {
         val otherHost = host.copy(hostId = "h-2", relayDomain = "other.example.com")
@@ -134,6 +149,38 @@ class HostsRepositoryTest {
 
         assertEquals(listOf("h-2"), replaced.hosts.map { it.hostId })
         assertEquals(listOf("other", "manual"), replaced.connections.map { it.id })
+    }
+
+    @Test fun replacing_a_relay_account_restores_adopted_direct_workspaces() {
+        val directBase = "http://lan:47190"
+        val direct = WorkspaceConnection(
+            id = "direct",
+            baseUrl = "$directBase/workspaces/ws",
+            token = "direct-token",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+        val relay = direct.copy(
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            token = null,
+        )
+        val adopted = upsertConnection(listOf(direct), relay).single()
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = directBase)),
+            connections = listOf(adopted),
+        )
+
+        assertEquals(1, replaced.hosts.size)
+        assertEquals(directBase, replaced.hosts.single().directUrl)
+        assertNull(replaced.hosts.single().relayDomain)
+        assertNull(replaced.hosts.single().refresh)
+        assertEquals("", replaced.hosts.single().publicUrl)
+        assertEquals(1, replaced.connections.size)
+        assertEquals("$directBase/workspaces/ws", replaced.connections.single().baseUrl)
+        assertEquals("direct-token", replaced.connections.single().token)
     }
 
     @Test fun replacing_a_same_domain_relay_token_clears_the_previous_fleet() {

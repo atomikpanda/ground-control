@@ -127,6 +127,10 @@ class SettingsFleetTest {
             ),
         )
         assertFalse(canAdoptDirectHostIdentity(claimedHostId = null, claimedHost = null))
+        assertFalse(canAdoptDirectHostIdentity("", claimedHost = null))
+        assertFalse(canAdoptDirectHostIdentity("   ", claimedHost = null))
+        assertFalse(canAdoptDirectHostIdentity("http://host:47190", claimedHost = null))
+        assertFalse(canAdoptDirectHostIdentity("https://host.example", claimedHost = null))
     }
     @Test fun unresolved_legacy_rows_remain_eligible_after_the_host_is_known() {
         val legacy = WorkspaceConnection(

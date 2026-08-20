@@ -103,7 +103,12 @@ internal fun visibleSettingsResult(
 internal fun canAdoptDirectHostIdentity(
     claimedHostId: String?,
     claimedHost: HostConnection?,
-): Boolean = claimedHostId != null && (claimedHost == null || claimedHost.refresh == null)
+): Boolean = claimedHostId?.let { id ->
+    id.isNotBlank() &&
+        !id.startsWith("http://", ignoreCase = true) &&
+        !id.startsWith("https://", ignoreCase = true) &&
+        (claimedHost == null || claimedHost.refresh == null)
+} == true
 
 internal fun directUrlForDiscovery(
     requestedBase: String,
@@ -331,16 +336,18 @@ class SettingsViewModel(
         val incoming = entries.mapNotNull { hostFrom(it, account.relayDomain) }
         if (!hosts.replaceFromRelay(account, incoming)) return
         setTestResult("Fleet: ${entries.size} host(s)", account)
+        val currentHosts = hosts.snapshot()
 
         val verification = verifyLegacyIdentities(
             api,
             unresolvedLegacyConnections(repo.snapshot()),
+            currentHosts,
         )
         if (verification.requiresRePair) {
             setTestResult("Re-pair needed — scan the relay account again", account)
         }
         val identities = verification.identities
-        for (host in hosts.snapshot().filter { it.relayDomain == account.relayDomain }) {
+        for (host in currentHosts.filter { it.relayDomain == account.relayDomain }) {
             val refreshed = try {
                 refreshHostWorkspaceConnections(api, host, identities)
             } catch (_: RePairNeededException) {
@@ -392,7 +399,8 @@ class SettingsViewModel(
                     "Direct identity is unverified; saved as a separate connection",
                 )
             }
-            val storedHost = hosts.snapshot().firstOrNull { it.hostId == hostId }
+            val currentHosts = hosts.snapshot()
+            val storedHost = currentHosts.firstOrNull { it.hostId == hostId }
             val discovered = deriveConnection(
                 hostBase = from.hostBase,
                 hostToken = from.hostToken.takeIf { storedHost?.refresh == null },
@@ -406,7 +414,7 @@ class SettingsViewModel(
                 hostBases = listOf(from.requestedBase, from.hostBase),
                 workspaceId = info.id,
             )
-            val identities = verifyLegacyIdentities(api, legacyRows).identities
+            val identities = verifyLegacyIdentities(api, legacyRows, currentHosts).identities
             repo.upsertDiscovered(discovered, identities)
         }
     }

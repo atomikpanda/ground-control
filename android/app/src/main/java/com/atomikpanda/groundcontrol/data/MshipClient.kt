@@ -128,6 +128,12 @@ const val HOST_TOKEN_PATH = "/host/token"
  * nested fallback so the base they return is the base that actually answered. */
 private val EXPLICIT_HOST_BASE = AttributeKey<Unit>("ExplicitHostBase")
 private val SUPPRESS_HOST_CONTACT = AttributeKey<Unit>("SuppressHostContact")
+private data class PendingHostContact(
+    val callback: suspend (hostId: String, hostBase: String) -> Unit,
+    val hostId: String,
+    val hostBase: String,
+)
+private val PENDING_HOST_CONTACT = AttributeKey<PendingHostContact>("PendingHostContact")
 private data class WorkspaceRoute(
     val hostId: String,
     val workspaceId: String,
@@ -266,6 +272,17 @@ private suspend fun notifyHostContact(
     }
 }
 
+private suspend fun HttpResponse.completeHostContact() {
+    val contact = call.request.attributes.getOrNull(PENDING_HOST_CONTACT) ?: return
+    notifyHostContact(contact.callback, contact.hostId, contact.hostBase)
+}
+
+private suspend inline fun <reified T> HttpResponse.bodyAfterHostContact(): T {
+    val decoded = body<T>()
+    completeHostContact()
+    return decoded
+}
+
 /**
  * A client that mints and refreshes host bearers by itself (#471 AC9).
  *
@@ -373,6 +390,16 @@ fun hostAwareClient(
                         takeFrom(request)
                         url.takeFrom(candidateUrl)
                     }
+                    if (reportContact) {
+                        candidateRequest.attributes.put(
+                            PENDING_HOST_CONTACT,
+                            PendingHostContact(
+                                onHostContact,
+                                routedHost.hostId,
+                                candidateBase,
+                            ),
+                        )
+                    }
                     if (candidateRequest.headers.contains(HttpHeaders.Authorization)) {
                         val call = try {
                             proceed(candidateRequest)
@@ -380,9 +407,6 @@ fun hostAwareClient(
                             if (!retryRequest) throw error
                             lastTransportFailure = error
                             continue
-                        }
-                        if (call.response.status.isSuccess() && reportContact) {
-                            notifyHostContact(onHostContact, routedHost.hostId, candidateBase)
                         }
                         return@on call
                     }
@@ -412,12 +436,7 @@ fun hostAwareClient(
                         lastTransportFailure = error
                         continue
                     }
-                    if (call != null) {
-                        if (call.response.status.isSuccess() && reportContact) {
-                            notifyHostContact(onHostContact, routedHost.hostId, candidateBase)
-                        }
-                        return@on call
-                    }
+                    if (call != null) return@on call
                     if (!retryRequest) {
                         throw AuthException("request unauthorized")
                     }
@@ -438,9 +457,6 @@ fun hostAwareClient(
                         if (!retryRequest) throw error
                         lastTransportFailure = error
                         continue
-                    }
-                    if (retried.response.status.isSuccess() && reportContact) {
-                        notifyHostContact(onHostContact, routedHost.hostId, candidateBase)
                     }
                     return@on retried
                 }
@@ -477,7 +493,7 @@ private suspend fun mintHostToken(
         client.post("${hostBase.trimEnd('/')}$HOST_TOKEN_PATH") {
             contentType(ContentType.Application.Json)
             setBody(HostTokenBody(credential))
-        }.body()
+        }.bodyAfterHostContact()
     } catch (_: AuthException) {
         throw RePairNeededException(hostBase)
     }
@@ -486,13 +502,13 @@ private suspend fun mintHostToken(
 class SpecApi(private val client: HttpClient) {
 
     suspend fun health(conn: WorkspaceConnection): HealthResponse =
-        client.get("${conn.baseUrl}/health") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/health") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun listSpecs(conn: WorkspaceConnection): List<SpecSummary> =
-        client.get("${conn.baseUrl}/specs") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/specs") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun getSpec(conn: WorkspaceConnection, id: String): SpecRecord =
-        client.get("${conn.baseUrl}/specs/$id") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/specs/$id") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun getEvidenceBlob(
         conn: WorkspaceConnection,
@@ -501,78 +517,83 @@ class SpecApi(private val client: HttpClient) {
     ): ByteArray =
         client.get("${conn.baseUrl}/specs/$specId/evidence/$ref/blob") {
             auth(conn)
-        }.body()
+        }.bodyAfterHostContact()
 
     suspend fun getReview(conn: WorkspaceConnection, id: String): SpecReview =
-        client.get("${conn.baseUrl}/specs/$id/review") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/specs/$id/review") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun setVerdict(conn: WorkspaceConnection, id: String, criterionId: String, verdict: String, comment: String? = null): SpecReview =
-        client.post("${conn.baseUrl}/specs/$id/verdict") { auth(conn); jsonBody(VerdictBody(criterionId, verdict, comment)) }.body()
+        client.post("${conn.baseUrl}/specs/$id/verdict") { auth(conn); jsonBody(VerdictBody(criterionId, verdict, comment)) }.bodyAfterHostContact()
 
     suspend fun setProseVerdict(conn: WorkspaceConnection, id: String, sectionId: String, verdict: String, comment: String? = null): SpecReview =
-        client.post("${conn.baseUrl}/specs/$id/prose-verdict") { auth(conn); jsonBody(ProseVerdictBody(sectionId, verdict, comment)) }.body()
+        client.post("${conn.baseUrl}/specs/$id/prose-verdict") { auth(conn); jsonBody(ProseVerdictBody(sectionId, verdict, comment)) }.bodyAfterHostContact()
 
     suspend fun answerQuestion(conn: WorkspaceConnection, id: String, qid: String, answer: String): SpecReview =
-        client.post("${conn.baseUrl}/specs/$id/questions/$qid/answer") { auth(conn); jsonBody(AnswerBody(answer)) }.body()
+        client.post("${conn.baseUrl}/specs/$id/questions/$qid/answer") { auth(conn); jsonBody(AnswerBody(answer)) }.bodyAfterHostContact()
 
     suspend fun addQuestion(conn: WorkspaceConnection, id: String, text: String): SpecReview =
-        client.post("${conn.baseUrl}/specs/$id/questions") { auth(conn); jsonBody(QuestionBody(text)) }.body()
+        client.post("${conn.baseUrl}/specs/$id/questions") { auth(conn); jsonBody(QuestionBody(text)) }.bodyAfterHostContact()
 
     suspend fun approve(conn: WorkspaceConnection, id: String, bypassGate: Boolean): SpecReview =
-        client.post("${conn.baseUrl}/specs/$id/approve") { auth(conn); jsonBody(ApproveBody(bypassGate)) }.body()
+        client.post("${conn.baseUrl}/specs/$id/approve") { auth(conn); jsonBody(ApproveBody(bypassGate)) }.bodyAfterHostContact()
 
     suspend fun requestChanges(conn: WorkspaceConnection, id: String, reason: String): SpecReview =
-        client.post("${conn.baseUrl}/specs/$id/request-changes") { auth(conn); jsonBody(ReasonBody(reason)) }.body()
+        client.post("${conn.baseUrl}/specs/$id/request-changes") { auth(conn); jsonBody(ReasonBody(reason)) }.bodyAfterHostContact()
 
     suspend fun createSpec(conn: WorkspaceConnection, title: String, affectedRepos: List<String>): SpecRecord =
-        client.post("${conn.baseUrl}/specs") { auth(conn); jsonBody(NewSpecBody(title = title, affectedRepos = affectedRepos)) }.body()
+        client.post("${conn.baseUrl}/specs") { auth(conn); jsonBody(NewSpecBody(title = title, affectedRepos = affectedRepos)) }.bodyAfterHostContact()
 
     suspend fun dispatch(conn: WorkspaceConnection, id: String): DispatchResult =
-        client.post("${conn.baseUrl}/specs/$id/dispatch") { auth(conn) }.body()
+        client.post("${conn.baseUrl}/specs/$id/dispatch") { auth(conn) }.bodyAfterHostContact()
 
     /** Archive a spec (swipe-to-archive in the inbox). The response is just `{id, status}` —
      *  like [setUnattended], callers apply the optimistic removal themselves. */
     suspend fun archiveSpec(conn: WorkspaceConnection, id: String) {
         client.post("${conn.baseUrl}/specs/$id/archive") { auth(conn) }
+            .completeHostContact()
     }
 
     suspend fun listTasks(conn: WorkspaceConnection): List<TaskSummary> =
-        client.get("${conn.baseUrl}/tasks") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/tasks") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun listItems(conn: WorkspaceConnection): List<WorkItemSummary> =
-        client.get("${conn.baseUrl}/items") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/items") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun getItem(conn: WorkspaceConnection, id: String): WorkItemSummary =
-        client.get("${conn.baseUrl}/items/$id") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/items/$id") { auth(conn) }.bodyAfterHostContact()
 
     /** Toggle a work item's eligibility for unattended (cloud-runner) execution.
      *  The server response is just `{id, unattended}` (not a full WorkItemSummary), so — like
      *  [markThreadSeen] — this ignores the body; callers apply the optimistic update themselves. */
     suspend fun setUnattended(conn: WorkspaceConnection, id: String, on: Boolean) {
-        client.post("${conn.baseUrl}/items/$id/unattended") { auth(conn); jsonBody(UnattendedBody(on)) }
+        client.post("${conn.baseUrl}/items/$id/unattended") {
+            auth(conn); jsonBody(UnattendedBody(on))
+        }.completeHostContact()
     }
 
     /** Set or clear a work item's phase override ("Mark done" → `phase = "done"`, "Reopen" →
      *  `phase = null`). The response is just `{id, phase_override}` (not a full
      *  WorkItemSummary) — like [setUnattended], callers apply the optimistic update themselves. */
     suspend fun setItemPhase(conn: WorkspaceConnection, id: String, phase: String?) {
-        client.post("${conn.baseUrl}/items/$id/phase") { auth(conn); jsonBody(PhaseBody(phase)) }
+        client.post("${conn.baseUrl}/items/$id/phase") {
+            auth(conn); jsonBody(PhaseBody(phase))
+        }.completeHostContact()
     }
 
     /** Steer a work item: appends a human message to its thread, lazily creating+linking one
      *  server-side when the item has none. Item-scoped (not thread-scoped) so it can never
      *  no-op on an in-flight item that hasn't got a thread yet. Returns the (new-or-existing) thread. */
     suspend fun postItemMessage(conn: WorkspaceConnection, id: String, text: String): Thread =
-        client.post("${conn.baseUrl}/items/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.body()
+        client.post("${conn.baseUrl}/items/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.bodyAfterHostContact()
 
     suspend fun getTask(conn: WorkspaceConnection, slug: String): TaskSummary =
-        client.get("${conn.baseUrl}/tasks/$slug") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/tasks/$slug") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun getJournal(conn: WorkspaceConnection, slug: String): List<JournalEntry> =
-        client.get("${conn.baseUrl}/journal/$slug") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/journal/$slug") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun listThreads(conn: WorkspaceConnection): List<ThreadSummary> =
-        client.get("${conn.baseUrl}/threads") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/threads") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun listThreadsWait(conn: WorkspaceConnection, since: String, timeoutSeconds: Int): ThreadsWaitResponse =
         client.get("${conn.baseUrl}/threads") {
@@ -585,34 +606,36 @@ class SpecApi(private val client: HttpClient) {
                 requestTimeoutMillis = (timeoutSeconds + 10) * 1000L
                 socketTimeoutMillis = (timeoutSeconds + 10) * 1000L
             }
-        }.body()
+        }.bodyAfterHostContact()
 
     suspend fun getThread(conn: WorkspaceConnection, id: String): Thread =
-        client.get("${conn.baseUrl}/threads/$id") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/threads/$id") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun createThread(conn: WorkspaceConnection, text: String, subject: String?): Thread =
-        client.post("${conn.baseUrl}/threads") { auth(conn); jsonBody(NewThreadBody(text, subject)) }.body()
+        client.post("${conn.baseUrl}/threads") { auth(conn); jsonBody(NewThreadBody(text, subject)) }.bodyAfterHostContact()
 
     suspend fun captureBrainstorm(conn: WorkspaceConnection, idea: String, title: String? = null, idempotencyKey: String? = null): Thread =
-        client.post("${conn.baseUrl}/capture") { auth(conn); jsonBody(CaptureBody(idea, title, idempotencyKey)) }.body()
+        client.post("${conn.baseUrl}/capture") { auth(conn); jsonBody(CaptureBody(idea, title, idempotencyKey)) }.bodyAfterHostContact()
 
     suspend fun postMessage(conn: WorkspaceConnection, id: String, text: String): Thread =
-        client.post("${conn.baseUrl}/threads/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.body()
+        client.post("${conn.baseUrl}/threads/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.bodyAfterHostContact()
 
     suspend fun markThreadSeen(conn: WorkspaceConnection, id: String, seenAt: String?) {
-        client.post("${conn.baseUrl}/threads/$id/seen") { auth(conn); jsonBody(SeenBody(seenAt)) }
+        client.post("${conn.baseUrl}/threads/$id/seen") {
+            auth(conn); jsonBody(SeenBody(seenAt))
+        }.completeHostContact()
     }
 
     suspend fun listPlanAssumptions(conn: WorkspaceConnection): List<PlanAssumptionSummary> =
-        client.get("${conn.baseUrl}/plan-assumptions") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/plan-assumptions") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun getPlanAssumptions(conn: WorkspaceConnection, slug: String): PlanAssumptionsEnvelope =
-        client.get("${conn.baseUrl}/plan-assumptions/$slug") { auth(conn) }.body()
+        client.get("${conn.baseUrl}/plan-assumptions/$slug") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun approvePlanFlag(conn: WorkspaceConnection, slug: String, axis: String, reason: String?): PlanAssumptionsEnvelope =
         client.post("${conn.baseUrl}/plan-assumptions/$slug/approve") {
             auth(conn); jsonBody(PlanFlagApproveBody(axis, reason))
-        }.body()
+        }.bodyAfterHostContact()
 
     /** The fleet (#471): GET enroll.<relay>/hosts with the per-device fleet token.
      *  The phone holds a relay ACCOUNT — this is the only route that turns it
@@ -620,7 +643,7 @@ class SpecApi(private val client: HttpClient) {
     suspend fun listHosts(relayDomain: String, fleetToken: String): List<HostInfo> =
         client.get("${enrollBaseUrl(relayDomain)}$HOSTS_PATH") {
             header(FLEET_TOKEN_HEADER, fleetToken)
-        }.body<HostsResponse>().hosts
+        }.bodyAfterHostContact<HostsResponse>().hosts
 
     /** A host's unauthenticated GET /health: ids and counts, the reachability
      * probe and the `host_id` half of an adoption's identity tuple. */
@@ -630,7 +653,7 @@ class SpecApi(private val client: HttpClient) {
     ): HostHealth =
         client.get("${hostBase.trimEnd('/')}/health") {
             if (!recordContact) attributes.put(SUPPRESS_HOST_CONTACT, Unit)
-        }.body()
+        }.bodyAfterHostContact()
 
     /** Host-level list (#472): GET {hostBase}/workspaces with the host token.
      *  Degraded entries are carried with their state, never dropped — the
@@ -647,7 +670,7 @@ class SpecApi(private val client: HttpClient) {
             if (!allowHostFallback) attributes.put(EXPLICIT_HOST_BASE, Unit)
             if (!recordContact) attributes.put(SUPPRESS_HOST_CONTACT, Unit)
             hostId?.let { attributes.put(HOST_ROUTE_ID, it) }
-        }.body<WorkspacesResponse>().workspaces
+        }.bodyAfterHostContact<WorkspacesResponse>().workspaces
 
     private fun HttpRequestBuilder.auth(conn: WorkspaceConnection) {
         conn.token?.takeIf { it.isNotBlank() }?.let {

@@ -34,12 +34,44 @@ internal fun replaceRelayAccountFleet(
     if (previous == null || previous == replacement) {
         return RelayAccountFleet(hosts, connections)
     }
-    val removedHostIds = hosts
-        .filter { it.relayDomain == previous.relayDomain }
-        .mapTo(mutableSetOf()) { it.hostId }
+    val previousHosts = hosts.filter { it.relayDomain == previous.relayDomain }
+    val retainedDirectHosts = previousHosts.mapNotNull { host ->
+        val directUrl = host.directUrl?.let(::normalizedBaseUrl) ?: return@mapNotNull null
+        host.copy(
+            subdomain = "",
+            publicUrl = "",
+            state = null,
+            refresh = null,
+            directUrl = directUrl,
+            relayDomain = null,
+            lastSeen = null,
+            requestId = null,
+            legacyPublicUrls = (host.legacyPublicUrls + host.publicUrl)
+                .filter { it.isNotBlank() }
+                .distinct(),
+        )
+    }
+    val retainedDirectById = retainedDirectHosts.associateBy { it.hostId }
+    val removedHostIds = previousHosts.mapTo(mutableSetOf()) { it.hostId }
+        .apply { removeAll(retainedDirectById.keys) }
     return RelayAccountFleet(
-        hosts = hosts.filterNot { it.relayDomain == previous.relayDomain },
-        connections = connections.filterNot { it.hostId in removedHostIds },
+        hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
+        connections = connections.mapNotNull { connection ->
+            if (connection.hostId in removedHostIds) return@mapNotNull null
+            val directHost = retainedDirectById[connection.hostId]
+                ?: return@mapNotNull connection
+            val workspaceId = connection.workspaceId?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull connection
+            val directBase = workspaceBaseUrl(directHost.directUrl!!, workspaceId)
+            connection.copy(
+                baseUrl = directBase,
+                token = connection.directToken ?: connection.token,
+                state = null,
+                legacyBaseUrls = (connection.legacyBaseUrls + connection.baseUrl)
+                    .filter { it != directBase }
+                    .distinct(),
+            )
+        },
     )
 }
 

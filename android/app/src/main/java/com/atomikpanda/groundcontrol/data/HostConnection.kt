@@ -268,7 +268,9 @@ fun replaceRelayHosts(
 /** Project a directory entry into the stored model. Pending-approval rows have
  *  no `host_id` yet and are keyed by their enroll request id instead. */
 fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
-    val id = info.hostId ?: info.requestId?.let { "pending:$it" } ?: return null
+    val id = info.hostId?.takeIf { it.isNotBlank() }
+        ?: info.requestId?.takeIf { it.isNotBlank() }?.let { "pending:$it" }
+        ?: return null
     return HostConnection(
         hostId = id,
         label = info.label,

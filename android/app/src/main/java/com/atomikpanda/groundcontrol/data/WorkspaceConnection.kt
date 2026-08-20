@@ -31,6 +31,9 @@ data class WorkspaceConnection(
      *  PendingIntent already sitting in the shade carries the OLD one. Deep-link
      *  resolution consults these so those taps keep landing. */
     val legacyBaseUrls: List<String> = emptyList(),
+    /** Standing token retained only to restore an operator-paired direct route
+     * if the relay account that temporarily adopted this row is replaced. */
+    val directToken: String? = null,
 )
 
 /** Short URL-safe fingerprint of a host handle. Connection ids are interpolated
@@ -63,6 +66,7 @@ fun deriveConnection(
     id = workspaceId + "-" + hostFingerprint(hostId),
     baseUrl = workspaceBaseUrl(hostBase, workspaceId),
     token = hostToken,
+    directToken = hostToken,
     workspaceName = workspaceName,
     hostId = hostId,
     state = state,
@@ -149,6 +153,7 @@ fun upsertConnection(
         id = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id,
         colorOverride = conn.colorOverride ?: prior?.colorOverride,
         glyphOverride = conn.glyphOverride ?: prior?.glyphOverride,
+        directToken = conn.directToken ?: conn.token ?: prior?.directToken ?: prior?.token,
         legacyBaseUrls = carryLegacyUrls(listOfNotNull(prior), conn),
     )
     return existing.filterNot(matches) + merged
@@ -166,9 +171,8 @@ private fun carryLegacyUrls(
         .filter { it != conn.baseUrl }
         .distinct()
 
-/** The identity a manual row's OWN host reported for it: `GET /health`'s
- *  `host_id` and the workspace id from that host's `GET /workspaces`. Either
- *  half null means "unverified" — which merges with nothing. */
+/** A workspace tuple confirmed through a known host's authenticated current
+ * route. Either half null means "unverified" — which merges with nothing. */
 data class VerifiedIdentity(
     val connectionId: String,
     val hostId: String?,
@@ -183,50 +187,75 @@ fun unresolvedLegacyConnections(
     it.hasStableIdentityTuple()
 }
 
-/** Verify the identity of a persisted pre-host-model row through its host root.
- * A #472-derived legacy row's workspace-addressed URL can select the right
- * workspace even when its later-added `workspaceId` field is absent. A truly
- * old root row with no id remains adoptable only when the verified host exposes
- * exactly one workspace. */
+/** Workspace id encoded in a legacy row without trusting its unauthenticated
+ * `/health` response. Root rows remain identifiable only when the authenticated
+ * host route exposes exactly one workspace. */
+private fun legacyWorkspaceId(connection: WorkspaceConnection): String? {
+    connection.workspaceId?.takeIf { it.isNotBlank() }?.let { return it }
+    val base = connection.baseUrl.trimEnd('/')
+    return base.substringAfterLast("/workspaces/", "")
+        .takeIf { it.isNotBlank() && '/' !in it }
+}
+
+private fun legacyHostRoot(connection: WorkspaceConnection): String {
+    val base = connection.baseUrl.trimEnd('/')
+    val workspaceId = legacyWorkspaceId(connection) ?: return base
+    val suffix = "/workspaces/$workspaceId"
+    return if (base.endsWith(suffix)) base.removeSuffix(suffix) else base
+}
+
+/** Match only persisted fleet routing evidence. A workspace's own
+ * unauthenticated health payload cannot nominate an arbitrary fleet host. */
+private fun knownHostForLegacyConnection(
+    connection: WorkspaceConnection,
+    hosts: List<HostConnection>,
+): HostConnection? {
+    val storedHostId = connection.hostId?.takeIf {
+        it.isNotBlank() &&
+            !it.startsWith("http://", ignoreCase = true) &&
+            !it.startsWith("https://", ignoreCase = true)
+    }
+    if (storedHostId != null) {
+        return hosts.filter { it.hostId == storedHostId }.singleOrNull()
+    }
+
+    val claimedBases = listOfNotNull(
+        legacyHostRoot(connection),
+        connection.hostId?.takeIf {
+            it.startsWith("http://", ignoreCase = true) ||
+                it.startsWith("https://", ignoreCase = true)
+        },
+    ).mapNotNull(::normalizedBaseUrl).toSet()
+    return hosts.filter { host ->
+        val knownBases = (
+            listOfNotNull(host.directUrl, host.publicUrl.takeIf { it.isNotBlank() }) +
+                host.legacyPublicUrls
+            ).mapNotNull(::normalizedBaseUrl)
+        knownBases.any(claimedBases::contains)
+    }.singleOrNull()
+}
+
+/** Verify a legacy row through the matched host's current authenticated route.
+ * Stale direct or relay URLs are identity aliases only and are never probed. */
 suspend fun verifyLegacyIdentity(
     api: SpecApi,
     connection: WorkspaceConnection,
+    hosts: List<HostConnection>,
 ): VerifiedIdentity? {
-    val workspaceHealth = try {
-        api.health(connection)
-    } catch (error: CancellationException) {
-        throw error
-    } catch (_: Exception) {
-        null
-    }
-    val workspaceHostId = workspaceHealth?.hostId?.takeIf { it.isNotBlank() }
-    val workspaceHealthId = workspaceHealth?.workspaceId?.takeIf { it.isNotBlank() }
-    if (workspaceHostId != null && workspaceHealthId != null) {
-        return VerifiedIdentity(connection.id, workspaceHostId, workspaceHealthId)
-    }
-    val base = connection.baseUrl.trimEnd('/')
-    val knownWorkspaceId = connection.workspaceId ?: base
-        .substringAfterLast("/workspaces/", "")
-        .takeIf { it.isNotBlank() && '/' !in it }
-    val workspaceSuffix = knownWorkspaceId?.let { "/workspaces/$it" }
-    val hostRoot = when {
-        workspaceSuffix != null && base.endsWith(workspaceSuffix) -> base.removeSuffix(workspaceSuffix)
-        connection.hostId?.startsWith("http://") == true ||
-            connection.hostId?.startsWith("https://") == true -> connection.hostId.trimEnd('/')
-        else -> base
-    }
-    val hostId = api.hostHealth(hostRoot, recordContact = false).hostId ?: return null
-    val workspaces = api.listWorkspaces(
-        hostRoot,
-        connection.token,
+    val host = knownHostForLegacyConnection(connection, hosts) ?: return null
+    val (_, workspaces) = reachableHostWorkspaces(
+        api = api,
+        host = host,
+        token = connection.token.takeIf { host.refresh == null },
         recordContact = false,
-    )
+    ) ?: return null
+    val knownWorkspaceId = legacyWorkspaceId(connection)
     val workspaceId = if (knownWorkspaceId != null) {
         knownWorkspaceId.takeIf { id -> workspaces.any { it.id == id } }
     } else {
         workspaces.singleOrNull()?.id
     } ?: return null
-    return VerifiedIdentity(connection.id, hostId, workspaceId)
+    return VerifiedIdentity(connection.id, host.hostId, workspaceId)
 }
 
 data class LegacyIdentityVerification(
@@ -239,12 +268,13 @@ data class LegacyIdentityVerification(
 suspend fun verifyLegacyIdentities(
     api: SpecApi,
     connections: List<WorkspaceConnection>,
+    hosts: List<HostConnection>,
 ): LegacyIdentityVerification {
     var requiresRePair = false
     val identities = buildList {
         for (connection in connections) {
             try {
-                verifyLegacyIdentity(api, connection)?.let(::add)
+                verifyLegacyIdentity(api, connection, hosts)?.let(::add)
             } catch (_: RePairNeededException) {
                 requiresRePair = true
             } catch (error: CancellationException) {
@@ -323,6 +353,7 @@ private fun adopt(
     return found.copy(
         id = manual.id,
         token = found.token,
+        directToken = found.directToken ?: found.token ?: manual.directToken ?: manual.token,
         workspaceName = found.workspaceName.ifBlank { manual.workspaceName },
         colorOverride = manual.colorOverride ?: found.colorOverride,
         glyphOverride = manual.glyphOverride ?: found.glyphOverride,
