@@ -217,6 +217,109 @@ class HostsRepositoryTest {
         assertTrue(restored.legacyBaseUrls.contains(legacy.baseUrl))
     }
 
+    @Test fun replacing_a_relay_account_restores_unambiguous_legacy_host_handles() {
+        val directBase = "http://lan:47190"
+        val retainedHost = host.copy(directUrl = directBase)
+        val urlValued = WorkspaceConnection(
+            id = "url-valued",
+            baseUrl = "${host.publicUrl}/workspaces/ws-url",
+            hostId = host.publicUrl,
+            directToken = "url-token",
+        )
+        val nullHost = WorkspaceConnection(
+            id = "null-host",
+            baseUrl = "${host.publicUrl}/workspaces/ws-null",
+            hostId = null,
+            directToken = "null-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(retainedHost),
+            connections = listOf(urlValued, nullHost),
+        )
+
+        val restoredById = replaced.connections.associateBy { it.id }
+        assertEquals(host.hostId, restoredById.getValue("url-valued").hostId)
+        assertEquals("ws-url", restoredById.getValue("url-valued").workspaceId)
+        assertEquals("$directBase/workspaces/ws-url", restoredById.getValue("url-valued").baseUrl)
+        assertEquals("url-token", restoredById.getValue("url-valued").token)
+        assertEquals("url-token", restoredById.getValue("url-valued").directToken)
+        assertEquals(listOf(urlValued.baseUrl), restoredById.getValue("url-valued").legacyBaseUrls)
+        assertEquals(host.hostId, restoredById.getValue("null-host").hostId)
+        assertEquals("ws-null", restoredById.getValue("null-host").workspaceId)
+        assertEquals("$directBase/workspaces/ws-null", restoredById.getValue("null-host").baseUrl)
+        assertEquals("null-token", restoredById.getValue("null-host").token)
+        assertEquals("null-token", restoredById.getValue("null-host").directToken)
+        assertEquals(listOf(nullHost.baseUrl), restoredById.getValue("null-host").legacyBaseUrls)
+    }
+
+    @Test fun replacing_a_relay_account_does_not_guess_legacy_host_ownership() {
+        val sharedOldUrl = "https://shared.relay.example.com"
+        val first = host.copy(
+            hostId = "h-first",
+            publicUrl = "https://first.relay.example.com",
+            directUrl = "http://first.lan:47190",
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val second = host.copy(
+            hostId = "h-second",
+            publicUrl = "https://second.relay.example.com",
+            directUrl = "http://second.lan:47190",
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "ambiguous",
+            baseUrl = "$sharedOldUrl/workspaces/ws",
+            directToken = "ambiguous-token",
+        )
+        val unrelated = WorkspaceConnection(
+            id = "unrelated",
+            baseUrl = "https://unrelated.example.com/workspaces/ws",
+            directToken = "unrelated-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(first, second),
+            connections = listOf(ambiguous, unrelated),
+        )
+
+        assertEquals(listOf(ambiguous, unrelated), replaced.connections)
+    }
+
+    @Test fun replacing_a_relay_account_considers_non_retained_legacy_host_owners() {
+        val sharedOldUrl = "https://shared.relay.example.com"
+        val retained = host.copy(
+            hostId = "h-retained",
+            publicUrl = "https://retained.relay.example.com",
+            directUrl = "http://retained.lan:47190",
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val removed = host.copy(
+            hostId = "h-removed",
+            publicUrl = "https://removed.relay.example.com",
+            directUrl = null,
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "ambiguous-retention",
+            baseUrl = "$sharedOldUrl/workspaces/ws",
+            directToken = "standing-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(retained, removed),
+            connections = listOf(ambiguous),
+        )
+
+        assertEquals(listOf(ambiguous), replaced.connections)
+    }
+
     @Test fun replacing_a_same_domain_relay_token_clears_the_previous_fleet() {
         val oldWorkspace = WorkspaceConnection(
             id = "old",

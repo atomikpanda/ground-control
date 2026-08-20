@@ -206,7 +206,7 @@ private fun legacyHostRoot(connection: WorkspaceConnection): String {
 
 /** Match only persisted fleet routing evidence. A workspace's own
  * unauthenticated health payload cannot nominate an arbitrary fleet host. */
-private fun knownHostForLegacyConnection(
+internal fun knownHostForLegacyConnection(
     connection: WorkspaceConnection,
     hosts: List<HostConnection>,
 ): HostConnection? {
