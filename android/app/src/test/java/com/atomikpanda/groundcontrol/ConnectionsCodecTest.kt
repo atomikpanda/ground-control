@@ -32,6 +32,18 @@ class ConnectionsCodecTest {
         assertNull(normalizedBaseUrl(""))
     }
 
+    @Test fun normalizes_only_case_insensitive_url_components() {
+        assertEquals(
+            "https://User:RouteToken@old.relay.example/CaseSensitive",
+            normalizedBaseUrl("HTTPS://User:RouteToken@OLD.RELAY.EXAMPLE/CaseSensitive"),
+        )
+        assertEquals(
+            "https://old.relay.example/casesensitive",
+            normalizedBaseUrl("https://OLD.RELAY.EXAMPLE/casesensitive"),
+        )
+        assertNull(normalizedBaseUrl("HOST-STABLE"))
+    }
+
     @Test fun rejects_base_url_with_query_or_fragment() {
         // Endpoints are appended as path segments; a query/fragment would
         // swallow them (".../workspaces" lands inside the query string).

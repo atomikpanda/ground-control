@@ -309,6 +309,7 @@ fun hostAwareClient(
             val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
             val routedHostId = workspaceRoute?.hostId
                 ?: request.attributes.getOrNull(HOST_ROUTE_ID)
+            val normalizedRoutedHostId = routedHostId?.let(::normalizedBaseUrl)
             val reportContact =
                 request.attributes.getOrNull(SUPPRESS_HOST_CONTACT) == null
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
@@ -317,10 +318,10 @@ fun hostAwareClient(
                 routedHostId != null ->
                     knownHosts.firstOrNull { it.hostId == routedHostId }
                         ?: knownHosts.filter { candidate ->
-                            val handle = routedHostId.trimEnd('/')
-                            candidate.legacyPublicUrls.any {
-                                it.trimEnd('/') == handle
-                            }
+                            normalizedRoutedHostId != null &&
+                                candidate.legacyPublicUrls.any {
+                                    normalizedBaseUrl(it) == normalizedRoutedHostId
+                                }
                         }.singleOrNull()
                         ?: base?.let { candidateBase ->
                             knownHosts.filter { candidateBase in it.hostBases() }.singleOrNull()
@@ -328,7 +329,8 @@ fun hostAwareClient(
                 base != null -> knownHosts.filter { base in it.hostBases() }.singleOrNull()
                 else -> null
             } ?: return@on proceed(request)
-            val originalBase = base ?: workspaceRoute?.baseUrl?.trimEnd('/')
+            val originalBase = base ?: workspaceRoute?.baseUrl
+                ?.let(::normalizedBaseUrl)
                 ?.takeIf { originalUrl.startsWith("$it/") }
                 ?: return@on proceed(request)
             val explicitHostBase =

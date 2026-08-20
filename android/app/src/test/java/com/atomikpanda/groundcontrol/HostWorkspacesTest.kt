@@ -893,6 +893,68 @@ class HostWorkspacesTest {
         )
     }
 
+    @Test fun uppercase_legacy_url_handle_verifies_and_routes_after_public_url_rotation() = runTest {
+        val legacyBase = "HTTPS://old.relay.example"
+        val currentBase = "https://new.relay.example"
+        val current = host.copy(
+            hostId = "host-stable",
+            publicUrl = currentBase,
+            refresh = "refresh-current",
+            legacyPublicUrls = listOf("https://old.relay.example"),
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                when (request.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"current-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    }
+                    "/workspaces/ws-2/threads/thread-1/seen" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+        )
+        val legacy = WorkspaceConnection(
+            id = "legacy-row",
+            baseUrl = "$legacyBase/workspaces/ws-2",
+            hostId = legacyBase,
+            workspaceId = "ws-2",
+        )
+        val api = SpecApi(client.client)
+
+        val identities = verifyLegacyIdentities(api, listOf(legacy), listOf(current)).identities
+        api.markThreadSeen(legacy, "thread-1", null)
+
+        assertEquals(
+            listOf(VerifiedIdentity("legacy-row", "host-stable", "ws-2")),
+            identities,
+        )
+        assertEquals(
+            listOf(
+                "$currentBase/host/token",
+                "$currentBase/workspaces",
+                "$currentBase/workspaces/ws-2/threads/thread-1/seen",
+            ),
+            urls,
+        )
+        assertEquals(
+            listOf("Bearer current-bearer", "Bearer current-bearer"),
+            authorizations,
+        )
+    }
+
     @Test fun an_unscoped_route_does_not_choose_between_hosts_sharing_a_base() = runTest {
         val sharedBase = "https://contended.relay.example.com"
         val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")

@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
+import java.net.URI
 import kotlinx.coroutines.CancellationException
 
 @Serializable
@@ -371,13 +372,26 @@ fun applyIdentityOverride(
 ): List<WorkspaceConnection> =
     list.map { if (it.id == id) it.copy(colorOverride = colorOverride, glyphOverride = glyphOverride) else it }
 
-/** Trim, strip a trailing slash, and require an http(s) scheme. Returns null if invalid. */
+/** Trim, strip a trailing slash, and require an http(s) URL. Scheme and host are
+ * case-insensitive; user-info and path data retain their original case. */
 fun normalizedBaseUrl(input: String): String? {
-    val t = input.trim().trimEnd('/')
-    if (!t.startsWith("http://") && !t.startsWith("https://")) return null
-    if (t.substringAfter("://").isBlank()) return null
-    // Endpoints are appended as path segments; a query/fragment would swallow
-    // them ("...?q=1/workspaces" puts the path inside the query string).
-    if (t.contains('?') || t.contains('#')) return null
-    return t
+    val raw = input.trim().trimEnd('/')
+    if (raw.contains('?') || raw.contains('#')) return null
+    val uri = runCatching { URI(raw) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase()
+        ?.takeIf { it == "http" || it == "https" }
+        ?: return null
+    val authority = uri.rawAuthority?.takeIf { it.isNotBlank() } ?: return null
+    if (uri.host.isNullOrBlank()) return null
+
+    val hostStart = uri.rawUserInfo?.let { it.length + 1 } ?: 0
+    val hostEnd = if (authority.getOrNull(hostStart) == '[') {
+        authority.indexOf(']', hostStart).takeIf { it >= 0 }?.plus(1)
+    } else {
+        authority.indexOf(':', hostStart).takeIf { it >= 0 } ?: authority.length
+    } ?: return null
+    val rawHost = authority.substring(hostStart, hostEnd)
+    if (rawHost.isBlank()) return null
+    val normalizedAuthority = authority.replaceRange(hostStart, hostEnd, rawHost.lowercase())
+    return "$scheme://$normalizedAuthority${uri.rawPath.orEmpty()}"
 }
