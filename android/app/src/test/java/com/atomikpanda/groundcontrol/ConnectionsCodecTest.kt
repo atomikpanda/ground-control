@@ -156,6 +156,30 @@ class ConnectionsCodecTest {
         assertEquals("#FF1976D2", replaced.last().colorOverride)
     }
 
+    @Test fun host_refresh_removes_a_missing_legacy_workspace_suffix() {
+        val stale = WorkspaceConnection(
+            id = "legacy-stale",
+            baseUrl = "https://old/workspaces/deleted",
+            hostId = "host-a",
+            workspaceId = null,
+        )
+        val discovered = WorkspaceConnection(
+            id = "live",
+            baseUrl = "https://current/workspaces/live",
+            hostId = "host-a",
+            workspaceId = "live",
+        )
+
+        val replaced = replaceHostConnections(
+            existing = listOf(stale),
+            hostId = "host-a",
+            discovered = listOf(discovered),
+            identities = emptyList(),
+        )
+
+        assertEquals(listOf("live"), replaced.map { it.workspaceId })
+    }
+
     @Test fun upsert_same_id_replaces_entry() {
         val existing = listOf(
             WorkspaceConnection("id-1", "http://host:47100", "old-token", "ws-old")

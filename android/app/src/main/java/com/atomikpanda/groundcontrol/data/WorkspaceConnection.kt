@@ -329,8 +329,10 @@ fun adoptManualConnections(
 
 
 /** Reconcile one host from an authoritative `GET /workspaces` response.
- * Existing rows missing from [discovered] are gone on the host and must not
- * remain as permanent false failures; other hosts and manual rows are untouched. */
+ * Existing rows with a stable or URL-derived workspace id that are missing from
+ * [discovered] are gone on the host; unresolved legacy roots survive so a later
+ * refresh can retry identity verification. Other hosts and manual rows
+ * are untouched. */
 fun replaceHostConnections(
     existing: List<WorkspaceConnection>,
     hostId: String,
@@ -339,7 +341,10 @@ fun replaceHostConnections(
 ): List<WorkspaceConnection> {
     val liveWorkspaceIds = discovered.mapNotNullTo(mutableSetOf()) { it.workspaceId }
     return adoptManualConnections(existing, discovered, identities).filterNot {
-        it.hostId == hostId && it.workspaceId !in liveWorkspaceIds
+        val workspaceId = legacyWorkspaceId(it)
+        it.hostId == hostId &&
+            workspaceId != null &&
+            workspaceId !in liveWorkspaceIds
     }
 }
 

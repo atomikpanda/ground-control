@@ -708,8 +708,8 @@ class SpecApi(private val client: HttpClient) {
             header(HttpHeaders.Authorization, "Bearer $it")
         }
         val hostId = conn.hostId
-        val workspaceId = conn.workspaceId
-        if (!hostId.isNullOrBlank() && !workspaceId.isNullOrBlank()) {
+        val workspaceId = legacyWorkspaceId(conn)
+        if (!hostId.isNullOrBlank() && workspaceId != null) {
             attributes.put(
                 WORKSPACE_ROUTE,
                 WorkspaceRoute(hostId, workspaceId, conn.baseUrl),

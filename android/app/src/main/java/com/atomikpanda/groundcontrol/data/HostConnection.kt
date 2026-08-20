@@ -103,7 +103,12 @@ suspend fun reachableHostWorkspaces(
     hosts: List<HostConnection>,
 ): Pair<String, List<WorkspaceInfo>> {
     val base = requestedBase.trimEnd('/')
-    val knownHost = hosts.filter { base in it.hostBases() }.singleOrNull()
+    val baseIdentity = normalizedBaseUrl(base)
+    val knownHost = hosts.filter { host ->
+        baseIdentity != null && host.hostBases().any {
+            normalizedBaseUrl(it) == baseIdentity
+        }
+    }.singleOrNull()
         ?: return base to api.listWorkspaces(
             base,
             token,
