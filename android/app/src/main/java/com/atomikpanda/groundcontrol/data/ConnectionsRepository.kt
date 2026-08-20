@@ -26,7 +26,10 @@ class ConnectionsRepository(private val context: Context) {
      *  taps) can't snapshot the same list and lose each other's write. */
     private suspend fun mutate(transform: (List<WorkspaceConnection>) -> List<WorkspaceConnection>) {
         context.dataStore.edit {
-            it[CONNECTIONS] = ConnectionsCodec.encode(transform(ConnectionsCodec.decode(it[CONNECTIONS] ?: "")))
+            val current = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
+            val updated = transform(current)
+            it.advanceRouteOwnershipGeneration(updated)
+            it[CONNECTIONS] = ConnectionsCodec.encode(updated)
         }
     }
 

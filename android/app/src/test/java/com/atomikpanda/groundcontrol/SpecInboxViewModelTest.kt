@@ -114,6 +114,44 @@ class SpecInboxViewModelTest {
         assertEquals(listOf("a"), specIds(vm))
     }
 
+    @Test fun archive_resolves_a_retired_section_handle_to_the_canonical_connection() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws-a")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws-a",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        var connections = listOf(retired)
+        var archiveHost: String? = null
+        val archiveRepo = SpecRepository(SpecApi(HttpClient(MockEngine { req ->
+            if (req.url.encodedPath.endsWith("/archive")) {
+                archiveHost = req.url.host
+                respond("""{"id":"b","status":"archived"}""", HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond(
+                    """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
+                        {"id":"b","title":"B","status":"needs_review","task_slug":null,"affected_repos":[]}]""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            }
+        }) { mshipDefaults() }))
+        val vm = SpecInboxViewModel(archiveRepo, { connections }, this)
+        vm.refresh()?.join()
+
+        connections = listOf(canonical)
+        vm.archiveSpec(retired.id, "b").join()
+
+        assertEquals("new", archiveHost)
+        assertEquals(listOf("a"), specIds(vm))
+        assertEquals(
+            canonical.id,
+            (vm.state.value as InboxUiState.Content).sections.single().connectionId,
+        )
+    }
+
     @Test fun archive_reverts_inbox_on_failure() = runTest {
         val vm = SpecInboxViewModel(repoWithArchiveEndpoint(archiveFails = true), {
             listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))

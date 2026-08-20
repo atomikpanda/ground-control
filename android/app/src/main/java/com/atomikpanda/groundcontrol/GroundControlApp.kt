@@ -42,6 +42,7 @@ import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
+import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller
 import com.atomikpanda.groundcontrol.ui.home.HomeScreen
 import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
@@ -83,6 +84,24 @@ import kotlinx.coroutines.runBlocking
 internal fun newThreadRoute(connectionId: String?): String =
     if (connectionId != null) "newThread?connectionId=$connectionId" else "newThread"
 
+internal fun connectionRoute(
+    conn: WorkspaceConnection,
+    destination: String,
+    entityId: String,
+): String = "$destination/${conn.id}/$entityId"
+
+internal fun workItemRoute(conn: WorkspaceConnection, item: WorkItemSummary): String? = when {
+    item.phase == "in_flight" -> connectionRoute(conn, "console", item.id)
+    item.phase == "review" -> connectionRoute(conn, "review", item.id)
+    item.phase == "done" -> connectionRoute(conn, "done", item.id)
+    // Inbox / shaping / ready (spec-bearing) home to the spec cockpit; a spec-less
+    // inbox capture falls through to its task or thread.
+    item.specId != null -> connectionRoute(conn, "specDetail", item.specId)
+    item.taskSlugs.isNotEmpty() -> connectionRoute(conn, "taskDetail", item.taskSlugs.first())
+    item.threadIds.isNotEmpty() -> connectionRoute(conn, "thread", item.threadIds.first())
+    else -> null
+}
+
 @Composable
 fun GroundControlApp(
     context: Context,
@@ -109,7 +128,7 @@ fun GroundControlApp(
     // "threads" drill-in list so the loaded sections + live-poll loop survive navigating between
     // them (spec: ground-control-thread-findability).
     val messagesVm = viewModel {
-        MessagesViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+        MessagesViewModel(threadsRepo, connRepo.connections)
     }
     // Activity-scoped so relay links received on Home immediately trigger fleet
     // discovery; tying this observer to the Settings destination delays pairing.
@@ -218,10 +237,10 @@ fun GroundControlApp(
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
                 } else {
                     val title = remember(specId) { specId }
-                    val vm = viewModel(key = "detail-$connectionId-$specId") {
+                    val vm = viewModel(key = "detail-${conn.id}-$specId") {
                         SpecDetailViewModel(detailRepo, conn, specId)
                     }
-                    SpecDetailScreen(vm, title = title, identity = LocalWorkspaceIdentityResolver.current(connectionId, conn.workspaceName.ifBlank { conn.baseUrl }), onBack = { nav.popBackStack() })
+                    SpecDetailScreen(vm, title = title, identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }), onBack = { nav.popBackStack() })
                 }
             }
             composable(
@@ -239,7 +258,7 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
                 } else {
-                    val vm = viewModel(key = "taskDetail-$connectionId-$slug") {
+                    val vm = viewModel(key = "taskDetail-${conn.id}-$slug") {
                         TaskDetailViewModel(tasksRepo, conn, slug)
                     }
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
@@ -256,17 +275,16 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
                 } else {
-                    val canonicalConnectionId = conn.id
-                    val vm = viewModel(key = "workspace-$canonicalConnectionId") {
+                    val vm = viewModel(key = "workspace-${conn.id}") {
                         WorkspaceViewModel(api, conn)
                     }
                     WorkspaceScreen(
                         vm,
                         workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
-                        onThread = { id -> nav.navigate("thread/$canonicalConnectionId/$id") },
-                        onSpec = { id -> nav.navigate("specDetail/$canonicalConnectionId/$id") },
-                        onTask = { slug -> nav.navigate("taskDetail/$canonicalConnectionId/$slug") },
-                        onNewConversation = { nav.navigate(newThreadRoute(canonicalConnectionId)) },
+                        onThread = { id -> nav.navigate(connectionRoute(conn, "thread", id)) },
+                        onSpec = { id -> nav.navigate(connectionRoute(conn, "specDetail", id)) },
+                        onTask = { slug -> nav.navigate(connectionRoute(conn, "taskDetail", slug)) },
+                        onNewConversation = { nav.navigate(newThreadRoute(conn.id)) },
                         onBack = { nav.popBackStack() },
                         onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                     )
@@ -283,20 +301,12 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
                 } else {
-                    val vm = viewModel(key = "farm-$connectionId") { FarmViewModel(api, conn) }
+                    val vm = viewModel(key = "farm-${conn.id}") { FarmViewModel(api, conn) }
                     FarmScreen(
                         vm = vm,
                         workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
                         onOpen = { item ->
-                            when {
-                                item.phase == "in_flight" -> nav.navigate("console/$connectionId/${item.id}")
-                                item.phase == "review" -> nav.navigate("review/$connectionId/${item.id}")
-                                item.phase == "done" -> nav.navigate("done/$connectionId/${item.id}")
-                                // inbox / shaping / ready (spec-bearing) home to the spec cockpit; a spec-less inbox capture falls through to its thread
-                                item.specId != null -> nav.navigate("specDetail/$connectionId/${item.specId}")
-                                item.taskSlugs.isNotEmpty() -> nav.navigate("taskDetail/$connectionId/${item.taskSlugs.first()}")
-                                item.threadIds.isNotEmpty() -> nav.navigate("thread/$connectionId/${item.threadIds.first()}")
-                            }
+                            workItemRoute(conn, item)?.let { nav.navigate(it) }
                         },
                         onBack = { nav.popBackStack() },
                     )
@@ -317,13 +327,13 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "console-$connectionId-$itemId") {
+                    val vm = viewModel(key = "console-${conn.id}-$itemId") {
                         ConsoleViewModel(api, conn, itemId)
                     }
                     ConsoleScreen(
                         vm,
                         title = conn.workspaceName.ifBlank { conn.baseUrl },
-                        identity = LocalWorkspaceIdentityResolver.current(connectionId, conn.workspaceName.ifBlank { conn.baseUrl }),
+                        identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }),
                         onBack = { nav.popBackStack() },
                     )
                 }
@@ -343,7 +353,7 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "review-$connectionId-$itemId") {
+                    val vm = viewModel(key = "review-${conn.id}-$itemId") {
                         ReviewViewModel(api, conn, itemId)
                     }
                     ReviewScreen(
@@ -368,7 +378,7 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "done-$connectionId-$itemId") {
+                    val vm = viewModel(key = "done-${conn.id}-$itemId") {
                         DoneViewModel(api, conn, itemId)
                     }
                     DoneScreen(
@@ -390,7 +400,7 @@ fun GroundControlApp(
                 val conn = remember(connectionId) {
                     runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
-                LaunchedEffect(connectionId, itemId) {
+                LaunchedEffect(conn?.id, itemId) {
                     // This route is a pure redirect with no fallback UI of its own, so every
                     // dead-end pops back to where the user came from instead of stranding them on
                     // the transient spinner (reachable from the related-item card and from OS-level
@@ -402,17 +412,7 @@ fun GroundControlApp(
                     if (item == null) {
                         nav.popBackStack(); return@LaunchedEffect
                     }
-                    val dest = when {
-                        item.phase == "in_flight" -> "console/$connectionId/$itemId"
-                        item.phase == "review" -> "review/$connectionId/$itemId"
-                        item.phase == "done" -> "done/$connectionId/$itemId"
-                        // inbox / shaping / ready (spec-bearing) home to the spec cockpit; a spec-less
-                        // inbox capture falls through to its task or thread — matches farm's onOpen.
-                        item.specId != null -> "specDetail/$connectionId/${item.specId}"
-                        item.taskSlugs.isNotEmpty() -> "taskDetail/$connectionId/${item.taskSlugs.first()}"
-                        item.threadIds.isNotEmpty() -> "thread/$connectionId/${item.threadIds.first()}"
-                        else -> null
-                    }
+                    val dest = workItemRoute(conn, item)
                     if (dest == null) {
                         nav.popBackStack(); return@LaunchedEffect
                     }
@@ -475,7 +475,7 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
                 } else {
-                    val vm = viewModel(key = "thread-$connectionId-$threadId") {
+                    val vm = viewModel(key = "thread-${conn.id}-$threadId") {
                         ConversationViewModel(
                             threadsRepo, conn, threadId,
                             canceller = AndroidNeedsYouCanceller(context.applicationContext),
@@ -484,17 +484,17 @@ fun GroundControlApp(
                     ConversationScreen(
                         vm,
                         title = threadId,
-                        identity = LocalWorkspaceIdentityResolver.current(connectionId, conn.workspaceName.ifBlank { conn.baseUrl }),
+                        identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }),
                         onBack = { nav.popBackStack() },
-                        onViewSpec = { specId -> nav.navigate("specDetail/$connectionId/$specId") },
+                        onViewSpec = { specId -> nav.navigate(connectionRoute(conn, "specDetail", specId)) },
                         onOpenEntity = { kind, id ->
                             when (kind) {
-                                "item" -> nav.navigate("item/$connectionId/${Uri.encode(id)}")
-                                "spec" -> nav.navigate("specDetail/$connectionId/${Uri.encode(id)}")
-                                "task" -> nav.navigate("taskDetail/$connectionId/${Uri.encode(id)}")
+                                "item" -> nav.navigate(connectionRoute(conn, "item", Uri.encode(id)))
+                                "spec" -> nav.navigate(connectionRoute(conn, "specDetail", Uri.encode(id)))
+                                "task" -> nav.navigate(connectionRoute(conn, "taskDetail", Uri.encode(id)))
                             }
                         },
-                        onOpenWorkItem = { id -> nav.navigate("item/$connectionId/${Uri.encode(id)}") },
+                        onOpenWorkItem = { id -> nav.navigate(connectionRoute(conn, "item", Uri.encode(id))) },
                     )
                 }
             }

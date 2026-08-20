@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,9 +51,9 @@ fun NewThreadScreen(
     LaunchedEffect(Unit) { vm.load() }
     // Preselect the scoped workspace once connections are available.
     LaunchedEffect(state.connections, initialConnectionId) {
-        if (initialConnectionId != null && state.connections.any { it.id == initialConnectionId }) {
-            vm.onSelectConnection(initialConnectionId)
-        }
+        initialConnectionId
+            ?.let { state.connections.findByConnectionId(it) }
+            ?.let { vm.onSelectConnection(it.id) }
     }
 
     // Navigate when creation succeeds
@@ -98,7 +99,8 @@ fun NewThreadScreen(
         ) {
             // Workspace picker: only shown when >1 connection; auto-selected when exactly 1.
             if (state.connections.size > 1) {
-                val selected = state.connections.firstOrNull { it.id == state.selectedConnectionId }
+                val selected = state.selectedConnectionId
+                    ?.let { state.connections.findByConnectionId(it) }
                 WorkspacePickerDropdown(
                     label = selected?.let { it.workspaceName.ifBlank { it.baseUrl } } ?: "Select workspace",
                     options = state.connections.map { it.id to it.workspaceName.ifBlank { it.baseUrl } },

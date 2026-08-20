@@ -1,40 +1,58 @@
 package com.atomikpanda.groundcontrol
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.ConnectionsCodec
+import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.VerifiedIdentity
+import com.atomikpanda.groundcontrol.data.WorkspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
-import com.atomikpanda.groundcontrol.data.directDiscoveryOwnerStillCurrent
-import com.atomikpanda.groundcontrol.data.discoveryMergeSources
-import com.atomikpanda.groundcontrol.data.discoveryPersistenceStillCurrent
-import com.atomikpanda.groundcontrol.data.validatedDirectDiscoveryOwnerSnapshot
-import com.atomikpanda.groundcontrol.data.verifiedDiscoveryIdentitiesStillCurrent
-import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.hostsFrom
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
-import com.atomikpanda.groundcontrol.data.matchesWorkspaceRefreshRoute
 import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.replaceRelayDirectoryFleet
 import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
 import com.atomikpanda.groundcontrol.data.recordDirectHostDiscovery
-import com.atomikpanda.groundcontrol.data.relayAccountMatchesExpected
+import com.atomikpanda.groundcontrol.data.routeOwnershipGenerationAfter
 import com.atomikpanda.groundcontrol.data.upsertHost
 import com.atomikpanda.groundcontrol.data.upsertConnection
-import com.atomikpanda.groundcontrol.data.workspaceRefreshSourceStillCurrent
 import com.atomikpanda.groundcontrol.data.dto.HostInfo
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /** The host model persisted under the "hosts" DataStore key (#471). */
 class HostsRepositoryTest {
+    @get:Rule
+    val temporaryFolder = TemporaryFolder()
+
+    private val hostsKey = stringPreferencesKey("hosts")
+    private val connectionsKey = stringPreferencesKey("connections")
+    private val generationKey = longPreferencesKey("route_ownership_generation")
+
+    private fun newDataStore(name: String, scope: CoroutineScope): DataStore<Preferences> =
+        PreferenceDataStoreFactory.create(scope = scope) {
+            temporaryFolder.newFile(name).also { check(it.delete()) }
+        }
+
     private val host = HostConnection(
         hostId = "h-1",
         label = "vm-a",
@@ -106,515 +124,6 @@ class HostsRepositoryTest {
 
         assertEquals(host.publicUrl, claimed.hostBase())
     }
-    @Test fun an_in_flight_direct_refresh_is_rejected_after_a_new_route_and_credential() {
-        val oldBase = "http://old.lan:47190"
-        val newBase = "http://new.lan:47190"
-        val inFlightHost = host.copy(
-            publicUrl = "",
-            refresh = null,
-            directUrl = oldBase,
-            relayDomain = null,
-        )
-        val currentHost = recordDirectHostDiscovery(
-            hosts = listOf(inFlightHost),
-            hostId = host.hostId,
-            directUrl = newBase,
-            runnerState = null,
-            contactedAtMillis = 2L,
-        ).single()
-        val currentConnection = upsertConnection(
-            existing = listOf(
-                WorkspaceConnection(
-                    id = "workspace",
-                    baseUrl = "$oldBase/workspaces/ws",
-                    token = "old-token",
-                ),
-            ),
-            conn = WorkspaceConnection(
-                id = "workspace",
-                baseUrl = "$newBase/workspaces/ws",
-                token = "new-token",
-            ),
-            preservePriorDirectToken = false,
-        ).single()
-
-        assertEquals(newBase, currentHost.directUrl)
-        assertEquals("new-token", currentConnection.token)
-        assertFalse(
-            currentHost.matchesWorkspaceRefreshRoute(
-                hostBase = oldBase,
-                expectedDirectOnly = true,
-            ),
-        )
-        assertFalse(
-            currentHost.copy(
-                publicUrl = oldBase,
-                refresh = "new-refresh",
-            ).matchesWorkspaceRefreshRoute(
-                hostBase = oldBase,
-                expectedDirectOnly = true,
-            ),
-        )
-    }
-    @Test fun an_in_flight_direct_refresh_is_rejected_after_same_base_re_pair() {
-        val base = "http://direct.lan:47190"
-        val directHost = host.copy(
-            publicUrl = "",
-            refresh = null,
-            directUrl = base,
-            relayDomain = null,
-        )
-        val oldConnection = WorkspaceConnection(
-            id = "workspace",
-            baseUrl = "$base/workspaces/ws",
-            token = "old-token",
-            hostId = host.hostId,
-            workspaceId = "ws",
-        )
-        val expected = workspaceRefreshGeneration(
-            connections = listOf(oldConnection),
-            hostId = host.hostId,
-            hosts = listOf(directHost),
-            identities = emptyList(),
-        )!!
-        val rePaired = upsertConnection(
-            existing = listOf(oldConnection),
-            conn = oldConnection.copy(
-                token = "new-token",
-                directToken = null,
-            ),
-            preservePriorDirectToken = false,
-        )
-
-        assertEquals("old-token", expected.uniqueCredential)
-        assertTrue(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = directHost,
-                currentHosts = listOf(directHost),
-                currentConnections = listOf(oldConnection),
-                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
-                hostBase = base,
-                expectedDirectOnly = true,
-                expectedRelayRefresh = null,
-                expectedSourceGeneration = expected,
-                identities = emptyList(),
-            ),
-        )
-        assertFalse(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = directHost,
-                currentHosts = listOf(directHost),
-                currentConnections = rePaired,
-                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
-                hostBase = base,
-                expectedDirectOnly = true,
-                expectedRelayRefresh = null,
-                expectedSourceGeneration = expected,
-                identities = emptyList(),
-            ),
-        )
-        assertEquals("new-token", rePaired.single().token)
-        assertEquals("new-token", rePaired.single().directToken)
-    }
-    @Test fun discovery_owner_rejects_account_and_route_generation_changes() {
-        val expectedAccount = RelayAccount("relay.example.com", "fleet-token")
-        val directHost = host.copy(
-            publicUrl = "",
-            refresh = null,
-            directUrl = "http://direct.example",
-            relayDomain = null,
-        )
-
-        assertTrue(
-            directDiscoveryOwnerStillCurrent(
-                expectedAccount = expectedAccount,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                currentAccount = expectedAccount,
-                currentHosts = listOf(directHost),
-            ),
-        )
-        assertTrue(
-            directDiscoveryOwnerStillCurrent(
-                expectedAccount = expectedAccount,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                currentAccount = expectedAccount,
-                currentHosts = listOf(
-                    directHost.copy(
-                        state = "offline",
-                        lastContactAtMillis = 123L,
-                    ),
-                ),
-            ),
-        )
-        assertFalse(
-            directDiscoveryOwnerStillCurrent(
-                expectedAccount = expectedAccount,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                currentAccount = expectedAccount.copy(fleetToken = "rotated-token"),
-                currentHosts = listOf(directHost),
-            ),
-        )
-        assertFalse(
-            directDiscoveryOwnerStillCurrent(
-                expectedAccount = expectedAccount,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                currentAccount = expectedAccount,
-                currentHosts = listOf(directHost.copy(directUrl = "http://moved.example")),
-            ),
-        )
-    }
-    @Test fun validated_owner_snapshot_returns_the_same_hosts_it_validated() {
-        val account = RelayAccount("relay.example.com", "fleet-token")
-        val directHost = host.copy(
-            publicUrl = "",
-            refresh = null,
-            directUrl = "http://direct.example",
-            relayDomain = null,
-        )
-
-        val snapshot = validatedDirectDiscoveryOwnerSnapshot(
-            expectedAccount = account,
-            expectedHostId = directHost.hostId,
-            expectedHost = directHost,
-            currentAccount = account,
-            currentHosts = listOf(directHost),
-        )
-
-        assertEquals(account, snapshot?.account)
-        assertEquals(listOf(directHost), snapshot?.hosts)
-        assertNull(
-            validatedDirectDiscoveryOwnerSnapshot(
-                expectedAccount = account,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                currentAccount = account,
-                currentHosts = listOf(directHost.copy(directUrl = "http://changed.example")),
-            ),
-        )
-    }
-
-    @Test fun atomic_discovery_write_rejects_a_rotated_stable_twin() {
-        val account = RelayAccount("relay.example.com", "fleet-token")
-        val directHost = host.copy(
-            publicUrl = "",
-            refresh = null,
-            directUrl = "http://direct.example",
-            relayDomain = null,
-        )
-        val stableTwin = WorkspaceConnection(
-            id = "stable-twin",
-            baseUrl = "http://direct.example/workspaces/ws",
-            token = "old-token",
-            hostId = directHost.hostId,
-            workspaceId = "ws",
-        )
-        val discovered = stableTwin.copy(id = "discovered")
-        val hostBases = listOf(directHost.directUrl!!)
-        val expectedSources = discoveryMergeSources(
-            connections = listOf(stableTwin),
-            hostBases = hostBases,
-            workspaceId = "ws",
-            discovered = discovered,
-        )
-
-        assertTrue(
-            discoveryPersistenceStillCurrent(
-                expectedAccount = account,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                expectedSources = expectedSources,
-                identities = emptyList(),
-                currentAccount = account,
-                currentHosts = listOf(directHost),
-                currentConnections = listOf(stableTwin),
-                hostBases = hostBases,
-                workspaceId = "ws",
-                discovered = discovered,
-            ),
-        )
-        assertFalse(
-            discoveryPersistenceStillCurrent(
-                expectedAccount = account,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                expectedSources = expectedSources,
-                identities = emptyList(),
-                currentAccount = account,
-                currentHosts = listOf(directHost),
-                currentConnections = listOf(stableTwin.copy(token = "new-token")),
-                hostBases = hostBases,
-                workspaceId = "ws",
-                discovered = discovered,
-            ),
-        )
-    }
-    @Test fun atomic_discovery_write_rejects_a_new_competing_host_base() {
-        val account = RelayAccount("relay.example.com", "fleet-token")
-        val directHost = HostConnection(
-            hostId = "direct-host",
-            directUrl = "http://direct.example",
-        )
-        val competitor = HostConnection(
-            hostId = "competitor",
-            directUrl = directHost.directUrl,
-        )
-        val legacy = WorkspaceConnection(
-            id = "legacy",
-            baseUrl = "${directHost.directUrl}/workspaces/ws",
-            token = "direct-token",
-        )
-        val discovered = WorkspaceConnection(
-            id = "discovered",
-            baseUrl = legacy.baseUrl,
-            token = legacy.token,
-            hostId = directHost.hostId,
-            workspaceId = "ws",
-        )
-        val hostBases = listOf(directHost.directUrl!!)
-        val expectedSources = discoveryMergeSources(
-            connections = listOf(legacy),
-            hostBases = hostBases,
-            workspaceId = "ws",
-            discovered = discovered,
-        )
-        val identities = listOf(
-            VerifiedIdentity(legacy.id, directHost.hostId, "ws"),
-        )
-
-        assertTrue(
-            discoveryPersistenceStillCurrent(
-                expectedAccount = account,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                expectedSources = expectedSources,
-                identities = identities,
-                currentAccount = account,
-                currentHosts = listOf(directHost),
-                currentConnections = listOf(legacy),
-                hostBases = hostBases,
-                workspaceId = "ws",
-                discovered = discovered,
-            ),
-        )
-        assertFalse(
-            discoveryPersistenceStillCurrent(
-                expectedAccount = account,
-                expectedHostId = directHost.hostId,
-                expectedHost = directHost,
-                expectedSources = expectedSources,
-                identities = identities,
-                currentAccount = account,
-                currentHosts = listOf(directHost, competitor),
-                currentConnections = listOf(legacy),
-                hostBases = hostBases,
-                workspaceId = "ws",
-                discovered = discovered,
-            ),
-        )
-    }
-    @Test fun verified_discovery_identity_rejects_duplicate_source_ids() {
-        val directHost = HostConnection(
-            hostId = "direct-host",
-            directUrl = "http://direct.example",
-        )
-        val source = WorkspaceConnection(
-            id = "duplicate-id",
-            baseUrl = "${directHost.directUrl}/workspaces/ws",
-        )
-        val duplicate = source.copy(token = "other-token")
-
-        assertFalse(
-            verifiedDiscoveryIdentitiesStillCurrent(
-                identities = listOf(
-                    VerifiedIdentity(source.id, directHost.hostId, "ws"),
-                ),
-                expectedSources = listOf(source, duplicate),
-                currentConnections = listOf(source, duplicate),
-                currentHosts = listOf(directHost),
-            ),
-        )
-    }
-
-
-
-
-
-
-    @Test fun legacy_direct_identity_migration_invalidates_its_captured_generation() {
-        val oldBase = "http://old.direct.example"
-        val currentBase = "http://current.direct.example"
-        val directHost = HostConnection(
-            hostId = "direct-host",
-            directUrl = currentBase,
-            legacyPublicUrls = listOf(oldBase),
-        )
-        val legacySource = WorkspaceConnection(
-            id = "legacy-source",
-            baseUrl = "$oldBase/workspaces/ws",
-            token = "direct-token",
-            hostId = oldBase,
-            workspaceId = "ws",
-        )
-        val identities = listOf(
-            VerifiedIdentity(legacySource.id, directHost.hostId, "ws"),
-        )
-        val expected = workspaceRefreshGeneration(
-            connections = listOf(legacySource),
-            hostId = directHost.hostId,
-            hosts = listOf(directHost),
-            identities = identities,
-        )!!
-        val migrated = legacySource.copy(
-            baseUrl = "$currentBase/workspaces/ws",
-            hostId = directHost.hostId,
-        )
-
-        assertTrue(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = directHost,
-                currentHosts = listOf(directHost),
-                currentConnections = listOf(legacySource),
-                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
-                hostBase = currentBase,
-                expectedDirectOnly = true,
-                expectedRelayRefresh = null,
-                expectedSourceGeneration = expected,
-                identities = identities,
-            ),
-        )
-        assertFalse(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = directHost,
-                currentHosts = listOf(directHost),
-                currentConnections = listOf(migrated),
-                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
-                hostBase = currentBase,
-                expectedDirectOnly = true,
-                expectedRelayRefresh = null,
-                expectedSourceGeneration = expected,
-                identities = identities,
-            ),
-        )
-    }
-
-    @Test fun an_in_flight_relay_refresh_is_rejected_after_credential_rotation() {
-        val account = RelayAccount("relay.example.com", "fleet-token")
-        val snapshot = host.copy(refresh = "old-refresh")
-        val rotated = snapshot.copy(refresh = "new-refresh")
-        val expected = workspaceRefreshGeneration(
-            connections = emptyList(),
-            hostId = snapshot.hostId,
-            hosts = listOf(snapshot),
-            identities = emptyList(),
-        )!!
-
-        assertTrue(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = snapshot,
-                currentHosts = listOf(snapshot),
-                currentConnections = emptyList(),
-                expectedAccount = account,
-                hostBase = snapshot.publicUrl,
-                expectedDirectOnly = false,
-                expectedRelayRefresh = "old-refresh",
-                expectedSourceGeneration = expected,
-                identities = emptyList(),
-            ),
-        )
-        assertFalse(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = rotated,
-                currentHosts = listOf(rotated),
-                currentConnections = emptyList(),
-                expectedAccount = account,
-                hostBase = snapshot.publicUrl,
-                expectedDirectOnly = false,
-                expectedRelayRefresh = "old-refresh",
-                expectedSourceGeneration = expected,
-                identities = emptyList(),
-            ),
-        )
-    }
-
-    @Test fun a_relay_owned_host_without_refresh_accepts_its_relay_route_generation() {
-        val account = RelayAccount("relay.example.com", "fleet-token")
-        val snapshot = host.copy(
-            relayDomain = account.relayDomain,
-            refresh = null,
-        )
-        val expected = workspaceRefreshGeneration(
-            connections = emptyList(),
-            hostId = snapshot.hostId,
-            hosts = listOf(snapshot),
-            identities = emptyList(),
-        )!!
-
-        assertTrue(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = snapshot,
-                currentHosts = listOf(snapshot),
-                currentConnections = emptyList(),
-                expectedAccount = account,
-                hostBase = snapshot.publicUrl,
-                expectedDirectOnly = false,
-                expectedRelayRefresh = null,
-                expectedSourceGeneration = expected,
-                identities = emptyList(),
-            ),
-        )
-    }
-
-    @Test fun an_in_flight_relay_refresh_is_rejected_after_workspace_source_mutation() {
-        val account = RelayAccount("relay.example.com", "fleet-token")
-        val snapshot = host.copy(refresh = "relay-refresh")
-        val original = WorkspaceConnection(
-            id = "workspace",
-            baseUrl = "${snapshot.publicUrl}/workspaces/ws",
-            hostId = snapshot.hostId,
-            workspaceId = "ws",
-        )
-        val rePaired = original.copy(token = "new-standing-token")
-        val expected = workspaceRefreshGeneration(
-            connections = listOf(original),
-            hostId = snapshot.hostId,
-            hosts = listOf(snapshot),
-            identities = emptyList(),
-        )!!
-
-        assertTrue(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = snapshot,
-                currentHosts = listOf(snapshot),
-                currentConnections = listOf(original),
-                expectedAccount = account,
-                hostBase = snapshot.publicUrl,
-                expectedDirectOnly = false,
-                expectedRelayRefresh = snapshot.refresh,
-                expectedSourceGeneration = expected,
-                identities = emptyList(),
-            ),
-        )
-        assertFalse(
-            workspaceRefreshSourceStillCurrent(
-                currentHost = snapshot,
-                currentHosts = listOf(snapshot),
-                currentConnections = listOf(rePaired),
-                expectedAccount = account,
-                hostBase = snapshot.publicUrl,
-                expectedDirectOnly = false,
-                expectedRelayRefresh = snapshot.refresh,
-                expectedSourceGeneration = expected,
-                identities = emptyList(),
-            ),
-        )
-    }
-
-
-
     @Test fun a_failed_directory_read_marks_only_that_relays_hosts_unknown() {
         val other = host.copy(hostId = "h-2", relayDomain = "other.example.com", state = "online")
         val out = markRelayUnreachable(listOf(host, other), "relay.example.com")
@@ -662,6 +171,20 @@ class HostsRepositoryTest {
         assertTrue(result.exceptionOrNull() is IllegalStateException)
     }
 
+    @Test fun a_mixed_directory_rejects_the_whole_authoritative_decode() {
+        val result = runCatching {
+            hostsFrom(
+                listOf(
+                    HostInfo(hostId = "valid-host"),
+                    HostInfo(hostId = "", requestId = " "),
+                ),
+                "relay.example.com",
+            )
+        }
+
+        assertTrue(result.exceptionOrNull() is IllegalStateException)
+    }
+
     @Test fun a_genuinely_empty_directory_remains_authoritative() {
         val workspace = WorkspaceConnection(
             id = "removed",
@@ -681,6 +204,311 @@ class HostsRepositoryTest {
         assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
     }
 
+    @Test fun direct_discovery_generation_rejects_an_account_A_B_A_change() {
+        val accountA = RelayAccount("relay.example.com", "token-a")
+        val accountB = RelayAccount("other.example.com", "token-b")
+        val captured = 7L
+        val afterB = routeOwnershipGenerationAfter(
+            current = captured,
+            previousAccount = accountA,
+            previousHosts = listOf(host),
+            previousConnections = emptyList(),
+            updatedAccount = accountB,
+            updatedHosts = listOf(host),
+            updatedConnections = emptyList(),
+        )
+        val afterA = routeOwnershipGenerationAfter(
+            current = afterB,
+            previousAccount = accountB,
+            previousHosts = listOf(host),
+            previousConnections = emptyList(),
+            updatedAccount = accountA,
+            updatedHosts = listOf(host),
+            updatedConnections = emptyList(),
+        )
+
+        assertEquals(captured + 2, afterA)
+        assertFalse(captured == afterA)
+    }
+
+    @Test fun fleet_generation_rejects_a_host_route_A_B_A_change() {
+        val routeB = host.copy(publicUrl = "https://moved.relay.example.com")
+        val captured = 11L
+        val afterB = routeOwnershipGenerationAfter(
+            current = captured,
+            previousAccount = null,
+            previousHosts = listOf(host),
+            previousConnections = emptyList(),
+            updatedAccount = null,
+            updatedHosts = listOf(routeB),
+            updatedConnections = emptyList(),
+        )
+        val afterA = routeOwnershipGenerationAfter(
+            current = afterB,
+            previousAccount = null,
+            previousHosts = listOf(routeB),
+            previousConnections = emptyList(),
+            updatedAccount = null,
+            updatedHosts = listOf(host),
+            updatedConnections = emptyList(),
+        )
+
+        assertEquals(captured + 2, afterA)
+        assertFalse(captured == afterA)
+    }
+
+    @Test fun route_generation_tracks_host_credential_and_ownership_changes() {
+        listOf(
+            host.copy(refresh = "rotated-refresh"),
+            host.copy(relayDomain = "other.example.com"),
+            host.copy(directUrl = "http://direct.example"),
+            host.copy(legacyPublicUrls = listOf("https://old.example.com")),
+        ).forEach { changed ->
+            assertEquals(
+                17L,
+                routeOwnershipGenerationAfter(
+                    current = 16L,
+                    previousAccount = null,
+                    previousHosts = listOf(host),
+                    previousConnections = emptyList(),
+                    updatedAccount = null,
+                    updatedHosts = listOf(changed),
+                    updatedConnections = emptyList(),
+                ),
+            )
+        }
+    }
+
+    @Test fun route_generation_ignores_contact_status_runner_and_connection_display_changes() {
+        val connection = WorkspaceConnection(
+            id = "workspace",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            token = "token",
+            workspaceName = "Before",
+            colorOverride = "#FF000000",
+            glyphOverride = "B",
+            hostId = host.hostId,
+            state = "online",
+            workspaceId = "ws",
+        )
+        val observedHost = host.copy(
+            state = "offline",
+            lastSeen = 42.0,
+            runnerState = "busy",
+            lastContactAtMillis = 123L,
+            label = "Observed",
+            labelOverride = "Mine",
+        )
+        val displayedConnection = connection.copy(
+            workspaceName = "After",
+            colorOverride = "#FFFFFFFF",
+            glyphOverride = "A",
+            state = "offline",
+        )
+
+        assertEquals(
+            19L,
+            routeOwnershipGenerationAfter(
+                current = 19L,
+                previousAccount = null,
+                previousHosts = listOf(host),
+                previousConnections = listOf(connection),
+                updatedAccount = null,
+                updatedHosts = listOf(observedHost),
+                updatedConnections = listOf(displayedConnection),
+            ),
+        )
+    }
+
+    @Test fun route_generation_tracks_every_connection_routing_ownership_and_credential_field() {
+        val connection = WorkspaceConnection(
+            id = "workspace",
+            baseUrl = "https://relay.example.com/workspaces/ws",
+            token = "token",
+            hostId = "host",
+            workspaceId = "ws",
+            legacyBaseUrls = listOf("https://old.example.com/workspaces/ws"),
+            legacyConnectionIds = listOf("old-id"),
+            directToken = "direct-token",
+        )
+        val changes = listOf(
+            connection.copy(id = "new-id"),
+            connection.copy(baseUrl = "https://moved.example.com/workspaces/ws"),
+            connection.copy(token = "new-token"),
+            connection.copy(hostId = "new-host"),
+            connection.copy(workspaceId = "new-workspace"),
+            connection.copy(legacyBaseUrls = listOf("https://older.example.com/workspaces/ws")),
+            connection.copy(legacyConnectionIds = listOf("older-id")),
+            connection.copy(directToken = "new-direct-token"),
+        )
+
+        changes.forEach { changed ->
+            assertEquals(
+                24L,
+                routeOwnershipGenerationAfter(
+                    current = 23L,
+                    previousAccount = null,
+                    previousHosts = emptyList(),
+                    previousConnections = listOf(connection),
+                    updatedAccount = null,
+                    updatedHosts = emptyList(),
+                    updatedConnections = listOf(changed),
+                ),
+            )
+        }
+    }
+
+    @Test fun direct_discovery_rejects_duplicate_persisted_identity_sources_atomically() = runTest {
+        val generation = 41L
+        val directHost = host.copy(
+            publicUrl = "",
+            refresh = null,
+            relayDomain = null,
+            directUrl = "http://direct.example",
+        )
+        val firstSource = WorkspaceConnection(
+            id = "duplicate-source",
+            baseUrl = "${directHost.directUrl}/workspaces/ws",
+            token = "first-token",
+            directToken = "first-direct-token",
+        )
+        val secondSource = firstSource.copy(
+            baseUrl = "http://legacy-direct.example/workspaces/ws",
+            token = "second-token",
+            directToken = "second-direct-token",
+        )
+        val existingConnections = listOf(firstSource, secondSource)
+        val dataStore = newDataStore("direct-duplicate.preferences_pb", backgroundScope)
+        dataStore.edit {
+            it[hostsKey] = HostsCodec.encode(listOf(directHost))
+            it[connectionsKey] = ConnectionsCodec.encode(existingConnections)
+            it[generationKey] = generation
+        }
+
+        val applied = HostsRepository(dataStore).applyDiscoveredWorkspace(
+            expectedGeneration = generation,
+            directHostId = directHost.hostId,
+            discovered = WorkspaceConnection(
+                id = "discovered",
+                baseUrl = "http://moved-direct.example/workspaces/ws",
+                token = "discovered-token",
+                hostId = directHost.hostId,
+                workspaceId = "ws",
+            ),
+            identities = listOf(VerifiedIdentity(firstSource.id, directHost.hostId, "ws")),
+            activatePriorDirectToken = true,
+            directUrl = "http://moved-direct.example",
+            runnerState = "busy",
+            contactedAtMillis = 99L,
+        )
+
+        val persisted = dataStore.data.first()
+        val persistedConnections = ConnectionsCodec.decode(persisted[connectionsKey] ?: "")
+        assertFalse(applied)
+        assertEquals(generation, persisted[generationKey])
+        assertEquals(listOf(directHost), HostsCodec.decode(persisted[hostsKey] ?: ""))
+        assertEquals(existingConnections, persistedConnections)
+        assertEquals(listOf("first-token", "second-token"), persistedConnections.map { it.token })
+        assertEquals(
+            listOf("first-direct-token", "second-direct-token"),
+            persistedConnections.map { it.directToken },
+        )
+    }
+
+    @Test fun fleet_apply_rejects_duplicate_verified_identity_sources_atomically() = runTest {
+        val generation = 42L
+        val source = WorkspaceConnection(
+            id = "verified-source",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            token = "standing-token",
+            directToken = "standing-direct-token",
+        )
+        val identity = VerifiedIdentity(source.id, host.hostId, "ws")
+        val dataStore = newDataStore("fleet-duplicate.preferences_pb", backgroundScope)
+        dataStore.edit {
+            it[hostsKey] = HostsCodec.encode(listOf(host))
+            it[connectionsKey] = ConnectionsCodec.encode(listOf(source))
+            it[generationKey] = generation
+        }
+
+        val applied = HostsRepository(dataStore).applyHostWorkspaceRefresh(
+            hostId = host.hostId,
+            hostBase = host.publicUrl,
+            expectedDirectOnly = false,
+            expectedSourceGeneration = WorkspaceRefreshGeneration(
+                routeOwnershipGeneration = generation,
+                sources = listOf(source),
+            ),
+            contactedAtMillis = 100L,
+            discovered = listOf(
+                WorkspaceConnection(
+                    id = "discovered",
+                    baseUrl = "${host.publicUrl}/workspaces/ws",
+                    hostId = host.hostId,
+                    workspaceId = "ws",
+                ),
+            ),
+            identities = listOf(identity, identity),
+        )
+
+        val persisted = dataStore.data.first()
+        val persistedConnections = ConnectionsCodec.decode(persisted[connectionsKey] ?: "")
+        assertFalse(applied)
+        assertEquals(generation, persisted[generationKey])
+        assertEquals(listOf(host), HostsCodec.decode(persisted[hostsKey] ?: ""))
+        assertEquals(listOf(source), persistedConnections)
+        assertEquals("standing-token", persistedConnections.single().token)
+        assertEquals("standing-direct-token", persistedConnections.single().directToken)
+    }
+
+    @Test fun atomic_discovery_still_applies_one_unique_verified_identity_source() = runTest {
+        val generation = 43L
+        val directHost = host.copy(
+            publicUrl = "",
+            refresh = null,
+            relayDomain = null,
+            directUrl = "http://direct.example",
+        )
+        val source = WorkspaceConnection(
+            id = "unique-source",
+            baseUrl = "${directHost.directUrl}/workspaces/ws",
+            token = "standing-token",
+            directToken = "standing-direct-token",
+        )
+        val dataStore = newDataStore("direct-unique.preferences_pb", backgroundScope)
+        dataStore.edit {
+            it[hostsKey] = HostsCodec.encode(listOf(directHost))
+            it[connectionsKey] = ConnectionsCodec.encode(listOf(source))
+            it[generationKey] = generation
+        }
+
+        val applied = HostsRepository(dataStore).applyDiscoveredWorkspace(
+            expectedGeneration = generation,
+            directHostId = directHost.hostId,
+            discovered = WorkspaceConnection(
+                id = "discovered",
+                baseUrl = "${directHost.directUrl}/workspaces/ws",
+                hostId = directHost.hostId,
+                workspaceId = "ws",
+            ),
+            identities = listOf(VerifiedIdentity(source.id, directHost.hostId, "ws")),
+            activatePriorDirectToken = true,
+            directUrl = directHost.directUrl,
+            runnerState = "idle",
+            contactedAtMillis = 101L,
+        )
+
+        val persisted = dataStore.data.first()
+        val adopted = ConnectionsCodec.decode(persisted[connectionsKey] ?: "").single()
+        assertTrue(applied)
+        assertEquals(generation + 1, persisted[generationKey])
+        assertEquals(source.id, adopted.id)
+        assertEquals(directHost.hostId, adopted.hostId)
+        assertEquals("ws", adopted.workspaceId)
+        assertEquals("standing-direct-token", adopted.token)
+        assertEquals("standing-direct-token", adopted.directToken)
+        assertEquals(101L, HostsCodec.decode(persisted[hostsKey] ?: "").single().lastContactAtMillis)
+    }
 
     @Test fun replacing_a_relay_account_clears_only_the_previous_fleet() {
         val otherHost = host.copy(hostId = "h-2", relayDomain = "other.example.com")
@@ -940,6 +768,42 @@ class HostsRepositoryTest {
         assertEquals(listOf(ambiguous), replaced.connections)
     }
 
+    @Test fun old_relay_host_removed_from_directory_cannot_survive_account_replacement_but_direct_and_manual_rows_do() {
+        val directHost = HostConnection(
+            hostId = "direct-host",
+            directUrl = "http://direct.lan:47190",
+        )
+        val orphan = WorkspaceConnection(
+            id = "orphan",
+            baseUrl = "https://removed.relay.example.com/workspaces/ws",
+            hostId = "removed-relay-host",
+            workspaceId = "ws",
+        )
+        val viableDirect = WorkspaceConnection(
+            id = "direct",
+            baseUrl = "${directHost.directUrl}/workspaces/ws",
+            token = "direct-token",
+            hostId = directHost.hostId,
+            workspaceId = "ws",
+            directToken = "direct-token",
+        )
+        val manual = WorkspaceConnection(
+            id = "manual",
+            baseUrl = "http://manual.lan:47100",
+            token = "manual-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(directHost),
+            connections = listOf(orphan, viableDirect, manual),
+        )
+
+        assertEquals(listOf("direct", "manual"), replaced.connections.map { it.id })
+        assertEquals(listOf(directHost), replaced.hosts)
+    }
+
     @Test fun replacing_a_same_domain_relay_token_clears_the_previous_fleet() {
         val oldWorkspace = WorkspaceConnection(
             id = "old",
@@ -960,23 +824,6 @@ class HostsRepositoryTest {
         assertEquals(listOf("manual"), replaced.connections.map { it.id })
     }
 
-    @Test fun stale_refreshes_do_not_match_a_replaced_relay_account() {
-        val expected = RelayAccount("relay.example.com", "old-token")
-
-        assertTrue(relayAccountMatchesExpected(expected, expected))
-        assertTrue(
-            !relayAccountMatchesExpected(
-                RelayAccount("relay.example.com", "new-token"),
-                expected,
-            ),
-        )
-        assertTrue(
-            !relayAccountMatchesExpected(
-                RelayAccount("new.example.com", "old-token"),
-                expected,
-            ),
-        )
-    }
 
     @Test fun authoritative_directory_removal_also_removes_the_hosts_workspaces() {
         val removedHost = host.copy(hostId = "h-removed")

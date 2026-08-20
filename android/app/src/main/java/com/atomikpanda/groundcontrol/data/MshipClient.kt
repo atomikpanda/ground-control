@@ -254,7 +254,7 @@ fun hostBaseFor(url: String, hosts: List<HostConnection>): String? {
     val requestPath = url.substringBefore('?').substringBefore('#')
     if (requestPath.trimEnd('/').endsWith(HOST_TOKEN_PATH)) return null
     val requestIdentity = normalizedBaseUrl(requestPath) ?: return null
-    return hosts.flatMap { it.hostBases() }
+    return hosts.flatMap { it.hostBases() + it.legacyPublicUrls }
         .mapNotNull(::normalizedBaseUrl)
         .distinct()
         .filter { identity -> requestIdentity.startsWith("$identity/") }
@@ -360,8 +360,9 @@ fun hostAwareClient(
                 }
                 return@on proceed(request)
             }
+            val routedBase = hostBaseFor(originalUrl, listOf(routedHost))
             val originalBaseIdentity = (
-                base ?: workspaceRoute?.connection?.baseUrl?.let(::normalizedBaseUrl)
+                routedBase ?: workspaceRoute?.connection?.baseUrl?.let(::normalizedBaseUrl)
                 )
                 ?.takeIf { originalUrlIdentity.startsWith("$it/") }
                 ?: return@on proceed(request)
@@ -375,7 +376,7 @@ fun hostAwareClient(
             var snapshotRefreshed = false
 
             while (true) {
-                val preferredBase = base?.let { baseIdentity ->
+                val preferredBase = routedBase?.let { baseIdentity ->
                     routedHost.hostBases().firstOrNull {
                         normalizedBaseUrl(it) == baseIdentity
                     }
@@ -389,7 +390,7 @@ fun hostAwareClient(
                 val workspaceId = workspaceRoute?.workspaceId
                 val candidateRequests = candidateBases.map { candidateBase ->
                     val candidateUrl = when {
-                        base != null -> candidateBase + routeSuffix
+                        routedBase != null -> candidateBase + routeSuffix
                         workspaceId != null ->
                             workspaceBaseUrl(candidateBase, workspaceId) + routeSuffix
                         else -> candidateBase + routeSuffix

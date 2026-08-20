@@ -155,6 +155,44 @@ class NewThreadViewModelTest {
         assertNull(vm.state.value.selectedConnectionId)  // stale dropped; >1 remain → no auto-default
     }
 
+    @Test fun create_resolves_a_retired_selection_against_the_action_time_connections() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        var connections = listOf(retired)
+        var postedHost: String? = null
+        val vm = NewThreadViewModel(
+            ThreadsRepository(
+                SpecApi(
+                    HttpClient(MockEngine { req ->
+                        postedHost = req.url.host
+                        respond(
+                            """{"id":"thread-1","subject":"Subject","awaiting_reply":false,"messages":[]}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }) { mshipDefaults() },
+                ),
+            ),
+            connectionsProvider = { connections },
+            testScope = this,
+        )
+        vm.load()
+
+        connections = listOf(canonical)
+        vm.onTextChange("hello")
+        vm.create()?.join()
+
+        assertEquals(canonical.id, vm.state.value.selectedConnectionId)
+        assertEquals("new", postedHost)
+        assertEquals(canonical.id, (vm.state.value.message as NewThreadMessage.Created).connectionId)
+    }
+
     @Test fun initial_state_is_loading_then_cleared() = runTest {
         val vm = vm(this, listOf(conn("1")))
         assertTrue(vm.state.value.isLoading)

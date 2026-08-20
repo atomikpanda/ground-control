@@ -7,12 +7,13 @@ import com.atomikpanda.groundcontrol.data.WorkspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
+import com.atomikpanda.groundcontrol.data.LegacyIdentityVerification
+import com.atomikpanda.groundcontrol.data.RouteOwnershipSnapshot
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.data.acceptsDirectCredential
 import com.atomikpanda.groundcontrol.data.displayLabel
-import com.atomikpanda.groundcontrol.data.discoveryMergeSources
 import com.atomikpanda.groundcontrol.data.legacyConnectionsForDiscovery
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
@@ -147,11 +148,61 @@ internal fun selectedDiscoveryConnection(
 
 internal data class FleetWorkspaceRefreshTarget(
     val host: HostConnection,
-    val expectedRelayRefresh: String?,
     val expectedSourceGeneration: WorkspaceRefreshGeneration,
     val directToken: String?,
 ) {
     val directOnly: Boolean get() = directToken != null
+}
+
+internal data class FleetIdentityVerificationCache(
+    val generation: Long,
+    val verification: LegacyIdentityVerification,
+)
+
+internal fun cacheFleetIdentityVerification(
+    expectedGeneration: Long,
+    currentGeneration: Long,
+    verification: LegacyIdentityVerification,
+): FleetIdentityVerificationCache? =
+    if (expectedGeneration == currentGeneration) {
+        FleetIdentityVerificationCache(expectedGeneration, verification)
+    } else {
+        null
+    }
+
+internal fun FleetIdentityVerificationCache.verificationForGeneration(
+    generation: Long,
+): LegacyIdentityVerification? = verification.takeIf { this.generation == generation }
+
+internal fun fleetWorkspaceRefreshTarget(
+    host: HostConnection,
+    hosts: List<HostConnection>,
+    connections: List<WorkspaceConnection>,
+    account: RelayAccount,
+    identities: List<VerifiedIdentity>,
+    routeOwnershipGeneration: Long,
+): FleetWorkspaceRefreshTarget? {
+    val generation = workspaceRefreshGeneration(
+        routeOwnershipGeneration = routeOwnershipGeneration,
+        connections = connections,
+        hostId = host.hostId,
+        hosts = hosts,
+        identities = identities,
+    ) ?: return null
+    if (host.relayDomain == account.relayDomain) {
+        return FleetWorkspaceRefreshTarget(
+            host = host,
+            expectedSourceGeneration = generation,
+            directToken = null,
+        )
+    }
+    if (!host.acceptsDirectCredential()) return null
+    val directToken = generation.uniqueCredential ?: return null
+    return FleetWorkspaceRefreshTarget(
+        host = host,
+        expectedSourceGeneration = generation,
+        directToken = directToken,
+    )
 }
 
 internal fun fleetWorkspaceRefreshTargets(
@@ -159,28 +210,15 @@ internal fun fleetWorkspaceRefreshTargets(
     connections: List<WorkspaceConnection>,
     account: RelayAccount,
     identities: List<VerifiedIdentity>,
+    routeOwnershipGeneration: Long,
 ): List<FleetWorkspaceRefreshTarget> = hosts.mapNotNull { host ->
-    val generation = workspaceRefreshGeneration(
-        connections = connections,
-        hostId = host.hostId,
-        hosts = hosts,
-        identities = identities,
-    ) ?: return@mapNotNull null
-    if (host.relayDomain == account.relayDomain) {
-        return@mapNotNull FleetWorkspaceRefreshTarget(
-            host = host,
-            expectedRelayRefresh = host.refresh,
-            expectedSourceGeneration = generation,
-            directToken = null,
-        )
-    }
-    if (!host.acceptsDirectCredential()) return@mapNotNull null
-    val directToken = generation.uniqueCredential ?: return@mapNotNull null
-    FleetWorkspaceRefreshTarget(
+    fleetWorkspaceRefreshTarget(
         host = host,
-        expectedRelayRefresh = null,
-        expectedSourceGeneration = generation,
-        directToken = directToken,
+        hosts = hosts,
+        connections = connections,
+        account = account,
+        identities = identities,
+        routeOwnershipGeneration = routeOwnershipGeneration,
     )
 }
 
@@ -264,8 +302,8 @@ class SettingsViewModel(
             // A daemon HOST's /health doesn't decode as a workspace
             // HealthResponse. Before the offline-save fallback, check whether
             // this is a host instead of persisting a root that every call 404s.
-            val expectedAccount = hosts.relayAccountSnapshot()
-            val expectedHosts = hosts.snapshot()
+            val expectedSnapshot = hosts.routeOwnershipSnapshot()
+            val expectedHosts = expectedSnapshot.hosts
             val hostResult = runCatching {
                 reachableHostWorkspaces(api, base, tok, expectedHosts)
             }
@@ -279,18 +317,13 @@ class SettingsViewModel(
             val hostHealth = runCatching { api.hostHealth(reachedBase) }
             if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
             val healthSnapshot = hostHealth.getOrNull()
-            val expectedHostId = healthSnapshot?.hostId
             _discovered.value = DiscoveredWorkspaces(
                 hostBase = reachedBase,
                 hostToken = tok,
                 workspaces = hostWs,
                 hostHealth = healthSnapshot,
                 requestedBase = base,
-                expectedAccount = expectedAccount,
-                expectedHostId = expectedHostId,
-                expectedHost = expectedHostId?.let { id ->
-                    expectedHosts.singleOrNull { it.hostId == id }
-                },
+                expectedGeneration = expectedSnapshot.generation,
             )
             setTestResult("That's a host URL — pick a workspace below")
         }
@@ -310,10 +343,8 @@ class SettingsViewModel(
 
     // ---- Host workspace discovery (#472) ----
 
-    /** A discovery result pinned to the host base/token the probe actually
-     *  used, so a later edit of the input fields (or a stale response landing
-     *  after a newer host was entered) can't persist a workspace under the
-     *  wrong host or token. */
+    /** A discovery result pinned to the route/ownership generation and host
+     * inputs that issued its probe. */
     data class DiscoveredWorkspaces(
         val hostBase: String,
         val hostToken: String?,
@@ -322,10 +353,7 @@ class SettingsViewModel(
         val hostHealth: HostHealth? = null,
         /** The operator-entered base, retained when [hostBase] is a fallback. */
         val requestedBase: String = hostBase,
-        /** Optimistic owner generation captured before the host probe. */
-        val expectedAccount: RelayAccount?,
-        val expectedHostId: String?,
-        val expectedHost: HostConnection?,
+        val expectedGeneration: Long,
     ) {
         val hostId: String? get() = hostHealth?.hostId
     }
@@ -342,8 +370,8 @@ class SettingsViewModel(
         }
         val tok = token?.ifBlank { null }
         viewModelScope.launch {
-            val expectedAccount = hosts.relayAccountSnapshot()
-            val expectedHosts = hosts.snapshot()
+            val expectedSnapshot = hosts.routeOwnershipSnapshot()
+            val expectedHosts = expectedSnapshot.hosts
             val result = runCatching {
                 reachableHostWorkspaces(api, base, tok, expectedHosts)
             }
@@ -358,18 +386,13 @@ class SettingsViewModel(
             val hostHealth = runCatching { api.hostHealth(reachedBase) }
             if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
             val healthSnapshot = hostHealth.getOrNull()
-            val expectedHostId = healthSnapshot?.hostId
             _discovered.value = DiscoveredWorkspaces(
                 hostBase = reachedBase,
                 hostToken = tok,
                 workspaces = workspaces,
                 hostHealth = healthSnapshot,
                 requestedBase = base,
-                expectedAccount = expectedAccount,
-                expectedHostId = expectedHostId,
-                expectedHost = expectedHostId?.let { id ->
-                    expectedHosts.singleOrNull { it.hostId == id }
-                },
+                expectedGeneration = expectedSnapshot.generation,
             )
             setTestResult("Found ${workspaces.size} workspace(s)")
         }
@@ -397,7 +420,8 @@ class SettingsViewModel(
     fun refreshFleetNow() { viewModelScope.launch { refreshFleet() } }
 
     private suspend fun refreshFleet() = refreshFleetMutex.withLock {
-        val account = hosts.relayAccountSnapshot() ?: run {
+        val expectedSnapshot = hosts.routeOwnershipSnapshot()
+        val account = expectedSnapshot.account ?: run {
             setTestResult("No relay account paired yet")
             return
         }
@@ -409,34 +433,68 @@ class SettingsViewModel(
         } catch (error: Exception) {
             val failure = classifyFleetRefreshFailure(error)
             val current = if (failure.requiresRePair) {
-                hosts.relayAccountSnapshot() == account
+                hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation
             } else {
-                hosts.markRelayUnreachable(account)
+                hosts.markRelayUnreachable(account, expectedSnapshot.generation)
             }
             if (current) setTestResult(failure.message, account)
             return
         }
-        if (!hosts.replaceFromRelay(account, incoming)) return
-        setTestResult("Fleet: $entryCount host(s)", account)
-        val currentHosts = hosts.snapshot()
-
-        val currentConnections = repo.snapshot()
-        val verification = verifyLegacyIdentities(
-            api,
-            unresolvedLegacyConnections(currentConnections),
-            currentHosts,
-        )
-        if (verification.requiresRePair) {
-            setTestResult("Re-pair needed — scan the relay account again", account)
+        if (
+            !hosts.replaceFromRelay(
+                expectedAccount = account,
+                expectedGeneration = expectedSnapshot.generation,
+                hosts = incoming,
+            )
+        ) {
+            return
         }
-        val identities = verification.identities
-        val refreshTargets = fleetWorkspaceRefreshTargets(
-            hosts = currentHosts,
-            connections = currentConnections,
-            account = account,
-            identities = identities,
-        )
-        for (target in refreshTargets) {
+        setTestResult("Fleet: $entryCount host(s)", account)
+        val directorySnapshot = hosts.routeOwnershipSnapshot()
+        // Freeze only the deterministic worklist. Each network request gets a
+        // fresh atomic target so a prior host's accepted route write can advance
+        // the generation without making every remaining host stale.
+        val hostIds = directorySnapshot.hosts.map { it.hostId }.distinct()
+        var identityCache: FleetIdentityVerificationCache? = null
+        suspend fun snapshotWithVerifiedIdentities():
+            Pair<RouteOwnershipSnapshot, LegacyIdentityVerification>? {
+            while (true) {
+                val snapshot = hosts.routeOwnershipSnapshot()
+                if (snapshot.account != account) return null
+                val cached = identityCache?.verificationForGeneration(snapshot.generation)
+                if (cached != null) return snapshot to cached
+                val verification = verifyLegacyIdentities(
+                    api,
+                    unresolvedLegacyConnections(snapshot.connections),
+                    snapshot.hosts,
+                )
+                val current = hosts.routeOwnershipSnapshot()
+                val accepted = cacheFleetIdentityVerification(
+                    expectedGeneration = snapshot.generation,
+                    currentGeneration = current.generation,
+                    verification = verification,
+                ) ?: continue
+                identityCache = accepted
+                return snapshot to verification
+            }
+        }
+        for (hostId in hostIds) {
+            val (targetSnapshot, verification) =
+                snapshotWithVerifiedIdentities() ?: return
+            if (verification.requiresRePair) {
+                setTestResult("Re-pair needed — scan the relay account again", account)
+            }
+            val identities = verification.identities
+            val currentHost = targetSnapshot.hosts.singleOrNull { it.hostId == hostId }
+                ?: continue
+            val target = fleetWorkspaceRefreshTarget(
+                host = currentHost,
+                hosts = targetSnapshot.hosts,
+                connections = targetSnapshot.connections,
+                account = account,
+                identities = identities,
+                routeOwnershipGeneration = targetSnapshot.generation,
+            ) ?: continue
             val host = target.host
             val refreshed = try {
                 refreshHostWorkspaceConnections(
@@ -456,11 +514,9 @@ class SettingsViewModel(
                 continue
             } ?: continue
             if (!hosts.applyHostWorkspaceRefresh(
-                    expectedAccount = account,
                     hostId = host.hostId,
                     hostBase = refreshed.hostBase,
                     expectedDirectOnly = target.directOnly,
-                    expectedRelayRefresh = target.expectedRelayRefresh,
                     expectedSourceGeneration = target.expectedSourceGeneration,
                     contactedAtMillis = System.currentTimeMillis(),
                     discovered = refreshed.connections,
@@ -478,11 +534,8 @@ class SettingsViewModel(
      * unowned direct connection with its own base and credential. */
     fun addDiscovered(from: DiscoveredWorkspaces, info: WorkspaceInfo) {
         viewModelScope.launch {
-            val ownerSnapshot = hosts.directDiscoveryOwnerSnapshot(
-                expectedAccount = from.expectedAccount,
-                expectedHostId = from.expectedHostId,
-                expectedHost = from.expectedHost,
-            ) ?: run {
+            val ownerSnapshot = hosts.routeOwnershipSnapshot()
+            if (ownerSnapshot.generation != from.expectedGeneration) {
                 rejectStaleDiscovery()
                 return@launch
             }
@@ -501,26 +554,15 @@ class SettingsViewModel(
                 info = info,
             )
             val discoveryHostBases = listOf(from.requestedBase, from.hostBase)
-            val connectionSnapshot = repo.snapshot()
-            val expectedSources = discoveryMergeSources(
-                connections = connectionSnapshot,
-                hostBases = discoveryHostBases,
-                workspaceId = info.id,
-                discovered = discovered,
-            )
             val legacyRows = legacyConnectionsForDiscovery(
-                connections = connectionSnapshot,
+                connections = ownerSnapshot.connections,
                 hostBases = discoveryHostBases,
                 workspaceId = info.id,
             )
             val identities = verifyLegacyIdentities(api, legacyRows, initialHosts).identities
             val applied = hosts.applyDiscoveredWorkspace(
-                expectedAccount = from.expectedAccount,
-                expectedHostId = from.expectedHostId,
-                expectedHost = from.expectedHost,
-                expectedSources = expectedSources,
-                hostBases = discoveryHostBases,
-                workspaceId = info.id,
+                expectedGeneration = from.expectedGeneration,
+                directHostId = adoptedHostId,
                 discovered = discovered,
                 identities = identities,
                 activatePriorDirectToken = true,

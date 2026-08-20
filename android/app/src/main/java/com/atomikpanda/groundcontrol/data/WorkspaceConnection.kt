@@ -226,15 +226,15 @@ data class VerifiedIdentity(
     val workspaceId: String?,
 )
 
-/** The exact persisted workspace sources that authorize one host refresh.
- * Equality is the optimistic generation: any re-pair, identity migration, or
- * source replacement invalidates an in-flight response. */
+/** Persisted routing generation plus the exact workspace sources used to
+ * authorize one host refresh. The generation supplies ABA protection; sources
+ * only derive the standing direct credential sent by the request. */
 internal data class WorkspaceRefreshGeneration(
+    val routeOwnershipGeneration: Long,
     val sources: List<WorkspaceConnection>,
 ) {
     /** A direct refresh is authorized only when every source agrees on one
-     * nonblank standing credential. Relay refreshes use the same source
-     * generation but authenticate from their host row instead. */
+     * nonblank standing credential. Relay refreshes authenticate from the host. */
     val uniqueCredential: String?
         get() = sources.mapNotNull { connection ->
             connection.directToken?.takeIf { it.isNotBlank() }
@@ -244,6 +244,7 @@ internal data class WorkspaceRefreshGeneration(
 
 
 internal fun workspaceRefreshGeneration(
+    routeOwnershipGeneration: Long,
     connections: List<WorkspaceConnection>,
     hostId: String,
     hosts: List<HostConnection>,
@@ -260,7 +261,7 @@ internal fun workspaceRefreshGeneration(
         exactOwner || verifiedLegacyOwner
     }.sortedBy { it.id }
     if (sources.map { it.id }.distinct().size != sources.size) return null
-    return WorkspaceRefreshGeneration(sources)
+    return WorkspaceRefreshGeneration(routeOwnershipGeneration, sources)
 }
 
 /** Rows that still lack a stable host/workspace identity tuple remain eligible for verified
@@ -281,28 +282,6 @@ internal fun legacyConnectionsForDiscovery(
     return unresolvedLegacyConnections(connections).filter {
         normalizedBaseUrl(it.baseUrl)?.let(matchingBases::contains) == true
     }
-}
-
-/** Every persisted row that the selected discovery can merge or adopt. */
-internal fun discoveryMergeSources(
-    connections: List<WorkspaceConnection>,
-    hostBases: List<String>,
-    workspaceId: String,
-    discovered: WorkspaceConnection,
-): List<WorkspaceConnection> {
-    val legacy = legacyConnectionsForDiscovery(connections, hostBases, workspaceId)
-    val discoveredStable = discovered.hasStableIdentityTuple()
-    return connections.filter { connection ->
-        val connectionStable = connection.hasStableIdentityTuple()
-        connection in legacy ||
-            (!discoveredStable && !connectionStable && connection.id == discovered.id) ||
-            (
-                discoveredStable &&
-                    connectionStable &&
-                    connection.hostId == discovered.hostId &&
-                    connection.workspaceId == workspaceId
-                )
-    }.sortedBy { it.id }
 }
 
 

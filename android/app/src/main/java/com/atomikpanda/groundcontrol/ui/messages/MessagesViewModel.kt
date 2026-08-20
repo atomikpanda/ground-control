@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CoroutineScope
@@ -11,11 +12,17 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+private const val LIVE_POLL_RETRY_DELAY_MILLIS = 2_000L
 
 data class ThreadsSection(
     val workspaceName: String,
@@ -86,7 +93,7 @@ fun MessagesUiState.Content.unreadCountFor(connectionId: String?): Int =
 
 class MessagesViewModel(
     private val repo: ThreadsRepository,
-    private val connectionsProvider: () -> List<WorkspaceConnection>,
+    private val connections: Flow<List<WorkspaceConnection>>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow<MessagesUiState>(MessagesUiState.Loading)
@@ -100,27 +107,94 @@ class MessagesViewModel(
     private var stateFilter: ThreadStateFilter = ThreadStateFilter.ALL
 
     private val pollJobs = mutableMapOf<String, Job>()
+    private var latestConnections: List<WorkspaceConnection> = emptyList()
+    private var livePollingStarted = false
 
-    fun refresh(): Job? {
-        val connections = connectionsProvider()
-        if (connections.isEmpty()) { _state.value = MessagesUiState.EmptyConfig; return null }
-        _state.value = MessagesUiState.Loading
-        return scope().launch {
-            // Fetch threads + items concurrently so the spinner isn't blocked on both round-trips
-            // end-to-end (items are best-effort and shouldn't serialize the primary load).
-            val (results, itemsByConn) = coroutineScope {
-                val threadsDeferred = async { repo.listAllThreads(connections) }
-                val itemsDeferred = async { repo.listAllItems(connections) }
-                threadsDeferred.await() to itemsDeferred.await()
-            }
-            sections = results.map { ws ->
-                ThreadsSection(
-                    workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
-                    connectionId = ws.connection.id,
-                    threads = ws.threads,
-                    items = itemsByConn[ws.connection.id] ?: emptyList(),
+    private fun canonicalizeLoadedIdentities(currentConnections: List<WorkspaceConnection>) {
+        val canonicalSections = sections.map { section ->
+            currentConnections.findByConnectionId(section.connectionId)?.let { conn ->
+                section.copy(
+                    workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
+                    connectionId = conn.id,
+                )
+            } ?: section
+        }
+        sections = canonicalSections
+            .groupBy { it.connectionId }
+            .values
+            .map { matching ->
+                if (matching.size == 1) return@map matching.single()
+                val successfulThreads = matching.mapNotNull { it.threads.getOrNull() }
+                val threads = if (successfulThreads.isEmpty()) {
+                    matching.first().threads
+                } else {
+                    val threadsById = LinkedHashMap<String, ThreadSummary>()
+                    successfulThreads.forEach { loaded ->
+                        loaded.forEach { candidate ->
+                            val existing = threadsById[candidate.id]
+                            // Match mergeThreadsById: null is oldest; an equal timestamp is an upsert.
+                            if (existing == null || (candidate.updatedAt ?: "") >= (existing.updatedAt ?: "")) {
+                                threadsById[candidate.id] = candidate
+                            }
+                        }
+                    }
+                    Result.success(threadsById.values.sortedByDescending { it.updatedAt ?: "" })
+                }
+                val itemsById = LinkedHashMap<String, WorkItemSummary>()
+                matching.forEach { section ->
+                    section.items.forEach { candidate ->
+                        val existing = itemsById[candidate.id]
+                        if (existing == null || (candidate.updatedAt ?: "") >= (existing.updatedAt ?: "")) {
+                            itemsById[candidate.id] = candidate
+                        }
+                    }
+                }
+                matching.first().copy(
+                    threads = threads,
+                    items = itemsById.values.toList(),
                 )
             }
+        selectedConnectionId = selectedConnectionId?.let { selected ->
+            currentConnections.findByConnectionId(selected)?.id ?: selected
+        }
+    }
+
+    init {
+        scope().launch {
+            connections.distinctUntilChanged().collect { currentConnections ->
+                latestConnections = currentConnections
+                if (livePollingStarted) reconcileLivePolling(currentConnections)
+            }
+        }
+    }
+
+    fun refresh(): Job? = scope().launch {
+        val connections = this@MessagesViewModel.connections.first()
+        latestConnections = connections
+        if (connections.isEmpty()) {
+            _state.value = MessagesUiState.EmptyConfig
+            return@launch
+        }
+        _state.value = MessagesUiState.Loading
+        // Fetch threads + items concurrently so the spinner isn't blocked on both round-trips
+        // end-to-end (items are best-effort and shouldn't serialize the primary load).
+        val (results, itemsByConn) = coroutineScope {
+            val threadsDeferred = async { repo.listAllThreads(connections) }
+            val itemsDeferred = async { repo.listAllItems(connections) }
+            threadsDeferred.await() to itemsDeferred.await()
+        }
+        sections = results.map { ws ->
+            ThreadsSection(
+                workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
+                connectionId = ws.connection.id,
+                threads = ws.threads,
+                items = itemsByConn[ws.connection.id] ?: emptyList(),
+            )
+        }
+        if (livePollingStarted) {
+            reconcileLivePolling(latestConnections)
+        } else {
+            canonicalizeLoadedIdentities(latestConnections)
             render()
         }
     }
@@ -129,6 +203,7 @@ class MessagesViewModel(
     fun selectWorkspace(connectionId: String?) {
         if (_state.value !is MessagesUiState.Content) return
         selectedConnectionId = connectionId
+        canonicalizeLoadedIdentities(latestConnections)
         render()
     }
 
@@ -162,23 +237,42 @@ class MessagesViewModel(
         return resp.cursor
     }
 
-    /** Start one live long-poll loop per loaded workspace (idempotent per connection). Call once
-     *  after [refresh] has populated sections. Cancelled when the VM's scope is cleared. */
-    fun startLivePolling() {
+    private fun reconcileLivePolling(currentConnections: List<WorkspaceConnection>) {
+        if (sections.isEmpty()) return
+        val jobs = pollJobs.entries.iterator()
+        while (jobs.hasNext()) {
+            val entry = jobs.next()
+            if (currentConnections.findByConnectionId(entry.key)?.id != entry.key) {
+                entry.value.cancel()
+                jobs.remove()
+            }
+        }
+        canonicalizeLoadedIdentities(currentConnections)
+        render()
+
         sections.forEach { section ->
             if (pollJobs[section.connectionId]?.isActive == true) return@forEach
-            val conn = connectionsProvider().find { it.id == section.connectionId } ?: return@forEach
+            val conn = currentConnections.findByConnectionId(section.connectionId) ?: return@forEach
             val seed = section.threads.getOrNull()?.mapNotNull { it.updatedAt }?.maxOrNull()
                 ?: java.time.Instant.now().toString()
             pollJobs[conn.id] = scope().launch {
                 var cursor = seed
                 while (isActive) {
                     val next = pollOnce(conn, cursor)
-                    if (next == cursor || next.isEmpty()) delay(2000)   // no progress / bad cursor: back off
-                    if (next.isNotEmpty()) cursor = next                // never advance `since` to ""
+                    if (next == cursor || next.isEmpty()) delay(LIVE_POLL_RETRY_DELAY_MILLIS)
+                    if (next.isNotEmpty()) cursor = next
                 }
             }
         }
+    }
+
+    /** Start one live long-poll loop per loaded workspace. The connection Flow collector keeps the
+     * latest decoded DataStore snapshot and reconciles immediately on each distinct ownership
+     * change, so host adoption cancels retired jobs, coalesces newly-shared sections, and starts the
+     * canonical route without blocking or polling the main dispatcher. */
+    fun startLivePolling() {
+        livePollingStarted = true
+        reconcileLivePolling(latestConnections)
     }
 
     private fun allThreads(connectionId: String?): List<ThreadSummary> =

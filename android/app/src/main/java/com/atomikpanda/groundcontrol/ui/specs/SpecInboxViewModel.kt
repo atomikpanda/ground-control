@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.SpecGroup
 import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.groupForStatus
 import com.atomikpanda.groundcontrol.data.orderedGroups
@@ -75,12 +76,27 @@ class SpecInboxViewModel(
      *  spec removed by a concurrent refresh or a different, concurrently-succeeding archive that
      *  landed while this request was still in flight. */
     fun archiveSpec(connectionId: String, specId: String): Job = (testScope ?: viewModelScope).launch {
-        val conn = connectionsProvider().find { it.id == connectionId } ?: return@launch
-        val archived = findSpec(connectionId, specId)
-        removeSpec(connectionId, specId)
+        val conn = connectionsProvider().findByConnectionId(connectionId) ?: return@launch
+        val canonicalConnectionId = conn.id
+        if (canonicalConnectionId != connectionId) {
+            val current = _state.value as? InboxUiState.Content
+            if (current != null) {
+                _state.value = current.copy(
+                    sections = current.sections.map { section ->
+                        if (section.connectionId != connectionId) section
+                        else section.copy(
+                            workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
+                            connectionId = canonicalConnectionId,
+                        )
+                    },
+                )
+            }
+        }
+        val archived = findSpec(canonicalConnectionId, specId)
+        removeSpec(canonicalConnectionId, specId)
         runCatching { repo.archiveSpec(conn, specId) }.onFailure {
             if (it is CancellationException) throw it
-            if (archived != null) reinsertSpec(connectionId, archived)
+            if (archived != null) reinsertSpec(canonicalConnectionId, archived)
         }
     }
 

@@ -73,18 +73,6 @@ fun HostConnection.hostBases(): List<String> =
 /** The preferred candidate for address construction before reachability is
  * known. Fleet refresh replaces it with the first base it actually reaches. */
 fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
-/** A response may publish only while the route generation that issued it is
- * still current. Normalized base membership catches route replacement; the
- * direct-credential ownership check catches direct-to-relay adoption without
- * misclassifying relay-owned rows whose refresh is temporarily absent. */
-internal fun HostConnection.matchesWorkspaceRefreshRoute(
-    hostBase: String,
-    expectedDirectOnly: Boolean,
-): Boolean {
-    if (acceptsDirectCredential() != expectedDirectOnly) return false
-    val identity = normalizedBaseUrl(hostBase) ?: return false
-    return hostBases().any { normalizedBaseUrl(it) == identity }
-}
 
 
 /** Whether [identity] is any current or recorded base for this stable host. */
@@ -325,12 +313,13 @@ fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
     )
 }
 
-/** Project an entire relay directory while distinguishing an authoritative
- * empty response from a non-empty response with no usable identities. */
+/** Project an entire relay directory atomically: an empty response is valid,
+ * but every row in a nonempty response must carry a usable stable or pending
+ * identity before the caller may authoritatively replace cached hosts. */
 fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
     val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
-    check(infos.isEmpty() || hosts.isNotEmpty()) {
-        "Relay directory contained no usable host identities"
+    check(hosts.size == infos.size) {
+        "Relay directory contained an unusable host identity"
     }
     return hosts
 }
