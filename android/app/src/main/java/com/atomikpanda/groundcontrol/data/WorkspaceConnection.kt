@@ -257,17 +257,17 @@ private fun legacyHostRoot(connection: WorkspaceConnection): String {
 
 /** Match only persisted fleet routing evidence. A workspace's own
  * unauthenticated health payload cannot nominate an arbitrary fleet host. */
-internal fun knownHostForLegacyConnection(
+internal fun knownHostsForLegacyConnection(
     connection: WorkspaceConnection,
     hosts: List<HostConnection>,
-): HostConnection? {
+): List<HostConnection> {
     val storedHostId = connection.hostId?.takeIf {
         it.isNotBlank() &&
             !it.startsWith("http://", ignoreCase = true) &&
             !it.startsWith("https://", ignoreCase = true)
     }
     if (storedHostId != null) {
-        return hosts.filter { it.hostId == storedHostId }.singleOrNull()
+        return hosts.filter { it.hostId == storedHostId }
     }
 
     val claimedBases = listOfNotNull(
@@ -283,8 +283,14 @@ internal fun knownHostForLegacyConnection(
                 host.legacyPublicUrls
             ).mapNotNull(::normalizedBaseUrl)
         knownBases.any(claimedBases::contains)
-    }.singleOrNull()
+    }
 }
+
+internal fun knownHostForLegacyConnection(
+    connection: WorkspaceConnection,
+    hosts: List<HostConnection>,
+): HostConnection? =
+    knownHostsForLegacyConnection(connection, hosts).singleOrNull()
 
 /** Verify a legacy row through the matched host's current authenticated route.
  * Stale direct or relay URLs are identity aliases only and are never probed. */
@@ -348,10 +354,10 @@ suspend fun verifyLegacyIdentities(
  * by #472's premise the same name can name different workspaces on different
  * hosts, so a name match yields two rows, which is the honest answer.
  *
- * A merged row keeps the operator's [WorkspaceConnection.id] (nav routes and
- * notification ids already reference it) and identity overrides, gains the host
- * tuple and state, and retains its pre-adoption URL in
- * [WorkspaceConnection.legacyBaseUrls].
+ * A merged group keeps an existing stable twin's id; without one, the
+ * lexicographically first verified legacy id is canonical. Every duplicate
+ * source is removed in the same fold, while identity overrides, unique direct
+ * credentials, and prior URLs are carried into the canonical row.
  */
 fun adoptManualConnections(
     existing: List<WorkspaceConnection>,
@@ -362,29 +368,27 @@ fun adoptManualConnections(
     val verified = identities.filter { it.hostId != null && it.workspaceId != null }
         .associateBy { it.connectionId }
     return discovered.fold(existing) { acc, found ->
-        val manual = acc.firstOrNull { row ->
+        val stableTwins = acc.filter { sameWorkspace(it, found) }
+        val verifiedLegacySources = acc.filter { row ->
             !sameWorkspace(row, found) && verified[row.id]
                 ?.let { it.hostId == found.hostId && it.workspaceId == found.workspaceId } == true
         }
-        if (manual == null) {
+        val sources = (stableTwins + verifiedLegacySources)
+            .distinctBy { it.id }
+        val canonical = stableTwins.minByOrNull { it.id }
+            ?: verifiedLegacySources.minByOrNull { it.id }
+        if (canonical == null) {
             upsertConnection(
                 acc,
                 found,
                 activatePriorDirectToken = activatePriorDirectToken,
             )
         } else {
-            val twins = acc.filter { it.id != manual.id && sameWorkspace(it, found) }
-            acc
-                .filterNot { it in twins }
-                .map {
-                    if (it.id == manual.id) {
-                        adopt(
-                            listOf(manual) + twins,
-                            found,
-                            activatePriorDirectToken,
-                        )
-                    } else it
-                }
+            val priors = listOf(canonical) +
+                sources.filterNot { it.id == canonical.id }.sortedBy { it.id }
+            val sourceIds = sources.mapTo(mutableSetOf()) { it.id }
+            acc.filterNot { it.id in sourceIds } +
+                adopt(priors, found, activatePriorDirectToken)
         }
     }
 }
@@ -428,7 +432,7 @@ private fun adopt(
     found: WorkspaceConnection,
     activatePriorDirectToken: Boolean,
 ): WorkspaceConnection {
-    val manual = priors.first()
+    val canonical = priors.first()
     val priorDirectToken = priors.mapNotNull { prior ->
         prior.directToken?.takeIf { it.isNotBlank() }
             ?: prior.token?.takeIf { it.isNotBlank() }
@@ -438,12 +442,12 @@ private fun adopt(
             ?: found.token?.takeIf { it.isNotBlank() }
             ?: priorDirectToken
     return found.copy(
-        id = manual.id,
+        id = canonical.id,
         token = found.token ?: retainedDirectToken.takeIf { activatePriorDirectToken },
         directToken = retainedDirectToken,
-        workspaceName = found.workspaceName.ifBlank { manual.workspaceName },
-        colorOverride = manual.colorOverride ?: found.colorOverride,
-        glyphOverride = manual.glyphOverride ?: found.glyphOverride,
+        workspaceName = found.workspaceName.ifBlank { canonical.workspaceName },
+        colorOverride = priors.firstNotNullOfOrNull { it.colorOverride } ?: found.colorOverride,
+        glyphOverride = priors.firstNotNullOfOrNull { it.glyphOverride } ?: found.glyphOverride,
         legacyBaseUrls = carryLegacyUrls(priors, found),
     )
 }
