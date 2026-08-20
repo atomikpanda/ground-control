@@ -363,6 +363,7 @@ class HostWorkspacesTest {
         assertTrue(adopted.legacyBaseUrls.contains(stable.baseUrl))
         assertTrue(adopted.legacyBaseUrls.contains(legacyA.baseUrl))
         assertTrue(adopted.legacyBaseUrls.contains(legacyB.baseUrl))
+        assertEquals(listOf("legacy-a", "legacy-b"), adopted.legacyConnectionIds)
     }
 
 
@@ -2039,6 +2040,39 @@ class HostWorkspacesTest {
         assertEquals("$direct/workspaces/ws-1", migrated.baseUrl)
         assertEquals("direct-token", migrated.token)
         assertEquals("direct-token", migrated.directToken)
+    }
+
+    @Test fun legacy_direct_verification_uses_the_retained_direct_credential() = runTest {
+        val direct = "http://direct.example"
+        val known = HostConnection(hostId = "host-a", directUrl = direct)
+        val authorizations = mutableListOf<String?>()
+        val api = SpecApi(
+            HttpClient(
+                MockEngine { request ->
+                    authorizations += request.headers[HttpHeaders.Authorization]
+                    respond(
+                        """{"workspaces":[{"id":"ws-1","name":"alpha","state":"healthy"}]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                },
+            ) { mshipDefaults() },
+        )
+        val legacy = WorkspaceConnection(
+            id = "legacy-root",
+            baseUrl = direct,
+            token = null,
+            hostId = known.hostId,
+            directToken = "retained-direct-token",
+        )
+
+        val identities = verifyLegacyIdentities(api, listOf(legacy), listOf(known)).identities
+
+        assertEquals(
+            listOf(VerifiedIdentity("legacy-root", known.hostId, "ws-1")),
+            identities,
+        )
+        assertEquals(listOf("Bearer retained-direct-token"), authorizations)
     }
 
     @Test fun transient_root_verification_failure_is_retained_and_retried() = runTest {

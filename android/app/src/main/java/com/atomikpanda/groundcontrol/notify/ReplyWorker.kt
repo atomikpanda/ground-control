@@ -16,6 +16,7 @@ import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.appHttpClient
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 
 /**
  * Delivers a notification direct-reply / option post reliably: resolves the [WorkspaceConnection]
@@ -39,7 +40,7 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
         val baseUrl = inputData.getString(K_BASE_URL) ?: ""
 
         val notifier = AndroidNotifier(applicationContext)
-        val conn = ConnectionsRepository(applicationContext).snapshot().firstOrNull { it.id == connId }
+        val conn = ConnectionsRepository(applicationContext).snapshot().findByConnectionId(connId)
         if (conn == null) {
             notifier.notifyReplyError(
                 NeedsYouEvent(connId, baseUrl, workspace, threadId, subject, "", ""), text,

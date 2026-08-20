@@ -32,6 +32,9 @@ data class WorkspaceConnection(
      *  PendingIntent already sitting in the shade carries the OLD one. Deep-link
      *  resolution consults these so those taps keep landing. */
     val legacyBaseUrls: List<String> = emptyList(),
+    /** Local handles retired when duplicate rows converge. Persisted navigation
+     *  and notification work can still use these after adoption. */
+    val legacyConnectionIds: List<String> = emptyList(),
     /** Standing token retained only to restore an operator-paired direct route
      * if the relay account that temporarily adopted this row is replaced. */
     val directToken: String? = null,
@@ -115,6 +118,21 @@ fun WorkspaceConnection.hasStableIdentityTuple(): Boolean =
         !hostId.startsWith("http://", ignoreCase = true) &&
         !hostId.startsWith("https://", ignoreCase = true)
 
+/** Resolve a current local handle before consulting unambiguous retired aliases. */
+internal fun Iterable<WorkspaceConnection>.findByConnectionId(
+    connectionId: String,
+): WorkspaceConnection? {
+    var aliasMatch: WorkspaceConnection? = null
+    var ambiguousAlias = false
+    for (connection in this) {
+        if (connection.id == connectionId) return connection
+        if (connectionId in connection.legacyConnectionIds) {
+            if (aliasMatch == null) aliasMatch = connection else ambiguousAlias = true
+        }
+    }
+    return aliasMatch.takeUnless { ambiguousAlias }
+}
+
 /** The same verified workspace on the same host, whatever URL it answers on. */
 private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boolean =
     a.hasStableIdentityTuple() &&
@@ -158,17 +176,19 @@ fun upsertConnection(
     } else {
         null
     }
+    val mergedId = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id
     val merged = conn.copy(
         // On an IDENTITY match the row id is the phone's local handle (nav
         // routes, notification ids) and survives — otherwise the next directory
         // read would re-mint it and undo an adoption. A legacy URL/id match is a
         // manual re-pair, where the incoming id is the operator's new one.
-        id = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id,
+        id = mergedId,
         token = conn.token ?: retainedDirectToken.takeIf { activatePriorDirectToken },
         colorOverride = conn.colorOverride ?: prior?.colorOverride,
         glyphOverride = conn.glyphOverride ?: prior?.glyphOverride,
         directToken = retainedDirectToken,
         legacyBaseUrls = carryLegacyUrls(listOfNotNull(prior), conn),
+        legacyConnectionIds = carryLegacyConnectionIds(listOfNotNull(prior), conn, mergedId),
     )
     return existing.filterNot(matches) + merged
 }
@@ -183,6 +203,19 @@ private fun carryLegacyUrls(
             priors.flatMap { it.legacyBaseUrls + it.baseUrl }
     )
         .filter { it != conn.baseUrl }
+        .distinct()
+
+/** Every local handle retired while folding [priors] into [currentId]. */
+private fun carryLegacyConnectionIds(
+    priors: List<WorkspaceConnection>,
+    conn: WorkspaceConnection,
+    currentId: String,
+): List<String> =
+    (
+        conn.legacyConnectionIds +
+            priors.flatMap { it.legacyConnectionIds + it.id }
+    )
+        .filter { it != currentId }
         .distinct()
 
 /** A workspace tuple confirmed through a known host's authenticated current
@@ -303,7 +336,8 @@ suspend fun verifyLegacyIdentity(
     val (_, workspaces) = reachableHostWorkspaces(
         api = api,
         host = host,
-        token = connection.token.takeIf { host.acceptsDirectCredential() },
+        token = (connection.directToken ?: connection.token)
+            .takeIf { host.acceptsDirectCredential() },
         recordContact = false,
     ) ?: return null
     val knownWorkspaceId = legacyWorkspaceId(connection)
@@ -449,6 +483,7 @@ private fun adopt(
         colorOverride = priors.firstNotNullOfOrNull { it.colorOverride } ?: found.colorOverride,
         glyphOverride = priors.firstNotNullOfOrNull { it.glyphOverride } ?: found.glyphOverride,
         legacyBaseUrls = carryLegacyUrls(priors, found),
+        legacyConnectionIds = carryLegacyConnectionIds(priors, found, canonical.id),
     )
 }
 

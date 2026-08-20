@@ -41,6 +41,7 @@ import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller
 import com.atomikpanda.groundcontrol.ui.home.HomeScreen
 import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
@@ -209,7 +210,7 @@ fun GroundControlApp(
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val specId = entry.arguments?.getString("specId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
@@ -231,7 +232,7 @@ fun GroundControlApp(
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val slug = entry.arguments?.getString("slug").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
@@ -248,7 +249,7 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
@@ -274,7 +275,7 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
@@ -308,7 +309,7 @@ fun GroundControlApp(
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
@@ -334,7 +335,7 @@ fun GroundControlApp(
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
@@ -359,7 +360,7 @@ fun GroundControlApp(
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
@@ -384,7 +385,7 @@ fun GroundControlApp(
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 LaunchedEffect(connectionId, itemId) {
                     // This route is a pure redirect with no fallback UI of its own, so every
@@ -466,7 +467,7 @@ fun GroundControlApp(
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val threadId = entry.arguments?.getString("threadId").orEmpty()
                 val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).firstOrNull { it.id == connectionId }
+                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
                 }
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }

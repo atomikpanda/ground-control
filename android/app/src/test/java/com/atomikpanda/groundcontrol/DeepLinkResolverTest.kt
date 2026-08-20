@@ -93,6 +93,22 @@ class DeepLinkResolverTest {
         )
     }
 
+    @Test fun a_notification_link_with_a_retired_connection_id_resolves_after_adoption() {
+        val adopted = WorkspaceConnection(
+            id = "stable-id",
+            baseUrl = "https://current.relay/workspaces/ws-1",
+            hostId = "host-a",
+            workspaceId = "ws-1",
+            legacyConnectionIds = listOf("retired-id"),
+        )
+        val link = notificationThreadUri("retired-id", adopted.baseUrl, "thread-1")
+
+        assertEquals(
+            DeepLinkOutcome.OpenThread(adopted.id, "thread-1"),
+            DeepLinkResolver.resolve(link, listOf(adopted)),
+        )
+    }
+
     @Test fun notification_connection_id_disambiguates_shared_host_routes() {
         val shared = "https://shared.example/workspaces/ws-1"
         val first = WorkspaceConnection("c1", shared, hostId = "host-a", workspaceId = "ws-1")

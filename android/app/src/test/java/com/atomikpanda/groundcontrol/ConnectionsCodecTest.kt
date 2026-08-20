@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.applyIdentityOverride
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import com.atomikpanda.groundcontrol.data.replaceHostConnections
 import com.atomikpanda.groundcontrol.data.upsertConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -19,6 +20,20 @@ class ConnectionsCodecTest {
         )
         val restored = ConnectionsCodec.decode(ConnectionsCodec.encode(list))
         assertEquals(list, restored)
+    }
+
+    @Test fun round_trips_and_resolves_retired_connection_ids() {
+        val current = WorkspaceConnection(
+            id = "current",
+            baseUrl = "https://relay/workspaces/ws",
+            legacyConnectionIds = listOf("retired"),
+        )
+        val restored = ConnectionsCodec.decode(ConnectionsCodec.encode(listOf(current)))
+
+        val exact = WorkspaceConnection("retired", "https://other/workspaces/ws")
+
+        assertEquals(exact, listOf(current, exact).findByConnectionId("retired"))
+        assertEquals(current, restored.findByConnectionId("retired"))
     }
 
     @Test fun decode_of_blank_is_empty() {
