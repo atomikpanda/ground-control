@@ -12,13 +12,15 @@ import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.data.acceptsDirectCredential
 import com.atomikpanda.groundcontrol.data.displayLabel
+import com.atomikpanda.groundcontrol.data.discoveryMergeSources
+import com.atomikpanda.groundcontrol.data.legacyConnectionsForDiscovery
+import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hostsFrom
 import com.atomikpanda.groundcontrol.data.ladderForHost
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
 import com.atomikpanda.groundcontrol.data.reachableHostWorkspaces
-import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
 import com.atomikpanda.groundcontrol.data.NotificationsSetting
 import com.atomikpanda.groundcontrol.data.PairLink
@@ -29,7 +31,6 @@ import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.HostHealth
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
-import com.atomikpanda.groundcontrol.data.workspaceBaseUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -111,7 +112,9 @@ internal fun canAdoptDirectHostIdentity(
     id.isNotBlank() &&
         !id.startsWith("http://", ignoreCase = true) &&
         !id.startsWith("https://", ignoreCase = true) &&
-        (claimedHost == null || claimedHost.acceptsDirectCredential())
+        (claimedHost?.let { host ->
+            host.hostId == id && host.acceptsDirectCredential()
+        } == true)
 } == true
 
 internal fun directUrlForDiscovery(
@@ -123,18 +126,25 @@ internal fun directUrlForDiscovery(
     return reached.takeIf { it == requested }
 }
 
-internal fun legacyConnectionsForDiscovery(
-    connections: List<WorkspaceConnection>,
-    hostBases: List<String>,
-    workspaceId: String,
-): List<WorkspaceConnection> {
-    val matchingBases = hostBases.mapNotNull(::normalizedBaseUrl)
-        .flatMap { listOf(it, workspaceBaseUrl(it, workspaceId)) }
-        .toSet()
-    return unresolvedLegacyConnections(connections).filter {
-        normalizedBaseUrl(it.baseUrl)?.let(matchingBases::contains) == true
+internal fun selectedDiscoveryConnection(
+    hostBase: String,
+    hostToken: String?,
+    adoptedHostId: String?,
+    info: WorkspaceInfo,
+): WorkspaceConnection {
+    val connection = deriveConnection(
+        hostBase = hostBase,
+        hostToken = hostToken,
+        hostId = adoptedHostId ?: hostBase,
+        workspaceId = info.id,
+        workspaceName = info.name,
+        state = info.state,
+    )
+    return if (adoptedHostId != null) connection else {
+        connection.copy(hostId = null, workspaceId = null)
     }
 }
+
 internal data class FleetWorkspaceRefreshTarget(
     val host: HostConnection,
     val expectedRelayRefresh: String?,
@@ -229,6 +239,11 @@ class SettingsViewModel(
         setTestResult("Re-pair needed — scan the relay account again")
         return true
     }
+    private fun rejectStaleDiscovery() {
+        _discovered.value = null
+        setTestResult("Discovery changed — refresh the host and choose again")
+    }
+
 
     /** Validate URL, probe /health, persist with the discovered workspace name. */
     fun addOrUpdate(id: String?, baseUrlInput: String, token: String?) {
@@ -249,8 +264,10 @@ class SettingsViewModel(
             // A daemon HOST's /health doesn't decode as a workspace
             // HealthResponse. Before the offline-save fallback, check whether
             // this is a host instead of persisting a root that every call 404s.
+            val expectedAccount = hosts.relayAccountSnapshot()
+            val expectedHosts = hosts.snapshot()
             val hostResult = runCatching {
-                reachableHostWorkspaces(api, base, tok, hosts.snapshot())
+                reachableHostWorkspaces(api, base, tok, expectedHosts)
             }
             if (hostResult.isFailure) {
                 if (surfaceRePair(hostResult.exceptionOrNull())) return@launch
@@ -261,12 +278,19 @@ class SettingsViewModel(
             val (reachedBase, hostWs) = hostResult.getOrThrow()
             val hostHealth = runCatching { api.hostHealth(reachedBase) }
             if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
+            val healthSnapshot = hostHealth.getOrNull()
+            val expectedHostId = healthSnapshot?.hostId
             _discovered.value = DiscoveredWorkspaces(
-                reachedBase,
-                tok,
-                hostWs,
-                hostHealth.getOrNull(),
+                hostBase = reachedBase,
+                hostToken = tok,
+                workspaces = hostWs,
+                hostHealth = healthSnapshot,
                 requestedBase = base,
+                expectedAccount = expectedAccount,
+                expectedHostId = expectedHostId,
+                expectedHost = expectedHostId?.let { id ->
+                    expectedHosts.singleOrNull { it.hostId == id }
+                },
             )
             setTestResult("That's a host URL — pick a workspace below")
         }
@@ -298,6 +322,10 @@ class SettingsViewModel(
         val hostHealth: HostHealth? = null,
         /** The operator-entered base, retained when [hostBase] is a fallback. */
         val requestedBase: String = hostBase,
+        /** Optimistic owner generation captured before the host probe. */
+        val expectedAccount: RelayAccount?,
+        val expectedHostId: String?,
+        val expectedHost: HostConnection?,
     ) {
         val hostId: String? get() = hostHealth?.hostId
     }
@@ -314,8 +342,10 @@ class SettingsViewModel(
         }
         val tok = token?.ifBlank { null }
         viewModelScope.launch {
+            val expectedAccount = hosts.relayAccountSnapshot()
+            val expectedHosts = hosts.snapshot()
             val result = runCatching {
-                reachableHostWorkspaces(api, base, tok, hosts.snapshot())
+                reachableHostWorkspaces(api, base, tok, expectedHosts)
             }
             if (result.isFailure) {
                 _discovered.value = null
@@ -327,12 +357,19 @@ class SettingsViewModel(
             val (reachedBase, workspaces) = result.getOrThrow()
             val hostHealth = runCatching { api.hostHealth(reachedBase) }
             if (surfaceRePair(hostHealth.exceptionOrNull())) return@launch
+            val healthSnapshot = hostHealth.getOrNull()
+            val expectedHostId = healthSnapshot?.hostId
             _discovered.value = DiscoveredWorkspaces(
-                reachedBase,
-                tok,
-                workspaces,
-                hostHealth.getOrNull(),
+                hostBase = reachedBase,
+                hostToken = tok,
+                workspaces = workspaces,
+                hostHealth = healthSnapshot,
                 requestedBase = base,
+                expectedAccount = expectedAccount,
+                expectedHostId = expectedHostId,
+                expectedHost = expectedHostId?.let { id ->
+                    expectedHosts.singleOrNull { it.hostId == id }
+                },
             )
             setTestResult("Found ${workspaces.size} workspace(s)")
         }
@@ -436,53 +473,71 @@ class SettingsViewModel(
     }
 
 
-    /** Persist a selected direct-host workspace. A host id learned from
-     * unauthenticated `/health` is adopted only for an unowned direct host;
-     * relay-owned entries remain separate manual connections even while their
-     * refresh credential is absent. */
+    /** Persist a selected direct-host workspace. Only a current persisted
+     * direct host can supply fleet identity; every other discovery remains an
+     * unowned direct connection with its own base and credential. */
     fun addDiscovered(from: DiscoveredWorkspaces, info: WorkspaceInfo) {
         viewModelScope.launch {
-            val claimedHost = from.hostId?.let { claimed ->
-                hosts.snapshot().firstOrNull { it.hostId == claimed }
+            val ownerSnapshot = hosts.directDiscoveryOwnerSnapshot(
+                expectedAccount = from.expectedAccount,
+                expectedHostId = from.expectedHostId,
+                expectedHost = from.expectedHost,
+            ) ?: run {
+                rejectStaleDiscovery()
+                return@launch
             }
-            val canAdoptClaimedHost = canAdoptDirectHostIdentity(from.hostId, claimedHost)
-            val hostId = from.hostId.takeIf { canAdoptClaimedHost } ?: from.hostBase
-            val directUrl = directUrlForDiscovery(from.requestedBase, from.hostBase)
-            if (canAdoptClaimedHost && directUrl != null) {
-                hosts.setDirectUrl(
-                    hostId,
-                    directUrl,
-                    from.hostHealth?.runner?.state ?: info.runner?.state,
-                    System.currentTimeMillis(),
-                )
-            } else if (!canAdoptClaimedHost && from.hostId != null) {
+            val initialHosts = ownerSnapshot.hosts
+
+            val claimedHost = from.hostId?.let { claimed ->
+                initialHosts.singleOrNull { it.hostId == claimed }
+            }
+            val canAdoptClaimedHost =
+                canAdoptDirectHostIdentity(from.hostId, claimedHost)
+            val adoptedHostId = from.hostId.takeIf { canAdoptClaimedHost }
+            val discovered = selectedDiscoveryConnection(
+                hostBase = from.hostBase,
+                hostToken = from.hostToken,
+                adoptedHostId = adoptedHostId,
+                info = info,
+            )
+            val discoveryHostBases = listOf(from.requestedBase, from.hostBase)
+            val connectionSnapshot = repo.snapshot()
+            val expectedSources = discoveryMergeSources(
+                connections = connectionSnapshot,
+                hostBases = discoveryHostBases,
+                workspaceId = info.id,
+                discovered = discovered,
+            )
+            val legacyRows = legacyConnectionsForDiscovery(
+                connections = connectionSnapshot,
+                hostBases = discoveryHostBases,
+                workspaceId = info.id,
+            )
+            val identities = verifyLegacyIdentities(api, legacyRows, initialHosts).identities
+            val applied = hosts.applyDiscoveredWorkspace(
+                expectedAccount = from.expectedAccount,
+                expectedHostId = from.expectedHostId,
+                expectedHost = from.expectedHost,
+                expectedSources = expectedSources,
+                hostBases = discoveryHostBases,
+                workspaceId = info.id,
+                discovered = discovered,
+                identities = identities,
+                activatePriorDirectToken = true,
+                directUrl = directUrlForDiscovery(from.requestedBase, from.hostBase)
+                    .takeIf { canAdoptClaimedHost },
+                runnerState = from.hostHealth?.runner?.state ?: info.runner?.state,
+                contactedAtMillis = System.currentTimeMillis(),
+            )
+            if (!applied) {
+                rejectStaleDiscovery()
+                return@launch
+            }
+            if (!canAdoptClaimedHost && from.hostId != null) {
                 setTestResult(
                     "Direct identity is unverified; saved as a separate connection",
                 )
             }
-            val currentHosts = hosts.snapshot()
-            val storedHost = currentHosts.firstOrNull { it.hostId == hostId }
-            val directCredentialRoute =
-                storedHost?.acceptsDirectCredential() ?: true
-            val discovered = deriveConnection(
-                hostBase = from.hostBase,
-                hostToken = from.hostToken.takeIf { directCredentialRoute },
-                hostId = hostId,
-                workspaceId = info.id,
-                workspaceName = info.name,
-                state = info.state,
-            )
-            val legacyRows = legacyConnectionsForDiscovery(
-                connections = repo.snapshot(),
-                hostBases = listOf(from.requestedBase, from.hostBase),
-                workspaceId = info.id,
-            )
-            val identities = verifyLegacyIdentities(api, legacyRows, currentHosts).identities
-            repo.upsertDiscovered(
-                discovered,
-                identities,
-                activatePriorDirectToken = directCredentialRoute,
-            )
         }
     }
 }

@@ -23,7 +23,7 @@ import com.atomikpanda.groundcontrol.data.recordHostContact
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
-import com.atomikpanda.groundcontrol.ui.settings.legacyConnectionsForDiscovery
+import com.atomikpanda.groundcontrol.data.legacyConnectionsForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.fleetWorkspaceRefreshTargets
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine

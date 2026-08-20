@@ -23,6 +23,116 @@ internal fun relayAccountMatchesExpected(
     current: RelayAccount?,
     expected: RelayAccount,
 ): Boolean = current == expected
+/** A discovery result belongs to the complete relay account and host routing
+ * generation that existed when its request started. Contact/status observations
+ * do not invalidate a result; ownership, credentials, and routes do. */
+internal fun directDiscoveryOwnerStillCurrent(
+    expectedAccount: RelayAccount?,
+    expectedHostId: String?,
+    expectedHost: HostConnection?,
+    currentAccount: RelayAccount?,
+    currentHosts: List<HostConnection>,
+): Boolean {
+    if (currentAccount != expectedAccount) return false
+    val currentHost = expectedHostId?.let { hostId ->
+        currentHosts.singleOrNull { it.hostId == hostId }
+    }
+    if (expectedHost == null || currentHost == null) return expectedHost == currentHost
+    return currentHost.hostId == expectedHost.hostId &&
+        currentHost.publicUrl == expectedHost.publicUrl &&
+        currentHost.refresh == expectedHost.refresh &&
+        currentHost.directUrl == expectedHost.directUrl &&
+        currentHost.relayDomain == expectedHost.relayDomain &&
+        currentHost.legacyPublicUrls == expectedHost.legacyPublicUrls
+}
+internal data class DirectDiscoveryOwnerSnapshot(
+    val account: RelayAccount?,
+    val hosts: List<HostConnection>,
+)
+
+internal fun validatedDirectDiscoveryOwnerSnapshot(
+    expectedAccount: RelayAccount?,
+    expectedHostId: String?,
+    expectedHost: HostConnection?,
+    currentAccount: RelayAccount?,
+    currentHosts: List<HostConnection>,
+): DirectDiscoveryOwnerSnapshot? =
+    DirectDiscoveryOwnerSnapshot(currentAccount, currentHosts).takeIf {
+        directDiscoveryOwnerStillCurrent(
+            expectedAccount = expectedAccount,
+            expectedHostId = expectedHostId,
+            expectedHost = expectedHost,
+            currentAccount = currentAccount,
+            currentHosts = currentHosts,
+        )
+    }
+internal fun verifiedDiscoveryIdentitiesStillCurrent(
+    identities: List<VerifiedIdentity>,
+    expectedSources: List<WorkspaceConnection>,
+    currentConnections: List<WorkspaceConnection>,
+    currentHosts: List<HostConnection>,
+): Boolean {
+    val seenConnectionIds = mutableSetOf<String>()
+    for (identity in identities) {
+        val hostId = identity.hostId ?: continue
+        val workspaceId = identity.workspaceId ?: continue
+        if (
+            hostId.isBlank() ||
+            workspaceId.isBlank() ||
+            !seenConnectionIds.add(identity.connectionId)
+        ) {
+            return false
+        }
+        var source: WorkspaceConnection? = null
+        for (candidate in currentConnections) {
+            if (candidate.id != identity.connectionId) continue
+            if (source != null) return false
+            source = candidate
+        }
+        val currentSource = source ?: return false
+        if (currentSource !in expectedSources) return false
+        val encodedWorkspaceId = legacyWorkspaceId(currentSource)
+        if (encodedWorkspaceId != null && encodedWorkspaceId != workspaceId) return false
+        if (knownHostForLegacyConnection(currentSource, currentHosts)?.hostId != hostId) return false
+    }
+    return true
+}
+
+
+internal fun discoveryPersistenceStillCurrent(
+    expectedAccount: RelayAccount?,
+    expectedHostId: String?,
+    expectedHost: HostConnection?,
+    expectedSources: List<WorkspaceConnection>,
+    identities: List<VerifiedIdentity>,
+    currentAccount: RelayAccount?,
+    currentHosts: List<HostConnection>,
+    currentConnections: List<WorkspaceConnection>,
+    hostBases: List<String>,
+    workspaceId: String,
+    discovered: WorkspaceConnection,
+): Boolean =
+    directDiscoveryOwnerStillCurrent(
+        expectedAccount = expectedAccount,
+        expectedHostId = expectedHostId,
+        expectedHost = expectedHost,
+        currentAccount = currentAccount,
+        currentHosts = currentHosts,
+    ) &&
+        discoveryMergeSources(
+            connections = currentConnections,
+            hostBases = hostBases,
+            workspaceId = workspaceId,
+            discovered = discovered,
+        ) == expectedSources &&
+        verifiedDiscoveryIdentitiesStillCurrent(
+            identities = identities,
+            expectedSources = expectedSources,
+            currentConnections = currentConnections,
+            currentHosts = currentHosts,
+        )
+
+
 
 /** Require the exact host route/credential and workspace source generation
  * that issued a response to remain current before it can mutate either store. */
@@ -226,23 +336,83 @@ class HostsRepository(private val context: Context) {
         return applied
     }
 
-    /** Persist a direct address only after the caller reached `/health` and
-     * `/workspaces` there. A directory row already holding the refresh
-     * credential keeps every relay-owned field. */
-    suspend fun setDirectUrl(
-        hostId: String,
-        directUrl: String,
-        runnerState: String?,
-        contactedAtMillis: Long,
-    ) = mutate { current ->
-        recordDirectHostDiscovery(
-            current,
-            hostId,
-            directUrl,
-            runnerState,
-            contactedAtMillis,
+    internal suspend fun directDiscoveryOwnerSnapshot(
+        expectedAccount: RelayAccount?,
+        expectedHostId: String?,
+        expectedHost: HostConnection?,
+    ): DirectDiscoveryOwnerSnapshot? {
+        val preferences = context.dataStore.data.first()
+        return validatedDirectDiscoveryOwnerSnapshot(
+            expectedAccount = expectedAccount,
+            expectedHostId = expectedHostId,
+            expectedHost = expectedHost,
+            currentAccount = preferences.relayAccount(),
+            currentHosts = HostsCodec.decode(preferences[HOSTS] ?: ""),
         )
     }
+
+    /** Apply one selected discovery only while its account, host route, and
+     * complete connection merge-source generation remain current. */
+    internal suspend fun applyDiscoveredWorkspace(
+        expectedAccount: RelayAccount?,
+        expectedHostId: String?,
+        expectedHost: HostConnection?,
+        expectedSources: List<WorkspaceConnection>,
+        hostBases: List<String>,
+        workspaceId: String,
+        discovered: WorkspaceConnection,
+        identities: List<VerifiedIdentity>,
+        activatePriorDirectToken: Boolean,
+        directUrl: String?,
+        runnerState: String?,
+        contactedAtMillis: Long,
+    ): Boolean {
+        var applied = false
+        context.dataStore.edit {
+            val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
+            val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
+            if (!discoveryPersistenceStillCurrent(
+                    expectedAccount = expectedAccount,
+                    expectedHostId = expectedHostId,
+                    expectedHost = expectedHost,
+                    expectedSources = expectedSources,
+                    identities = identities,
+                    currentAccount = it.relayAccount(),
+                    currentHosts = currentHosts,
+                    currentConnections = currentConnections,
+                    hostBases = hostBases,
+                    workspaceId = workspaceId,
+                    discovered = discovered,
+                )
+            ) {
+                return@edit
+            }
+            val updatedHosts = if (directUrl != null) {
+                val host = expectedHost ?: return@edit
+                recordDirectHostDiscovery(
+                    hosts = currentHosts,
+                    hostId = host.hostId,
+                    directUrl = directUrl,
+                    runnerState = runnerState,
+                    contactedAtMillis = contactedAtMillis,
+                )
+            } else {
+                currentHosts
+            }
+            it[HOSTS] = HostsCodec.encode(updatedHosts)
+            it[CONNECTIONS] = ConnectionsCodec.encode(
+                adoptManualConnections(
+                    existing = currentConnections,
+                    discovered = listOf(discovered),
+                    identities = identities,
+                    activatePriorDirectToken = activatePriorDirectToken,
+                ),
+            )
+            applied = true
+        }
+        return applied
+    }
+
 
     /** Atomically apply one host response only while the account, route,
      * credential, and exact workspace source generation that authorized it

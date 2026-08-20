@@ -425,12 +425,15 @@ fun hostAwareClient(
                         null
                     }
 
+                val originalQuery = request.url.parameters.build()
                 for ((candidateBase, candidateUrl) in candidateRequests) {
                     val candidateRequest = HttpRequestBuilder().apply {
                         takeFrom(request)
-                        // A query-free candidate replaces the route only; Ktor
-                        // retains the URL parameters copied from the request.
                         url.takeFrom(candidateUrl)
+                        // Route replacement must not rely on URLBuilder.takeFrom retaining the
+                        // request query. Clear first so every original value is copied exactly once.
+                        url.parameters.clear()
+                        url.parameters.appendAll(originalQuery)
                     }
                     if (reportContact) {
                         candidateRequest.attributes.put(

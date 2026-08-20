@@ -7,6 +7,11 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
+import com.atomikpanda.groundcontrol.data.directDiscoveryOwnerStillCurrent
+import com.atomikpanda.groundcontrol.data.discoveryMergeSources
+import com.atomikpanda.groundcontrol.data.discoveryPersistenceStillCurrent
+import com.atomikpanda.groundcontrol.data.validatedDirectDiscoveryOwnerSnapshot
+import com.atomikpanda.groundcontrol.data.verifiedDiscoveryIdentitiesStillCurrent
 import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.hostsFrom
@@ -211,6 +216,233 @@ class HostsRepositoryTest {
         assertEquals("new-token", rePaired.single().token)
         assertEquals("new-token", rePaired.single().directToken)
     }
+    @Test fun discovery_owner_rejects_account_and_route_generation_changes() {
+        val expectedAccount = RelayAccount("relay.example.com", "fleet-token")
+        val directHost = host.copy(
+            publicUrl = "",
+            refresh = null,
+            directUrl = "http://direct.example",
+            relayDomain = null,
+        )
+
+        assertTrue(
+            directDiscoveryOwnerStillCurrent(
+                expectedAccount = expectedAccount,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                currentAccount = expectedAccount,
+                currentHosts = listOf(directHost),
+            ),
+        )
+        assertTrue(
+            directDiscoveryOwnerStillCurrent(
+                expectedAccount = expectedAccount,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                currentAccount = expectedAccount,
+                currentHosts = listOf(
+                    directHost.copy(
+                        state = "offline",
+                        lastContactAtMillis = 123L,
+                    ),
+                ),
+            ),
+        )
+        assertFalse(
+            directDiscoveryOwnerStillCurrent(
+                expectedAccount = expectedAccount,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                currentAccount = expectedAccount.copy(fleetToken = "rotated-token"),
+                currentHosts = listOf(directHost),
+            ),
+        )
+        assertFalse(
+            directDiscoveryOwnerStillCurrent(
+                expectedAccount = expectedAccount,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                currentAccount = expectedAccount,
+                currentHosts = listOf(directHost.copy(directUrl = "http://moved.example")),
+            ),
+        )
+    }
+    @Test fun validated_owner_snapshot_returns_the_same_hosts_it_validated() {
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val directHost = host.copy(
+            publicUrl = "",
+            refresh = null,
+            directUrl = "http://direct.example",
+            relayDomain = null,
+        )
+
+        val snapshot = validatedDirectDiscoveryOwnerSnapshot(
+            expectedAccount = account,
+            expectedHostId = directHost.hostId,
+            expectedHost = directHost,
+            currentAccount = account,
+            currentHosts = listOf(directHost),
+        )
+
+        assertEquals(account, snapshot?.account)
+        assertEquals(listOf(directHost), snapshot?.hosts)
+        assertNull(
+            validatedDirectDiscoveryOwnerSnapshot(
+                expectedAccount = account,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                currentAccount = account,
+                currentHosts = listOf(directHost.copy(directUrl = "http://changed.example")),
+            ),
+        )
+    }
+
+    @Test fun atomic_discovery_write_rejects_a_rotated_stable_twin() {
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val directHost = host.copy(
+            publicUrl = "",
+            refresh = null,
+            directUrl = "http://direct.example",
+            relayDomain = null,
+        )
+        val stableTwin = WorkspaceConnection(
+            id = "stable-twin",
+            baseUrl = "http://direct.example/workspaces/ws",
+            token = "old-token",
+            hostId = directHost.hostId,
+            workspaceId = "ws",
+        )
+        val discovered = stableTwin.copy(id = "discovered")
+        val hostBases = listOf(directHost.directUrl!!)
+        val expectedSources = discoveryMergeSources(
+            connections = listOf(stableTwin),
+            hostBases = hostBases,
+            workspaceId = "ws",
+            discovered = discovered,
+        )
+
+        assertTrue(
+            discoveryPersistenceStillCurrent(
+                expectedAccount = account,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                expectedSources = expectedSources,
+                identities = emptyList(),
+                currentAccount = account,
+                currentHosts = listOf(directHost),
+                currentConnections = listOf(stableTwin),
+                hostBases = hostBases,
+                workspaceId = "ws",
+                discovered = discovered,
+            ),
+        )
+        assertFalse(
+            discoveryPersistenceStillCurrent(
+                expectedAccount = account,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                expectedSources = expectedSources,
+                identities = emptyList(),
+                currentAccount = account,
+                currentHosts = listOf(directHost),
+                currentConnections = listOf(stableTwin.copy(token = "new-token")),
+                hostBases = hostBases,
+                workspaceId = "ws",
+                discovered = discovered,
+            ),
+        )
+    }
+    @Test fun atomic_discovery_write_rejects_a_new_competing_host_base() {
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val directHost = HostConnection(
+            hostId = "direct-host",
+            directUrl = "http://direct.example",
+        )
+        val competitor = HostConnection(
+            hostId = "competitor",
+            directUrl = directHost.directUrl,
+        )
+        val legacy = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "${directHost.directUrl}/workspaces/ws",
+            token = "direct-token",
+        )
+        val discovered = WorkspaceConnection(
+            id = "discovered",
+            baseUrl = legacy.baseUrl,
+            token = legacy.token,
+            hostId = directHost.hostId,
+            workspaceId = "ws",
+        )
+        val hostBases = listOf(directHost.directUrl!!)
+        val expectedSources = discoveryMergeSources(
+            connections = listOf(legacy),
+            hostBases = hostBases,
+            workspaceId = "ws",
+            discovered = discovered,
+        )
+        val identities = listOf(
+            VerifiedIdentity(legacy.id, directHost.hostId, "ws"),
+        )
+
+        assertTrue(
+            discoveryPersistenceStillCurrent(
+                expectedAccount = account,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                expectedSources = expectedSources,
+                identities = identities,
+                currentAccount = account,
+                currentHosts = listOf(directHost),
+                currentConnections = listOf(legacy),
+                hostBases = hostBases,
+                workspaceId = "ws",
+                discovered = discovered,
+            ),
+        )
+        assertFalse(
+            discoveryPersistenceStillCurrent(
+                expectedAccount = account,
+                expectedHostId = directHost.hostId,
+                expectedHost = directHost,
+                expectedSources = expectedSources,
+                identities = identities,
+                currentAccount = account,
+                currentHosts = listOf(directHost, competitor),
+                currentConnections = listOf(legacy),
+                hostBases = hostBases,
+                workspaceId = "ws",
+                discovered = discovered,
+            ),
+        )
+    }
+    @Test fun verified_discovery_identity_rejects_duplicate_source_ids() {
+        val directHost = HostConnection(
+            hostId = "direct-host",
+            directUrl = "http://direct.example",
+        )
+        val source = WorkspaceConnection(
+            id = "duplicate-id",
+            baseUrl = "${directHost.directUrl}/workspaces/ws",
+        )
+        val duplicate = source.copy(token = "other-token")
+
+        assertFalse(
+            verifiedDiscoveryIdentitiesStillCurrent(
+                identities = listOf(
+                    VerifiedIdentity(source.id, directHost.hostId, "ws"),
+                ),
+                expectedSources = listOf(source, duplicate),
+                currentConnections = listOf(source, duplicate),
+                currentHosts = listOf(directHost),
+            ),
+        )
+    }
+
+
+
+
+
 
     @Test fun legacy_direct_identity_migration_invalidates_its_captured_generation() {
         val oldBase = "http://old.direct.example"

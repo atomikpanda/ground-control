@@ -242,6 +242,7 @@ internal data class WorkspaceRefreshGeneration(
         }.distinct().singleOrNull()
 }
 
+
 internal fun workspaceRefreshGeneration(
     connections: List<WorkspaceConnection>,
     hostId: String,
@@ -252,12 +253,11 @@ internal fun workspaceRefreshGeneration(
         .filter { it.hostId == hostId && !it.workspaceId.isNullOrBlank() }
         .mapTo(mutableSetOf()) { it.connectionId }
     val sources = connections.filter { connection ->
-        val stableOwner =
-            connection.hostId == hostId && !connection.workspaceId.isNullOrBlank()
+        val exactOwner = connection.hostId == hostId
         val verifiedLegacyOwner =
             connection.id in verifiedSourceIds &&
                 knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
-        stableOwner || verifiedLegacyOwner
+        exactOwner || verifiedLegacyOwner
     }.sortedBy { it.id }
     if (sources.map { it.id }.distinct().size != sources.size) return null
     return WorkspaceRefreshGeneration(sources)
@@ -270,6 +270,41 @@ fun unresolvedLegacyConnections(
 ): List<WorkspaceConnection> = connections.filterNot {
     it.hasStableIdentityTuple()
 }
+internal fun legacyConnectionsForDiscovery(
+    connections: List<WorkspaceConnection>,
+    hostBases: List<String>,
+    workspaceId: String,
+): List<WorkspaceConnection> {
+    val matchingBases = hostBases.mapNotNull(::normalizedBaseUrl)
+        .flatMap { listOf(it, workspaceBaseUrl(it, workspaceId)) }
+        .toSet()
+    return unresolvedLegacyConnections(connections).filter {
+        normalizedBaseUrl(it.baseUrl)?.let(matchingBases::contains) == true
+    }
+}
+
+/** Every persisted row that the selected discovery can merge or adopt. */
+internal fun discoveryMergeSources(
+    connections: List<WorkspaceConnection>,
+    hostBases: List<String>,
+    workspaceId: String,
+    discovered: WorkspaceConnection,
+): List<WorkspaceConnection> {
+    val legacy = legacyConnectionsForDiscovery(connections, hostBases, workspaceId)
+    val discoveredStable = discovered.hasStableIdentityTuple()
+    return connections.filter { connection ->
+        val connectionStable = connection.hasStableIdentityTuple()
+        connection in legacy ||
+            (!discoveredStable && !connectionStable && connection.id == discovered.id) ||
+            (
+                discoveredStable &&
+                    connectionStable &&
+                    connection.hostId == discovered.hostId &&
+                    connection.workspaceId == workspaceId
+                )
+    }.sortedBy { it.id }
+}
+
 
 /** Workspace id encoded in a legacy row without trusting its unauthenticated
  * `/health` response. Root rows remain identifiable only when the authenticated

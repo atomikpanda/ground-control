@@ -41,9 +41,26 @@ class NeedsYouReconciler(
 ) {
     suspend fun reconcile(conn: WorkspaceConnection, threads: List<ThreadSummary>) {
         for (t in threads) {
-            val notified = store.isNotified(conn.id, t.id)
             val needsAttention = t.needsYou || t.needsDecision
-            if (needsAttention && !notified) {
+            val currentNotified = store.isNotified(conn.id, t.id)
+            var retiredNotified = false
+            for (retiredId in conn.legacyConnectionIds) {
+                if (store.isNotified(retiredId, t.id)) {
+                    retiredNotified = true
+                    break
+                }
+            }
+            if (retiredNotified) {
+                // Persist the current identity before retiring aliases so an interrupted migration
+                // cannot turn an existing notification into a future duplicate.
+                if (needsAttention && !currentNotified) {
+                    store.markNotified(conn.id, t.id)
+                }
+                for (retiredId in conn.legacyConnectionIds) {
+                    store.clear(retiredId, t.id)
+                }
+            }
+            if (needsAttention && !currentNotified && !retiredNotified) {
                 if (shouldSuppressNotification(foregroundThreadKey(), conn.id, t.id)) {
                     // The user is looking at this exact thread right now. Skip the notification and
                     // deliberately do NOT markNotified: if they leave it still-unanswered, a later
@@ -68,7 +85,7 @@ class NeedsYouReconciler(
                     )
                 )
                 store.markNotified(conn.id, t.id)
-            } else if (!needsAttention && notified) {
+            } else if (!needsAttention && currentNotified) {
                 store.clear(conn.id, t.id)
             }
         }
