@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.ui.projects.projectRows
 import com.atomikpanda.groundcontrol.ui.projects.workspaceRoute
 import com.atomikpanda.groundcontrol.ui.theme.WorkspacePalette
@@ -27,6 +28,16 @@ class ProjectsViewModelTest {
     @Test fun row_route_targets_the_existing_workspace_detail() {
         assertEquals("workspace/a", projectRows(conns)[0].route)
         assertEquals("workspace/b", workspaceRoute("b"))
+    }
+    @Test fun retired_workspace_route_builds_new_thread_route_with_current_connection_id() {
+        val adopted = WorkspaceConnection(
+            id = "current",
+            baseUrl = "https://relay/workspaces/ws",
+            legacyConnectionIds = listOf("retired"),
+        )
+        val viewedWorkspace = listOf(adopted).findByConnectionId("retired")
+
+        assertEquals("newThread?connectionId=current", newThreadRoute(viewedWorkspace?.id))
     }
 
     @Test fun row_identity_is_resolved_override_or_auto() {

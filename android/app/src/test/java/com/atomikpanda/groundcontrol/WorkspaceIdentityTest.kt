@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import androidx.compose.ui.graphics.Color
+import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.theme.WorkspacePalette
 import com.atomikpanda.groundcontrol.ui.theme.autoColor
@@ -86,4 +87,29 @@ class WorkspaceIdentityTest {
     @Test fun default_identity_resolver_is_auto_by_name() {
         assertEquals(autoIdentity("acme"), defaultIdentityResolver("any-id", "acme"))
     }
+
+    @Test
+    fun resolve_identity_for_retired_connection_id_uses_adopted_persisted_overrides() {
+        val adopted = WorkspaceConnection(
+            id = "current-id",
+            baseUrl = "https://relay.example/workspaces/ws-1",
+            workspaceName = "Adopted workspace",
+            colorOverride = "#FF00796B",
+            glyphOverride = "R",
+            legacyConnectionIds = listOf("retired-id"),
+        )
+        val persisted = ConnectionsCodec.decode(
+            ConnectionsCodec.encode(listOf(adopted)),
+        )
+
+        val identity = resolveIdentity(
+            persisted,
+            connectionId = "retired-id",
+            fallbackName = "Fallback workspace",
+        )
+
+        assertEquals(Color(0xFF00796B), identity.color)
+        assertEquals("R", identity.glyph)
+    }
+
 }

@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
+import java.net.URI
 import kotlinx.coroutines.CancellationException
 
 @Serializable
@@ -31,6 +32,12 @@ data class WorkspaceConnection(
      *  PendingIntent already sitting in the shade carries the OLD one. Deep-link
      *  resolution consults these so those taps keep landing. */
     val legacyBaseUrls: List<String> = emptyList(),
+    /** Local handles retired when duplicate rows converge. Persisted navigation
+     *  and notification work can still use these after adoption. */
+    val legacyConnectionIds: List<String> = emptyList(),
+    /** Standing token retained only to restore an operator-paired direct route
+     * if the relay account that temporarily adopted this row is replaced. */
+    val directToken: String? = null,
 )
 
 /** Short URL-safe fingerprint of a host handle. Connection ids are interpolated
@@ -63,6 +70,7 @@ fun deriveConnection(
     id = workspaceId + "-" + hostFingerprint(hostId),
     baseUrl = workspaceBaseUrl(hostBase, workspaceId),
     token = hostToken,
+    directToken = hostToken,
     workspaceName = workspaceName,
     hostId = hostId,
     state = state,
@@ -107,8 +115,23 @@ object ConnectionsCodec {
 fun WorkspaceConnection.hasStableIdentityTuple(): Boolean =
     !hostId.isNullOrBlank() &&
         !workspaceId.isNullOrBlank() &&
-        !hostId.startsWith("http://") &&
-        !hostId.startsWith("https://")
+        !hostId.startsWith("http://", ignoreCase = true) &&
+        !hostId.startsWith("https://", ignoreCase = true)
+
+/** Resolve a current local handle before consulting unambiguous retired aliases. */
+internal fun Iterable<WorkspaceConnection>.findByConnectionId(
+    connectionId: String,
+): WorkspaceConnection? {
+    var aliasMatch: WorkspaceConnection? = null
+    var ambiguousAlias = false
+    for (connection in this) {
+        if (connection.id == connectionId) return connection
+        if (connectionId in connection.legacyConnectionIds) {
+            if (aliasMatch == null) aliasMatch = connection else ambiguousAlias = true
+        }
+    }
+    return aliasMatch.takeUnless { ambiguousAlias }
+}
 
 /** The same verified workspace on the same host, whatever URL it answers on. */
 private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boolean =
@@ -127,10 +150,17 @@ private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boole
  * [conn] omits them, so it never silently resets a customized identity (ac5); an
  * explicit override on [conn] still wins. Previously-used base URLs are
  * accumulated so already-issued notification intents keep resolving.
+ *
+ * [preservePriorDirectToken] is true for discovery, where an omitted credential
+ * is not a request to erase the operator's direct route. [activatePriorDirectToken]
+ * additionally makes that retained credential active on a direct-only route.
+ * Explicit pairing disables both so a blank token clears both credential fields.
  */
 fun upsertConnection(
     existing: List<WorkspaceConnection>,
     conn: WorkspaceConnection,
+    preservePriorDirectToken: Boolean = true,
+    activatePriorDirectToken: Boolean = false,
 ): List<WorkspaceConnection> {
     val matches: (WorkspaceConnection) -> Boolean = { prior ->
         sameWorkspace(prior, conn) ||
@@ -141,15 +171,24 @@ fun upsertConnection(
             )
     }
     val prior = existing.firstOrNull(matches)
+    val retainedDirectToken = conn.directToken ?: conn.token ?: if (preservePriorDirectToken) {
+        prior?.directToken ?: prior?.token
+    } else {
+        null
+    }
+    val mergedId = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id
     val merged = conn.copy(
         // On an IDENTITY match the row id is the phone's local handle (nav
         // routes, notification ids) and survives — otherwise the next directory
         // read would re-mint it and undo an adoption. A legacy URL/id match is a
         // manual re-pair, where the incoming id is the operator's new one.
-        id = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id,
+        id = mergedId,
+        token = conn.token ?: retainedDirectToken.takeIf { activatePriorDirectToken },
         colorOverride = conn.colorOverride ?: prior?.colorOverride,
         glyphOverride = conn.glyphOverride ?: prior?.glyphOverride,
+        directToken = retainedDirectToken,
         legacyBaseUrls = carryLegacyUrls(listOfNotNull(prior), conn),
+        legacyConnectionIds = carryLegacyConnectionIds(listOfNotNull(prior), conn, mergedId),
     )
     return existing.filterNot(matches) + merged
 }
@@ -166,14 +205,64 @@ private fun carryLegacyUrls(
         .filter { it != conn.baseUrl }
         .distinct()
 
-/** The identity a manual row's OWN host reported for it: `GET /health`'s
- *  `host_id` and the workspace id from that host's `GET /workspaces`. Either
- *  half null means "unverified" — which merges with nothing. */
+/** Every local handle retired while folding [priors] into [currentId]. */
+private fun carryLegacyConnectionIds(
+    priors: List<WorkspaceConnection>,
+    conn: WorkspaceConnection,
+    currentId: String,
+): List<String> =
+    (
+        conn.legacyConnectionIds +
+            priors.flatMap { it.legacyConnectionIds + it.id }
+    )
+        .filter { it != currentId }
+        .distinct()
+
+/** A workspace tuple confirmed through a known host's authenticated current
+ * route. Either half null means "unverified" — which merges with nothing. */
 data class VerifiedIdentity(
     val connectionId: String,
     val hostId: String?,
     val workspaceId: String?,
 )
+
+/** Persisted routing generation plus the exact workspace sources used to
+ * authorize one host refresh. The generation supplies ABA protection; sources
+ * only derive the standing direct credential sent by the request. */
+internal data class WorkspaceRefreshGeneration(
+    val routeOwnershipGeneration: Long,
+    val sources: List<WorkspaceConnection>,
+) {
+    /** A direct refresh is authorized only when every source agrees on one
+     * nonblank standing credential. Relay refreshes authenticate from the host. */
+    val uniqueCredential: String?
+        get() = sources.mapNotNull { connection ->
+            connection.directToken?.takeIf { it.isNotBlank() }
+                ?: connection.token?.takeIf { it.isNotBlank() }
+        }.distinct().singleOrNull()
+}
+
+
+internal fun workspaceRefreshGeneration(
+    routeOwnershipGeneration: Long,
+    connections: List<WorkspaceConnection>,
+    hostId: String,
+    hosts: List<HostConnection>,
+    identities: List<VerifiedIdentity>,
+): WorkspaceRefreshGeneration? {
+    val verifiedSourceIds = identities
+        .filter { it.hostId == hostId && !it.workspaceId.isNullOrBlank() }
+        .mapTo(mutableSetOf()) { it.connectionId }
+    val sources = connections.filter { connection ->
+        val exactOwner = connection.hostId == hostId
+        val verifiedLegacyOwner =
+            connection.id in verifiedSourceIds &&
+                knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
+        exactOwner || verifiedLegacyOwner
+    }.sortedBy { it.id }
+    if (sources.map { it.id }.distinct().size != sources.size) return null
+    return WorkspaceRefreshGeneration(routeOwnershipGeneration, sources)
+}
 
 /** Rows that still lack a stable host/workspace identity tuple remain eligible for verified
  * adoption on every fleet refresh, including the URL-as-host handles persisted by #472. */
@@ -182,51 +271,96 @@ fun unresolvedLegacyConnections(
 ): List<WorkspaceConnection> = connections.filterNot {
     it.hasStableIdentityTuple()
 }
+internal fun legacyConnectionsForDiscovery(
+    connections: List<WorkspaceConnection>,
+    hostBases: List<String>,
+    workspaceId: String,
+): List<WorkspaceConnection> {
+    val matchingBases = hostBases.mapNotNull(::normalizedBaseUrl)
+        .flatMap { listOf(it, workspaceBaseUrl(it, workspaceId)) }
+        .toSet()
+    return unresolvedLegacyConnections(connections).filter {
+        normalizedBaseUrl(it.baseUrl)?.let(matchingBases::contains) == true
+    }
+}
 
-/** Verify the identity of a persisted pre-host-model row through its host root.
- * A #472-derived legacy row's workspace-addressed URL can select the right
- * workspace even when its later-added `workspaceId` field is absent. A truly
- * old root row with no id remains adoptable only when the verified host exposes
- * exactly one workspace. */
+
+/** Workspace id encoded in a legacy row without trusting its unauthenticated
+ * `/health` response. Root rows remain identifiable only when the authenticated
+ * host route exposes exactly one workspace. */
+internal fun legacyWorkspaceId(connection: WorkspaceConnection): String? {
+    connection.workspaceId?.takeIf { it.isNotBlank() }?.let { return it }
+    val base = connection.baseUrl.trimEnd('/')
+    return base.substringAfterLast("/workspaces/", "")
+        .takeIf { it.isNotBlank() && '/' !in it }
+}
+
+private fun legacyHostRoot(connection: WorkspaceConnection): String {
+    val base = connection.baseUrl.trimEnd('/')
+    val workspaceId = legacyWorkspaceId(connection) ?: return base
+    val suffix = "/workspaces/$workspaceId"
+    return if (base.endsWith(suffix)) base.removeSuffix(suffix) else base
+}
+
+/** Match only persisted fleet routing evidence. A workspace's own
+ * unauthenticated health payload cannot nominate an arbitrary fleet host. */
+internal fun knownHostsForLegacyConnection(
+    connection: WorkspaceConnection,
+    hosts: List<HostConnection>,
+): List<HostConnection> {
+    val storedHostId = connection.hostId?.takeIf {
+        it.isNotBlank() &&
+            !it.startsWith("http://", ignoreCase = true) &&
+            !it.startsWith("https://", ignoreCase = true)
+    }
+    if (storedHostId != null) {
+        return hosts.filter { it.hostId == storedHostId }
+    }
+
+    val claimedBases = listOfNotNull(
+        legacyHostRoot(connection),
+        connection.hostId?.takeIf {
+            it.startsWith("http://", ignoreCase = true) ||
+                it.startsWith("https://", ignoreCase = true)
+        },
+    ).mapNotNull(::normalizedBaseUrl).toSet()
+    return hosts.filter { host ->
+        val knownBases = (
+            listOfNotNull(host.directUrl, host.publicUrl.takeIf { it.isNotBlank() }) +
+                host.legacyPublicUrls
+            ).mapNotNull(::normalizedBaseUrl)
+        knownBases.any(claimedBases::contains)
+    }
+}
+
+internal fun knownHostForLegacyConnection(
+    connection: WorkspaceConnection,
+    hosts: List<HostConnection>,
+): HostConnection? =
+    knownHostsForLegacyConnection(connection, hosts).singleOrNull()
+
+/** Verify a legacy row through the matched host's current authenticated route.
+ * Stale direct or relay URLs are identity aliases only and are never probed. */
 suspend fun verifyLegacyIdentity(
     api: SpecApi,
     connection: WorkspaceConnection,
+    hosts: List<HostConnection>,
 ): VerifiedIdentity? {
-    val workspaceHealth = try {
-        api.health(connection)
-    } catch (error: CancellationException) {
-        throw error
-    } catch (_: Exception) {
-        null
-    }
-    val workspaceHostId = workspaceHealth?.hostId?.takeIf { it.isNotBlank() }
-    val workspaceHealthId = workspaceHealth?.workspaceId?.takeIf { it.isNotBlank() }
-    if (workspaceHostId != null && workspaceHealthId != null) {
-        return VerifiedIdentity(connection.id, workspaceHostId, workspaceHealthId)
-    }
-    val base = connection.baseUrl.trimEnd('/')
-    val knownWorkspaceId = connection.workspaceId ?: base
-        .substringAfterLast("/workspaces/", "")
-        .takeIf { it.isNotBlank() && '/' !in it }
-    val workspaceSuffix = knownWorkspaceId?.let { "/workspaces/$it" }
-    val hostRoot = when {
-        workspaceSuffix != null && base.endsWith(workspaceSuffix) -> base.removeSuffix(workspaceSuffix)
-        connection.hostId?.startsWith("http://") == true ||
-            connection.hostId?.startsWith("https://") == true -> connection.hostId.trimEnd('/')
-        else -> base
-    }
-    val hostId = api.hostHealth(hostRoot, recordContact = false).hostId ?: return null
-    val workspaces = api.listWorkspaces(
-        hostRoot,
-        connection.token,
+    val host = knownHostForLegacyConnection(connection, hosts) ?: return null
+    val (_, workspaces) = reachableHostWorkspaces(
+        api = api,
+        host = host,
+        token = (connection.directToken ?: connection.token)
+            .takeIf { host.acceptsDirectCredential() },
         recordContact = false,
-    )
+    ) ?: return null
+    val knownWorkspaceId = legacyWorkspaceId(connection)
     val workspaceId = if (knownWorkspaceId != null) {
         knownWorkspaceId.takeIf { id -> workspaces.any { it.id == id } }
     } else {
         workspaces.singleOrNull()?.id
     } ?: return null
-    return VerifiedIdentity(connection.id, hostId, workspaceId)
+    return VerifiedIdentity(connection.id, host.hostId, workspaceId)
 }
 
 data class LegacyIdentityVerification(
@@ -239,12 +373,13 @@ data class LegacyIdentityVerification(
 suspend fun verifyLegacyIdentities(
     api: SpecApi,
     connections: List<WorkspaceConnection>,
+    hosts: List<HostConnection>,
 ): LegacyIdentityVerification {
     var requiresRePair = false
     val identities = buildList {
         for (connection in connections) {
             try {
-                verifyLegacyIdentity(api, connection)?.let(::add)
+                verifyLegacyIdentity(api, connection, hosts)?.let(::add)
             } catch (_: RePairNeededException) {
                 requiresRePair = true
             } catch (error: CancellationException) {
@@ -267,48 +402,73 @@ suspend fun verifyLegacyIdentities(
  * by #472's premise the same name can name different workspaces on different
  * hosts, so a name match yields two rows, which is the honest answer.
  *
- * A merged row keeps the operator's [WorkspaceConnection.id] (nav routes and
- * notification ids already reference it) and identity overrides, gains the host
- * tuple and state, and retains its pre-adoption URL in
- * [WorkspaceConnection.legacyBaseUrls].
+ * A merged group keeps an existing stable twin's id; without one, the
+ * lexicographically first verified legacy id is canonical. Every duplicate
+ * source is removed in the same fold, while identity overrides, unique direct
+ * credentials, and prior URLs are carried into the canonical row.
  */
 fun adoptManualConnections(
     existing: List<WorkspaceConnection>,
     discovered: List<WorkspaceConnection>,
     identities: List<VerifiedIdentity>,
+    activatePriorDirectToken: Boolean = false,
 ): List<WorkspaceConnection> {
     val verified = identities.filter { it.hostId != null && it.workspaceId != null }
         .associateBy { it.connectionId }
     return discovered.fold(existing) { acc, found ->
-        val manual = acc.firstOrNull { row ->
+        val stableTwins = acc.filter { sameWorkspace(it, found) }
+        val verifiedLegacySources = acc.filter { row ->
             !sameWorkspace(row, found) && verified[row.id]
                 ?.let { it.hostId == found.hostId && it.workspaceId == found.workspaceId } == true
         }
-        if (manual == null) upsertConnection(acc, found)
-        else {
-            val twins = acc.filter { it.id != manual.id && sameWorkspace(it, found) }
-            acc
-                .filterNot { it in twins }
-                .map {
-                    if (it.id == manual.id) adopt(listOf(manual) + twins, found) else it
-                }
+        val sources = (stableTwins + verifiedLegacySources)
+            .distinctBy { it.id }
+        val canonical = stableTwins.minByOrNull { it.id }
+            ?: verifiedLegacySources.minByOrNull { it.id }
+        if (canonical == null) {
+            upsertConnection(
+                acc,
+                found,
+                activatePriorDirectToken = activatePriorDirectToken,
+            )
+        } else {
+            val priors = listOf(canonical) +
+                sources.filterNot { it.id == canonical.id }.sortedBy { it.id }
+            val sourceIds = sources.mapTo(mutableSetOf()) { it.id }
+            acc.filterNot { it.id in sourceIds } +
+                adopt(priors, found, activatePriorDirectToken)
         }
     }
 }
 
 
 /** Reconcile one host from an authoritative `GET /workspaces` response.
- * Existing rows missing from [discovered] are gone on the host and must not
- * remain as permanent false failures; other hosts and manual rows are untouched. */
+ * Existing rows with a stable or URL-derived workspace id that are uniquely
+ * owned by this host and missing from [discovered] are gone. Ownership of
+ * legacy URL-valued/null-host rows is resolved from normalized host evidence;
+ * unmatched or ambiguous rows and true roots survive. Other hosts are
+ * untouched. */
 fun replaceHostConnections(
     existing: List<WorkspaceConnection>,
     hostId: String,
     discovered: List<WorkspaceConnection>,
     identities: List<VerifiedIdentity>,
+    hosts: List<HostConnection> = emptyList(),
+    activatePriorDirectToken: Boolean = false,
 ): List<WorkspaceConnection> {
     val liveWorkspaceIds = discovered.mapNotNullTo(mutableSetOf()) { it.workspaceId }
-    return adoptManualConnections(existing, discovered, identities).filterNot {
-        it.hostId == hostId && it.workspaceId !in liveWorkspaceIds
+    return adoptManualConnections(
+        existing,
+        discovered,
+        identities,
+        activatePriorDirectToken,
+    ).filterNot { connection ->
+        val workspaceId = legacyWorkspaceId(connection)
+        val ownedByHost = connection.hostId == hostId ||
+            knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
+        ownedByHost &&
+            workspaceId != null &&
+            workspaceId !in liveWorkspaceIds
     }
 }
 
@@ -318,15 +478,26 @@ fun replaceHostConnections(
 private fun adopt(
     priors: List<WorkspaceConnection>,
     found: WorkspaceConnection,
+    activatePriorDirectToken: Boolean,
 ): WorkspaceConnection {
-    val manual = priors.first()
+    val canonical = priors.first()
+    val priorDirectToken = priors.mapNotNull { prior ->
+        prior.directToken?.takeIf { it.isNotBlank() }
+            ?: prior.token?.takeIf { it.isNotBlank() }
+    }.distinct().singleOrNull()
+    val retainedDirectToken =
+        found.directToken?.takeIf { it.isNotBlank() }
+            ?: found.token?.takeIf { it.isNotBlank() }
+            ?: priorDirectToken
     return found.copy(
-        id = manual.id,
-        token = found.token,
-        workspaceName = found.workspaceName.ifBlank { manual.workspaceName },
-        colorOverride = manual.colorOverride ?: found.colorOverride,
-        glyphOverride = manual.glyphOverride ?: found.glyphOverride,
+        id = canonical.id,
+        token = found.token ?: retainedDirectToken.takeIf { activatePriorDirectToken },
+        directToken = retainedDirectToken,
+        workspaceName = found.workspaceName.ifBlank { canonical.workspaceName },
+        colorOverride = priors.firstNotNullOfOrNull { it.colorOverride } ?: found.colorOverride,
+        glyphOverride = priors.firstNotNullOfOrNull { it.glyphOverride } ?: found.glyphOverride,
         legacyBaseUrls = carryLegacyUrls(priors, found),
+        legacyConnectionIds = carryLegacyConnectionIds(priors, found, canonical.id),
     )
 }
 
@@ -340,13 +511,26 @@ fun applyIdentityOverride(
 ): List<WorkspaceConnection> =
     list.map { if (it.id == id) it.copy(colorOverride = colorOverride, glyphOverride = glyphOverride) else it }
 
-/** Trim, strip a trailing slash, and require an http(s) scheme. Returns null if invalid. */
+/** Trim, strip a trailing slash, and require an http(s) URL. Scheme and host are
+ * case-insensitive; user-info and path data retain their original case. */
 fun normalizedBaseUrl(input: String): String? {
-    val t = input.trim().trimEnd('/')
-    if (!t.startsWith("http://") && !t.startsWith("https://")) return null
-    if (t.substringAfter("://").isBlank()) return null
-    // Endpoints are appended as path segments; a query/fragment would swallow
-    // them ("...?q=1/workspaces" puts the path inside the query string).
-    if (t.contains('?') || t.contains('#')) return null
-    return t
+    val raw = input.trim().trimEnd('/')
+    if (raw.contains('?') || raw.contains('#')) return null
+    val uri = runCatching { URI(raw) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase()
+        ?.takeIf { it == "http" || it == "https" }
+        ?: return null
+    val authority = uri.rawAuthority?.takeIf { it.isNotBlank() } ?: return null
+    if (uri.host.isNullOrBlank()) return null
+
+    val hostStart = uri.rawUserInfo?.let { it.length + 1 } ?: 0
+    val hostEnd = if (authority.getOrNull(hostStart) == '[') {
+        authority.indexOf(']', hostStart).takeIf { it >= 0 }?.plus(1)
+    } else {
+        authority.indexOf(':', hostStart).takeIf { it >= 0 } ?: authority.length
+    } ?: return null
+    val rawHost = authority.substring(hostStart, hostEnd)
+    if (rawHost.isBlank()) return null
+    val normalizedAuthority = authority.replaceRange(hostStart, hostEnd, rawHost.lowercase())
+    return "$scheme://$normalizedAuthority${uri.rawPath.orEmpty()}"
 }

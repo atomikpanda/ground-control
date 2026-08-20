@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,7 +53,9 @@ class NewThreadViewModel(
         val conns = connectionsProvider()
         _state.value = _state.value.copy(
             connections = conns,
-            selectedConnectionId = conns.firstOrNull { it.id == _state.value.selectedConnectionId }?.id
+            selectedConnectionId = _state.value.selectedConnectionId
+                ?.let { conns.findByConnectionId(it) }
+                ?.id
                 ?: defaultSelection(conns),
             isLoading = false,
             message = null,
@@ -61,15 +64,25 @@ class NewThreadViewModel(
 
     fun onSubjectChange(s: String) { _state.value = _state.value.copy(subject = s) }
     fun onTextChange(t: String) { _state.value = _state.value.copy(text = t) }
-    fun onSelectConnection(id: String) { _state.value = _state.value.copy(selectedConnectionId = id) }
+    fun onSelectConnection(id: String) {
+        val canonicalId = _state.value.connections.findByConnectionId(id)?.id ?: id
+        _state.value = _state.value.copy(selectedConnectionId = canonicalId)
+    }
     fun onSelectKind(k: CaptureKind) { _state.value = _state.value.copy(kind = k) }
     fun dismissMessage() { _state.value = _state.value.copy(message = null) }
 
     fun create(): Job? {
         val s = _state.value
         if (!canCreate(s)) return null
-        val conn = s.connections.firstOrNull { it.id == s.selectedConnectionId } ?: return null
-        _state.value = s.copy(inFlight = true, message = null)
+        val currentConnections = connectionsProvider()
+        val selectedConnectionId = s.selectedConnectionId ?: return null
+        val conn = currentConnections.findByConnectionId(selectedConnectionId) ?: return null
+        _state.value = s.copy(
+            connections = currentConnections,
+            selectedConnectionId = conn.id,
+            inFlight = true,
+            message = null,
+        )
         val subject = s.subject.trim().ifBlank { null }
         return scope().launch {
             runCatching {

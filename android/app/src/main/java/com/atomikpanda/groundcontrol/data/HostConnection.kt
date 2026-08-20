@@ -50,17 +50,22 @@ data class HostConnection(
      *  ladder's staleness input, and the phone's own evidence rather than the
      *  directory's claim. */
     val lastContactAtMillis: Long? = null,
-    /** Prior relay-published bases for this stable host id. These are identity
-     * aliases only: requests route to [publicUrl], never back to a stale base. */
+    /** Prior relay-published or direct bases for this stable host id. These are
+     * identity aliases only: requests route to a current [hostBases] entry,
+     * never back to a stale base. */
     val legacyPublicUrls: List<String> = emptyList(),
 )
 
+/** A standing direct credential belongs only to a host outside relay ownership.
+ * A relay directory row with a temporarily absent refresh must never inherit it. */
+internal fun HostConnection.acceptsDirectCredential(): Boolean =
+    relayDomain == null && refresh == null
+
 /** Candidate bases in reachability order. A LAN/tailnet address is eligible
- * only before this host owns a persisted refresh credential; once it does,
- * sending that credential to an address learned from unauthenticated health
- * would disclose it. */
+ * only for a direct host outside relay ownership; relay hosts always use their
+ * directory-published route. */
 fun HostConnection.hostBases(): List<String> =
-    listOfNotNull(directUrl.takeIf { refresh == null }, publicUrl)
+    listOfNotNull(directUrl.takeIf { acceptsDirectCredential() }, publicUrl)
         .map { it.trimEnd('/') }
         .filter { it.isNotBlank() }
         .distinct()
@@ -68,6 +73,13 @@ fun HostConnection.hostBases(): List<String> =
 /** The preferred candidate for address construction before reachability is
  * known. Fleet refresh replaces it with the first base it actually reaches. */
 fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
+
+
+/** Whether [identity] is any current or recorded base for this stable host. */
+internal fun HostConnection.hasKnownBaseIdentity(identity: String): Boolean =
+    directUrl?.let(::normalizedBaseUrl) == identity ||
+        normalizedBaseUrl(publicUrl) == identity ||
+        legacyPublicUrls.any { normalizedBaseUrl(it) == identity }
 
 /** Probe candidates in order and retain the base that answered. Authentication
  * failures requiring operator action and cancellation are not reachability
@@ -103,16 +115,25 @@ suspend fun reachableHostWorkspaces(
     hosts: List<HostConnection>,
 ): Pair<String, List<WorkspaceInfo>> {
     val base = requestedBase.trimEnd('/')
-    val knownHost = hosts.filter { base in it.hostBases() }.singleOrNull()
-        ?: return base to api.listWorkspaces(
+    val baseIdentity = normalizedBaseUrl(base)
+    val matchingHosts = if (baseIdentity == null) {
+        emptyList()
+    } else {
+        hosts.filter { it.hasKnownBaseIdentity(baseIdentity) }
+    }
+    val knownHost = when (matchingHosts.size) {
+        0 -> return base to api.listWorkspaces(
             base,
             token,
             allowHostFallback = false,
         )
+        1 -> matchingHosts.single()
+        else -> throw IOException("ambiguous known host base $base")
+    }
     return reachableHostWorkspaces(
         api = api,
         host = knownHost,
-        token = token.takeIf { knownHost.refresh == null },
+        token = token.takeIf { knownHost.acceptsDirectCredential() },
         recordContact = true,
     ) ?: throw IOException("no reachable base for $base")
 }
@@ -131,14 +152,17 @@ suspend fun refreshHostWorkspaceConnections(
     api: SpecApi,
     host: HostConnection,
     identities: List<VerifiedIdentity> = emptyList(),
+    directToken: String? = null,
 ): HostWorkspaceRefresh? {
-    val (base, workspaces) = reachableHostWorkspaces(api, host) ?: return null
+    val routeToken = directToken.takeIf { host.acceptsDirectCredential() }
+    val (base, workspaces) =
+        reachableHostWorkspaces(api, host, token = routeToken) ?: return null
     return HostWorkspaceRefresh(
         hostBase = base,
         connections = workspaces.map { info ->
             deriveConnection(
                 hostBase = base,
-                hostToken = null,
+                hostToken = routeToken,
                 hostId = host.hostId,
                 workspaceId = info.id,
                 workspaceName = info.name,
@@ -155,14 +179,20 @@ fun recordHostContact(
     hostId: String,
     hostBase: String,
     contactedAtMillis: Long,
-): List<HostConnection> = hosts.map { host ->
-    if (host.hostId == hostId && hostBase in host.hostBases()) {
-        host.copy(
-            lastContactAtMillis = contactedAtMillis.coerceAtLeast(
-                host.lastContactAtMillis ?: contactedAtMillis,
-            ),
-        )
-    } else host
+): List<HostConnection> {
+    val contactedIdentity = normalizedBaseUrl(hostBase) ?: return hosts
+    return hosts.map { host ->
+        val contactedCurrentRoute =
+            host.hostId == hostId &&
+                host.hostBases().any { normalizedBaseUrl(it) == contactedIdentity }
+        if (contactedCurrentRoute) {
+            host.copy(
+                lastContactAtMillis = contactedAtMillis.coerceAtLeast(
+                    host.lastContactAtMillis ?: contactedAtMillis,
+                ),
+            )
+        } else host
+    }
 }
 
 /** Persist the observations made by one reachable direct-host discovery. */
@@ -217,23 +247,21 @@ object HostsCodec {
  */
 fun upsertHost(existing: List<HostConnection>, host: HostConnection): List<HostConnection> {
     val prior = existing.firstOrNull { it.hostId == host.hostId }
+    val retainedDirectUrl = host.directUrl ?: prior?.directUrl
+    val currentPublicIdentity = normalizedBaseUrl(host.publicUrl)
+    val currentDirectIdentity = retainedDirectUrl?.let(::normalizedBaseUrl)
     val merged = host.copy(
         labelOverride = host.labelOverride ?: prior?.labelOverride,
-        directUrl = host.directUrl ?: prior?.directUrl,
+        directUrl = retainedDirectUrl,
         refresh = host.refresh ?: prior?.refresh,
         lastContactAtMillis = host.lastContactAtMillis ?: prior?.lastContactAtMillis,
         legacyPublicUrls = (
             host.legacyPublicUrls +
                 prior?.legacyPublicUrls.orEmpty() +
-                listOfNotNull(
-                    prior?.publicUrl?.takeIf {
-                        host.publicUrl.isNotBlank() &&
-                            it.isNotBlank() &&
-                            it != host.publicUrl
-                    },
-                )
+                listOfNotNull(prior?.publicUrl, prior?.directUrl)
             )
-            .filter { it.isNotBlank() && it != host.publicUrl }
+            .mapNotNull(::normalizedBaseUrl)
+            .filter { it != currentPublicIdentity && it != currentDirectIdentity }
             .distinct(),
     )
     return if (prior == null) existing + merged
@@ -268,7 +296,9 @@ fun replaceRelayHosts(
 /** Project a directory entry into the stored model. Pending-approval rows have
  *  no `host_id` yet and are keyed by their enroll request id instead. */
 fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
-    val id = info.hostId ?: info.requestId?.let { "pending:$it" } ?: return null
+    val id = info.hostId?.takeIf { it.isNotBlank() }
+        ?: info.requestId?.takeIf { it.isNotBlank() }?.let { "pending:$it" }
+        ?: return null
     return HostConnection(
         hostId = id,
         label = info.label,
@@ -281,4 +311,15 @@ fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
         runnerState = info.runner?.state,
         requestId = info.requestId,
     )
+}
+
+/** Project an entire relay directory atomically: an empty response is valid,
+ * but every row in a nonempty response must carry a usable stable or pending
+ * identity before the caller may authoritatively replace cached hosts. */
+fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
+    val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
+    check(hosts.size == infos.size) {
+        "Relay directory contained an unusable host identity"
+    }
+    return hosts
 }

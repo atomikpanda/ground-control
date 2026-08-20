@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol.notify
 
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import java.net.URI
 import java.net.URLDecoder
@@ -26,7 +27,7 @@ object DeepLinkResolver {
 
         val connectionId = params["connection"]?.takeIf { it.isNotBlank() }
         val match = if (connectionId != null) {
-            connections.firstOrNull { it.id == connectionId }
+            connections.findByConnectionId(connectionId)
         } else {
             val normKey = normalizedBaseUrl(key)
             // legacyBaseUrls, not just baseUrl: adoption (#471) rewrites the derived

@@ -26,18 +26,18 @@ class ConnectionsRepository(private val context: Context) {
      *  taps) can't snapshot the same list and lose each other's write. */
     private suspend fun mutate(transform: (List<WorkspaceConnection>) -> List<WorkspaceConnection>) {
         context.dataStore.edit {
-            it[CONNECTIONS] = ConnectionsCodec.encode(transform(ConnectionsCodec.decode(it[CONNECTIONS] ?: "")))
+            val current = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
+            val updated = transform(current)
+            it.advanceRouteOwnershipGeneration(updated)
+            it[CONNECTIONS] = ConnectionsCodec.encode(updated)
         }
     }
 
-    suspend fun upsert(conn: WorkspaceConnection) = mutate { upsertConnection(it, conn) }
+    /** Explicit pair/re-pair input is authoritative: a blank token must not
+     * resurrect the prior row's retained direct credential. */
+    suspend fun upsert(conn: WorkspaceConnection) =
+        mutate { upsertConnection(it, conn, preservePriorDirectToken = false) }
 
-    /** Upsert one explicitly selected discovery, adopting only identities the
-     * selected row's own host verified before this serialized write. */
-    suspend fun upsertDiscovered(
-        conn: WorkspaceConnection,
-        identities: List<VerifiedIdentity>,
-    ) = mutate { adoptManualConnections(it, listOf(conn), identities) }
 
     suspend fun remove(id: String) = mutate { list -> list.filterNot { it.id == id } }
 

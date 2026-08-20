@@ -3,6 +3,7 @@ package com.atomikpanda.groundcontrol.ui.theme
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import kotlin.math.roundToInt
 
 /** A workspace's resolved visual identity: a solid badge [color] + a one-glyph [glyph] label. */
@@ -71,6 +72,14 @@ fun resolveIdentity(conn: WorkspaceConnection): WorkspaceIdentity {
     val glyph = conn.glyphOverride?.trim()?.takeIf { it.isNotEmpty() } ?: autoGlyph(name)
     return WorkspaceIdentity(color, glyph)
 }
+
+fun resolveIdentity(
+    connections: List<WorkspaceConnection>,
+    connectionId: String,
+    fallbackName: String,
+): WorkspaceIdentity =
+    connections.findByConnectionId(connectionId)?.let(::resolveIdentity)
+        ?: autoIdentity(fallbackName)
 
 /** Default (id, name) → identity resolver: auto-by-name. Overridden app-wide by a connections-aware
  *  resolver in GroundControlApp so overrides show at every badge site. */

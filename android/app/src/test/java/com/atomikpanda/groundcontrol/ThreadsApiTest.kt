@@ -1,7 +1,9 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.hostAwareClient
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -89,5 +91,62 @@ class ThreadsApiTest {
         assertEquals(false, resp.timedOut)
         assertEquals("2026-06-22T10:05:00Z", resp.cursor)
         assertEquals("t1", resp.threads.single().id)
+    }
+
+    @Test
+    fun listThreadsWait_preserves_query_parameters_when_host_route_is_rewritten() = runTest {
+        val currentBase = "https://current.relay.example"
+        val host = HostConnection(
+            hostId = "host-1",
+            publicUrl = currentBase,
+            refresh = "refresh-1",
+        )
+        val rewrittenQuery = mutableMapOf<String, String?>()
+        var rewrittenEncodedQuery: String? = null
+        val hostClient = hostAwareClient(
+            engine = MockEngine { request ->
+                when (request.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"host-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces/ws-1/threads" -> {
+                        rewrittenEncodedQuery = request.url.encodedQuery
+                        rewrittenQuery["wait"] = request.url.parameters["wait"]
+                        rewrittenQuery["since"] = request.url.parameters["since"]
+                        rewrittenQuery["timeout"] = request.url.parameters["timeout"]
+                        respond(
+                            """{"threads":[],"cursor":"2026-06-22T10:00:00Z","timed_out":false}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(host) },
+        )
+        val routedConnection = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "https://retired.relay.example/workspaces/ws-1",
+            workspaceName = "workspace",
+            hostId = host.hostId,
+            workspaceId = "ws-1",
+        )
+
+        SpecApi(hostClient.client).listThreadsWait(
+            routedConnection,
+            since = "2026-06-22T10:00:00Z",
+            timeoutSeconds = 25,
+        )
+
+        assertEquals("1", rewrittenQuery["wait"])
+        assertEquals("2026-06-22T10:00:00Z", rewrittenQuery["since"])
+        assertEquals("25", rewrittenQuery["timeout"])
+        assertEquals(
+            "wait=1&since=2026-06-22T10%3A00%3A00Z&timeout=25",
+            rewrittenEncodedQuery,
+        )
     }
 }

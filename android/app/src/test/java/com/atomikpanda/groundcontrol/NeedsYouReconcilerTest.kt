@@ -21,6 +21,7 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -87,6 +88,38 @@ class NeedsYouReconcilerTest {
         assertEquals("ws", notifier.events[0].workspaceName)
         r.reconcile(conn, listOf(summary("t1", true)))
         assertEquals(1, notifier.events.size)
+    }
+
+    @Test fun adopted_connection_migrates_retired_notification_state_without_duplicate() = runTest {
+        val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("retired"))
+        val store = FakeStore(); val notifier = FakeNotifier()
+        store.markNotified("retired", "t1")
+        store.markNotified("canonical", "t2")
+        store.markNotified("other", "t1")
+
+        NeedsYouReconciler(store, notifier, routedRepo())
+            .reconcile(adopted, listOf(summary("t1", true), summary("t2", true)))
+
+        assertEquals(0, notifier.events.size)
+        assertTrue("canonical|t1" in store.marks)
+        assertFalse("retired|t1" in store.marks)
+        assertTrue("canonical|t2" in store.marks)
+        assertTrue("other|t1" in store.marks)
+    }
+
+    @Test fun resolved_thread_clears_retired_notification_state_without_creating_canonical_mark() = runTest {
+        val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("retired"))
+        val store = FakeStore(); val notifier = FakeNotifier()
+        store.markNotified("retired", "t1")
+        store.markNotified("other", "t1")
+
+        NeedsYouReconciler(store, notifier, routedRepo())
+            .reconcile(adopted, listOf(summary("t1", false)))
+
+        assertEquals(0, notifier.events.size)
+        assertFalse("canonical|t1" in store.marks)
+        assertFalse("retired|t1" in store.marks)
+        assertTrue("other|t1" in store.marks)
     }
 
     @Test fun plain_note_does_not_notify() = runTest {

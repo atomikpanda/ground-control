@@ -22,12 +22,18 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -46,9 +52,11 @@ class MessagesViewModelTest {
     }) { install(ContentNegotiation) { json(buildJson()) } }))
 
     @Test fun sections_carry_workspace_name_and_connection_id_and_threads() = runTest {
-        val vm = MessagesViewModel(repo(), {
-            listOf(WorkspaceConnection("42", "http://h:47100", null, "ws-alpha"))
-        }, this)
+        val vm = MessagesViewModel(
+            repo(),
+            flowOf(listOf(WorkspaceConnection("42", "http://h:47100", null, "ws-alpha"))),
+            backgroundScope,
+        )
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         val sec = content.sections[0]
@@ -61,8 +69,8 @@ class MessagesViewModelTest {
     }
 
     @Test fun empty_connections_yields_empty_config() = runTest {
-        val vm = MessagesViewModel(repo(), { emptyList() }, this)
-        vm.refresh()
+        val vm = MessagesViewModel(repo(), flowOf(emptyList()), backgroundScope)
+        vm.refresh()?.join()
         assertEquals(MessagesUiState.EmptyConfig, vm.state.value)
     }
 
@@ -87,7 +95,7 @@ class MessagesViewModelTest {
         val vm = MessagesViewModel(repoWith { req ->
             if (req.url.parameters["wait"] == "1") respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
             else respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
-        }, { listOf(WorkspaceConnection("1", "http://h:47100", null, "ws")) }, this)
+        }, flowOf(listOf(WorkspaceConnection("1", "http://h:47100", null, "ws"))), backgroundScope)
         vm.refresh()?.join()
         val before = (vm.state.value as MessagesUiState.Content).filteredThreads
         assertEquals(listOf("t3", "t2", "t1"), before.map { it.thread.id })
@@ -99,6 +107,163 @@ class MessagesViewModelTest {
         assertEquals(3, after.size)                                          // MUST NOT collapse to 1
         assertEquals(listOf("t1", "t3", "t2"), after.map { it.thread.id })   // t1 updated + resorted to top
         assertEquals("2026-06-22T12:00:00Z", next)                           // cursor advanced
+    }
+
+    @Test fun live_polling_adopts_a_retired_section_id_and_publishes_the_canonical_identity() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        val connections = MutableStateFlow(listOf(retired))
+        var canonicalWaitCalls = 0
+        var polledHost: String? = null
+        var retiredPollCancelled = false
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" && req.url.host == "old" -> {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        retiredPollCancelled = true
+                    }
+                }
+                req.url.parameters["wait"] == "1" -> {
+                    canonicalWaitCalls += 1
+                    if (canonicalWaitCalls > 1) awaitCancellation()
+                    polledHost = req.url.host
+                    respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/threads") ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+
+        vm.selectWorkspace(retired.id)
+        vm.startLivePolling()
+        runCurrent()
+        connections.value = listOf(canonical)
+        runCurrent()
+        vm.selectWorkspace(retired.id)
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals("new", polledHost)
+        assertTrue(retiredPollCancelled)
+        assertEquals(canonical.id, content.selectedConnectionId)
+        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId }.distinct())
+        assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
+        assertEquals("t1", content.filteredThreads.first().thread.id)
+    }
+
+    @Test fun live_polling_started_before_refresh_tracks_adoption_during_the_load() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        val connections = MutableStateFlow(listOf(retired))
+        val initialRequestStarted = CompletableDeferred<Unit>()
+        val releaseInitialRequest = CompletableDeferred<Unit>()
+        val canonicalPollStarted = CompletableDeferred<Unit>()
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> {
+                    if (req.url.host == "new") canonicalPollStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                req.url.encodedPath.endsWith("/threads") -> {
+                    initialRequestStarted.complete(Unit)
+                    releaseInitialRequest.await()
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        val refresh = vm.refresh()
+        vm.startLivePolling()
+        initialRequestStarted.await()
+        assertEquals(MessagesUiState.Loading, vm.state.value)
+        connections.value = listOf(canonical)
+        runCurrent()
+        releaseInitialRequest.complete(Unit)
+        refresh?.join()
+        canonicalPollStarted.await()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId })
+        assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
+    }
+
+    @Test fun adopted_duplicate_sections_keep_newest_records_and_all_unique_ids() = runTest {
+        val retiredA = WorkspaceConnection("retired-a", "http://old-a:47100", null, "ws")
+        val retiredB = WorkspaceConnection("retired-b", "http://old-b:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retiredA.id, retiredB.id),
+        )
+        val connections = MutableStateFlow(listOf(retiredA, retiredB))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> awaitCancellation()
+                req.url.encodedPath.endsWith("/items") && req.url.host == "old-a" ->
+                    respond(
+                        """[{"id":"item-1","kind":"feature","title":"new item","phase":"inbox","updated_at":"2026-06-22T10:00:00Z"},
+                            {"id":"item-new-only","kind":"feature","title":"new only","phase":"inbox","updated_at":"2026-06-22T12:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                req.url.encodedPath.endsWith("/items") ->
+                    respond(
+                        """[{"id":"item-1","kind":"feature","title":"old item","phase":"inbox","updated_at":"2026-06-22T09:00:00Z"},
+                            {"id":"item-old-only","kind":"feature","title":"old only","phase":"inbox","updated_at":"2026-06-22T11:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                req.url.host == "old-a" ->
+                    respond(
+                        """[{"id":"t1","subject":"new thread","updated_at":"2026-06-22T10:00:00Z"},
+                            {"id":"t-new-only","subject":"new only","updated_at":"2026-06-22T12:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                else ->
+                    respond(
+                        """[{"id":"t1","subject":"old thread","updated_at":"2026-06-22T09:00:00Z"},
+                            {"id":"t-old-only","subject":"old only","updated_at":"2026-06-22T11:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+        vm.selectWorkspace(retiredA.id)
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = listOf(canonical)
+        runCurrent()
+
+        val content = vm.state.value as MessagesUiState.Content
+        val section = content.sections.single()
+        assertEquals(canonical.id, section.connectionId)
+        assertEquals(canonical.id, content.selectedConnectionId)
+        val threads = section.threads.getOrThrow()
+        assertEquals(listOf("t-new-only", "t-old-only", "t1"), threads.map { it.id })
+        assertEquals("new thread", threads.single { it.id == "t1" }.subject)
+        assertEquals(setOf("item-1", "item-new-only", "item-old-only"), section.items.map { it.id }.toSet())
+        assertEquals("new item", section.items.single { it.id == "item-1" }.title)
     }
 
     private val mixedThreadsWsAJson = """
@@ -120,7 +285,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_all_shows_every_thread() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(4, content.filteredThreads.size)
@@ -128,7 +293,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_unread_shows_only_unseen_threads_across_workspaces() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         vm.selectStateFilter(ThreadStateFilter.UNREAD)
         val content = vm.state.value as MessagesUiState.Content
@@ -136,7 +301,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_needs_you_shows_only_needs_you_threads() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         vm.selectStateFilter(ThreadStateFilter.NEEDS_YOU)
         val content = vm.state.value as MessagesUiState.Content
@@ -144,7 +309,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_composes_with_workspace_selection() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         vm.selectWorkspace("A")
         vm.selectStateFilter(ThreadStateFilter.UNREAD)
@@ -162,7 +327,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun filteredThreads_carries_the_owning_connectionId_per_thread() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         val byThreadId = content.filteredThreads.associate { it.thread.id to it.connectionId }
@@ -173,7 +338,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun unread_count_reflects_unseen_threads_total_and_per_workspace() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(2, content.unreadCount)
@@ -182,14 +347,14 @@ class MessagesViewModelTest {
     }
 
     @Test fun topThreads_returns_most_recent_n_newest_first_optionally_scoped_to_a_workspace() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         assertEquals(listOf("b1", "a3"), vm.topThreads(2).map { it.id })
         assertEquals(listOf("a3"), vm.topThreads(1, "A").map { it.id })
     }
 
     @Test fun unreadCountFor_returns_total_for_all_and_per_workspace_count_when_scoped() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), { listOf(connA, connB) }, this)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(2, content.unreadCountFor(null))

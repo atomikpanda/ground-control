@@ -15,7 +15,36 @@ import androidx.work.workDataOf
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.appHttpClient
+import com.atomikpanda.groundcontrol.data.findByConnectionId
+import com.atomikpanda.groundcontrol.data.dto.Thread
+
+internal fun retiredReplyConnectionId(
+    persistedConnectionId: String,
+    conn: WorkspaceConnection,
+): String? = persistedConnectionId.takeIf { it != conn.id }
+
+internal fun buildReplyNotificationEvent(
+    conn: WorkspaceConnection,
+    threadId: String,
+    fallbackSubject: String,
+    preview: String,
+    thread: Thread?,
+): NeedsYouEvent {
+    val messages = thread?.messages ?: emptyList()
+    return NeedsYouEvent(
+        connectionId = conn.id,
+        baseUrl = conn.baseUrl,
+        workspaceName = conn.workspaceName,
+        threadId = threadId,
+        subject = thread?.subject?.ifBlank { fallbackSubject } ?: fallbackSubject,
+        preview = preview,
+        updatedAt = thread?.updatedAt ?: "",
+        messages = messages,
+        decision = activeDecision(messages),
+    )
+}
 
 /**
  * Delivers a notification direct-reply / option post reliably: resolves the [WorkspaceConnection]
@@ -39,7 +68,7 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
         val baseUrl = inputData.getString(K_BASE_URL) ?: ""
 
         val notifier = AndroidNotifier(applicationContext)
-        val conn = ConnectionsRepository(applicationContext).snapshot().firstOrNull { it.id == connId }
+        val conn = ConnectionsRepository(applicationContext).snapshot().findByConnectionId(connId)
         if (conn == null) {
             notifier.notifyReplyError(
                 NeedsYouEvent(connId, baseUrl, workspace, threadId, subject, "", ""), text,
@@ -49,20 +78,18 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
 
         val repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         val posted = runCatching { repo.postMessage(conn, threadId, text) }
+        retiredReplyConnectionId(connId, conn)?.let { retiredId ->
+            AndroidNeedsYouCanceller(applicationContext).cancel(retiredId, threadId)
+        }
         return if (posted.isSuccess) {
             val thread = posted.getOrNull()
-            val messages = thread?.messages ?: emptyList()
             notifier.notify(
-                NeedsYouEvent(
-                    connectionId = connId,
-                    baseUrl = conn.baseUrl,
-                    workspaceName = conn.workspaceName,
+                buildReplyNotificationEvent(
+                    conn = conn,
                     threadId = threadId,
-                    subject = thread?.subject?.ifBlank { subject } ?: subject,
+                    fallbackSubject = subject,
                     preview = text,
-                    updatedAt = thread?.updatedAt ?: "",
-                    messages = messages,
-                    decision = activeDecision(messages),
+                    thread = thread,
                 ),
             )
             Result.success()
@@ -70,7 +97,14 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
             // Terminal (not retry): auto-retry could double-post. The still-present reply action
             // lets the operator retry manually, and the attempted text is shown so it isn't lost.
             notifier.notifyReplyError(
-                NeedsYouEvent(connId, conn.baseUrl, conn.workspaceName, threadId, subject, "", ""), text,
+                buildReplyNotificationEvent(
+                    conn = conn,
+                    threadId = threadId,
+                    fallbackSubject = subject,
+                    preview = "",
+                    thread = null,
+                ),
+                text,
             )
             Result.failure()
         }
