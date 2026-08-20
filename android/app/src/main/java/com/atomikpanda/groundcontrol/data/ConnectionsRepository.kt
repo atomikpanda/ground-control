@@ -40,7 +40,15 @@ class ConnectionsRepository(private val context: Context) {
     suspend fun upsertDiscovered(
         conn: WorkspaceConnection,
         identities: List<VerifiedIdentity>,
-    ) = mutate { adoptManualConnections(it, listOf(conn), identities) }
+        activatePriorDirectToken: Boolean,
+    ) = mutate {
+        adoptManualConnections(
+            it,
+            listOf(conn),
+            identities,
+            activatePriorDirectToken,
+        )
+    }
 
     suspend fun remove(id: String) = mutate { list -> list.filterNot { it.id == id } }
 

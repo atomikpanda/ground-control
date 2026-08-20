@@ -214,11 +214,17 @@ class HostsRepository(private val context: Context) {
         )
     }
 
-    /** Atomically apply one host response only while the account that authorized it is current. */
+    /** Atomically apply one host response only while the account that authorized
+     * the refresh is current. Retained direct hosts are also eligible when a
+     * verified identity binds one of their persisted connections to that stable
+     * host id. */
     suspend fun applyHostWorkspaceRefresh(
         expectedAccount: RelayAccount,
         hostId: String,
         hostBase: String,
+        expectedDirectOnly: Boolean,
+        expectedDirectToken: String?,
+        expectedDirectConnectionIds: Set<String>,
         contactedAtMillis: Long,
         discovered: List<WorkspaceConnection>,
         identities: List<VerifiedIdentity>,
@@ -227,23 +233,43 @@ class HostsRepository(private val context: Context) {
         context.dataStore.edit {
             if (!relayAccountMatchesExpected(it.relayAccount(), expectedAccount)) return@edit
             val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
-            if (currentHosts.none { host ->
-                    host.hostId == hostId &&
-                        host.relayDomain == expectedAccount.relayDomain
-                }
-            ) {
+            val currentHost = currentHosts.singleOrNull { it.hostId == hostId }
+                ?: return@edit
+            if (!currentHost.matchesWorkspaceRefreshRoute(hostBase, expectedDirectOnly)) {
                 return@edit
+            }
+            val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
+            if (currentHost.relayDomain != expectedAccount.relayDomain) {
+                val verifiedConnectionIds = identities
+                    .filter {
+                        it.hostId == hostId &&
+                            !it.workspaceId.isNullOrBlank()
+                    }
+                    .mapTo(mutableSetOf()) { it.connectionId }
+                if (
+                    expectedDirectConnectionIds.isEmpty() ||
+                    !verifiedConnectionIds.containsAll(expectedDirectConnectionIds) ||
+                    !directRefreshSourceStillCurrent(
+                        connections = currentConnections,
+                        hostId = hostId,
+                        connectionIds = expectedDirectConnectionIds,
+                        expectedDirectToken = expectedDirectToken,
+                    )
+                ) {
+                    return@edit
+                }
             }
             it[HOSTS] = HostsCodec.encode(
                 recordHostContact(currentHosts, hostId, hostBase, contactedAtMillis),
             )
-            val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
             it[CONNECTIONS] = ConnectionsCodec.encode(
                 replaceHostConnections(
-                    currentConnections,
-                    hostId,
-                    discovered,
-                    identities,
+                    existing = currentConnections,
+                    hostId = hostId,
+                    discovered = discovered,
+                    identities = identities,
+                    hosts = currentHosts,
+                    activatePriorDirectToken = currentHost.refresh == null,
                 ),
             )
             applied = true

@@ -20,6 +20,7 @@ import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
 import com.atomikpanda.groundcontrol.data.NotificationsSetting
 import com.atomikpanda.groundcontrol.data.PairLink
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.HostHealth
@@ -131,6 +132,46 @@ internal fun legacyConnectionsForDiscovery(
         normalizedBaseUrl(it.baseUrl)?.let(matchingBases::contains) == true
     }
 }
+internal data class FleetWorkspaceRefreshTarget(
+    val host: HostConnection,
+    val directToken: String?,
+    val verifiedConnectionIds: Set<String>,
+)
+
+internal fun fleetWorkspaceRefreshTargets(
+    hosts: List<HostConnection>,
+    connections: List<WorkspaceConnection>,
+    account: RelayAccount,
+    identities: List<VerifiedIdentity>,
+): List<FleetWorkspaceRefreshTarget> {
+    val connectionsById = connections.associateBy { it.id }
+    val verifiedByHost = identities
+        .filter { it.hostId != null && it.workspaceId != null }
+        .groupBy { it.hostId }
+    return hosts.mapNotNull { host ->
+        if (host.relayDomain == account.relayDomain) {
+            return@mapNotNull FleetWorkspaceRefreshTarget(
+                host,
+                directToken = null,
+                verifiedConnectionIds = emptySet(),
+            )
+        }
+        val verified = verifiedByHost[host.hostId].orEmpty()
+            .filter { identity ->
+                connectionsById[identity.connectionId]?.hostId == host.hostId
+            }
+        if (verified.isEmpty()) return@mapNotNull null
+        val verifiedConnectionIds = verified.mapTo(mutableSetOf()) { it.connectionId }
+        val directToken = verified.mapNotNull { identity ->
+            connectionsById[identity.connectionId]?.let { connection ->
+                connection.directToken?.takeIf { it.isNotBlank() }
+                    ?: connection.token?.takeIf { it.isNotBlank() }
+            }
+        }.distinct().singleOrNull()
+        FleetWorkspaceRefreshTarget(host, directToken, verifiedConnectionIds)
+    }
+}
+
 
 private data class SettingsResult(
     val message: String,
@@ -338,18 +379,31 @@ class SettingsViewModel(
         setTestResult("Fleet: ${entries.size} host(s)", account)
         val currentHosts = hosts.snapshot()
 
+        val currentConnections = repo.snapshot()
         val verification = verifyLegacyIdentities(
             api,
-            unresolvedLegacyConnections(repo.snapshot()),
+            unresolvedLegacyConnections(currentConnections),
             currentHosts,
         )
         if (verification.requiresRePair) {
             setTestResult("Re-pair needed — scan the relay account again", account)
         }
         val identities = verification.identities
-        for (host in currentHosts.filter { it.relayDomain == account.relayDomain }) {
+        val refreshTargets = fleetWorkspaceRefreshTargets(
+            hosts = currentHosts,
+            connections = currentConnections,
+            account = account,
+            identities = identities,
+        )
+        for (target in refreshTargets) {
+            val host = target.host
             val refreshed = try {
-                refreshHostWorkspaceConnections(api, host, identities)
+                refreshHostWorkspaceConnections(
+                    api,
+                    host,
+                    identities,
+                    directToken = target.directToken,
+                )
             } catch (_: RePairNeededException) {
                 setTestResult("Re-pair needed — scan the relay account again", account)
                 continue
@@ -364,6 +418,9 @@ class SettingsViewModel(
                     expectedAccount = account,
                     hostId = host.hostId,
                     hostBase = refreshed.hostBase,
+                    expectedDirectOnly = host.refresh == null,
+                    expectedDirectToken = target.directToken,
+                    expectedDirectConnectionIds = target.verifiedConnectionIds,
                     contactedAtMillis = System.currentTimeMillis(),
                     discovered = refreshed.connections,
                     identities = refreshed.identities,
@@ -415,7 +472,11 @@ class SettingsViewModel(
                 workspaceId = info.id,
             )
             val identities = verifyLegacyIdentities(api, legacyRows, currentHosts).identities
-            repo.upsertDiscovered(discovered, identities)
+            repo.upsertDiscovered(
+                discovered,
+                identities,
+                activatePriorDirectToken = storedHost?.refresh == null,
+            )
         }
     }
 }

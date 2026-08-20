@@ -68,6 +68,19 @@ fun HostConnection.hostBases(): List<String> =
 /** The preferred candidate for address construction before reachability is
  * known. Fleet refresh replaces it with the first base it actually reaches. */
 fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
+/** A response may publish only while the route generation that issued it is
+ * still current. Normalized base membership catches direct URL replacement;
+ * the mode check catches direct-to-relay adoption even when the public base is
+ * textually unchanged. */
+internal fun HostConnection.matchesWorkspaceRefreshRoute(
+    hostBase: String,
+    expectedDirectOnly: Boolean,
+): Boolean {
+    if ((refresh == null) != expectedDirectOnly) return false
+    val identity = normalizedBaseUrl(hostBase) ?: return false
+    return hostBases().any { normalizedBaseUrl(it) == identity }
+}
+
 
 /** Whether [identity] is any current or recorded base for this stable host. */
 internal fun HostConnection.hasKnownBaseIdentity(identity: String): Boolean =
@@ -146,14 +159,17 @@ suspend fun refreshHostWorkspaceConnections(
     api: SpecApi,
     host: HostConnection,
     identities: List<VerifiedIdentity> = emptyList(),
+    directToken: String? = null,
 ): HostWorkspaceRefresh? {
-    val (base, workspaces) = reachableHostWorkspaces(api, host) ?: return null
+    val routeToken = directToken.takeIf { host.refresh == null }
+    val (base, workspaces) =
+        reachableHostWorkspaces(api, host, token = routeToken) ?: return null
     return HostWorkspaceRefresh(
         hostBase = base,
         connections = workspaces.map { info ->
             deriveConnection(
                 hostBase = base,
-                hostToken = null,
+                hostToken = routeToken,
                 hostId = host.hostId,
                 workspaceId = info.id,
                 workspaceName = info.name,

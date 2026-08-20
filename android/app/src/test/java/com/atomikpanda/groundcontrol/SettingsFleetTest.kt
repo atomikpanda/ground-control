@@ -3,12 +3,14 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.RelayAccount
+import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.settings.canAdoptDirectHostIdentity
 import com.atomikpanda.groundcontrol.ui.settings.classifyFleetRefreshFailure
 import com.atomikpanda.groundcontrol.ui.settings.directUrlForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.observeRelayAccountChanges
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
+import com.atomikpanda.groundcontrol.ui.settings.fleetWorkspaceRefreshTargets
 import com.atomikpanda.groundcontrol.ui.settings.legacyConnectionsForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.visibleSettingsResult
 import java.io.IOException
@@ -89,6 +91,50 @@ class SettingsFleetTest {
         assertEquals(account, inspected)
         assertEquals(1, refreshes)
         collecting.cancel()
+    }
+
+    @Test fun fleet_refresh_includes_a_retained_direct_host_that_owns_a_verified_identity() {
+        val account = RelayAccount("new.example", "new-token")
+        val relayHost = HostConnection(
+            hostId = "new-host",
+            relayDomain = account.relayDomain,
+        )
+        val retainedDirect = HostConnection(
+            hostId = "retained-host",
+            directUrl = "http://direct.example",
+            relayDomain = null,
+        )
+        val unrelatedDirect = HostConnection(
+            hostId = "unrelated-host",
+            directUrl = "http://other.example",
+            relayDomain = null,
+        )
+        val selected = fleetWorkspaceRefreshTargets(
+            hosts = listOf(relayHost, retainedDirect, unrelatedDirect),
+            connections = listOf(
+                WorkspaceConnection(
+                    id = "legacy-root",
+                    baseUrl = retainedDirect.directUrl!!,
+                    token = "direct-token",
+                    hostId = retainedDirect.hostId,
+                ),
+            ),
+            account = account,
+            identities = listOf(
+                VerifiedIdentity(
+                    connectionId = "legacy-root",
+                    hostId = retainedDirect.hostId,
+                    workspaceId = "ws-1",
+                ),
+            ),
+        )
+
+        assertEquals(listOf(relayHost, retainedDirect), selected.map { it.host })
+        assertEquals(listOf(null, "direct-token"), selected.map { it.directToken })
+        assertEquals(
+            listOf(emptySet(), setOf("legacy-root")),
+            selected.map { it.verifiedConnectionIds },
+        )
     }
 
     @Test fun fleet_auth_failure_requires_repair_but_transport_failure_is_an_outage() {

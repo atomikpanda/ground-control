@@ -134,13 +134,15 @@ private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boole
  * accumulated so already-issued notification intents keep resolving.
  *
  * [preservePriorDirectToken] is true for discovery, where an omitted credential
- * is not a request to erase the operator's direct route. Explicit pairing sets
- * it false so a blank token clears both credential fields.
+ * is not a request to erase the operator's direct route. [activatePriorDirectToken]
+ * additionally makes that retained credential active on a direct-only route.
+ * Explicit pairing disables both so a blank token clears both credential fields.
  */
 fun upsertConnection(
     existing: List<WorkspaceConnection>,
     conn: WorkspaceConnection,
     preservePriorDirectToken: Boolean = true,
+    activatePriorDirectToken: Boolean = false,
 ): List<WorkspaceConnection> {
     val matches: (WorkspaceConnection) -> Boolean = { prior ->
         sameWorkspace(prior, conn) ||
@@ -151,21 +153,21 @@ fun upsertConnection(
             )
     }
     val prior = existing.firstOrNull(matches)
+    val retainedDirectToken = conn.directToken ?: conn.token ?: if (preservePriorDirectToken) {
+        prior?.directToken ?: prior?.token
+    } else {
+        null
+    }
     val merged = conn.copy(
         // On an IDENTITY match the row id is the phone's local handle (nav
         // routes, notification ids) and survives — otherwise the next directory
         // read would re-mint it and undo an adoption. A legacy URL/id match is a
         // manual re-pair, where the incoming id is the operator's new one.
         id = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id,
+        token = conn.token ?: retainedDirectToken.takeIf { activatePriorDirectToken },
         colorOverride = conn.colorOverride ?: prior?.colorOverride,
         glyphOverride = conn.glyphOverride ?: prior?.glyphOverride,
-        // Explicit/manual upserts pass false so a blank token is authoritative;
-        // host rediscovery retains the standing direct credential by default.
-        directToken = conn.directToken ?: conn.token ?: if (preservePriorDirectToken) {
-            prior?.directToken ?: prior?.token
-        } else {
-            null
-        },
+        directToken = retainedDirectToken,
         legacyBaseUrls = carryLegacyUrls(listOfNotNull(prior), conn),
     )
     return existing.filterNot(matches) + merged
@@ -190,6 +192,30 @@ data class VerifiedIdentity(
     val hostId: String?,
     val workspaceId: String?,
 )
+
+/** Whether the exact verified direct-connection generation that authorized an
+ * in-flight host refresh is still current. Re-pairing at the same URL changes
+ * the credential without changing route identity, so route checks alone are
+ * insufficient. */
+internal fun directRefreshSourceStillCurrent(
+    connections: List<WorkspaceConnection>,
+    hostId: String,
+    connectionIds: Set<String>,
+    expectedDirectToken: String?,
+): Boolean {
+    if (connectionIds.isEmpty()) return false
+    val sources = connections.filter { it.id in connectionIds }
+    if (sources.size != connectionIds.size || sources.any { it.hostId != hostId }) return false
+    val credentials = sources.mapNotNull { connection ->
+        connection.directToken?.takeIf { it.isNotBlank() }
+            ?: connection.token?.takeIf { it.isNotBlank() }
+    }.toSet()
+    return if (expectedDirectToken == null) {
+        credentials.isEmpty()
+    } else {
+        credentials == setOf(expectedDirectToken)
+    }
+}
 
 /** Rows that still lack a stable host/workspace identity tuple remain eligible for verified
  * adoption on every fleet refresh, including the URL-as-host handles persisted by #472. */
@@ -318,6 +344,7 @@ fun adoptManualConnections(
     existing: List<WorkspaceConnection>,
     discovered: List<WorkspaceConnection>,
     identities: List<VerifiedIdentity>,
+    activatePriorDirectToken: Boolean = false,
 ): List<WorkspaceConnection> {
     val verified = identities.filter { it.hostId != null && it.workspaceId != null }
         .associateBy { it.connectionId }
@@ -326,13 +353,24 @@ fun adoptManualConnections(
             !sameWorkspace(row, found) && verified[row.id]
                 ?.let { it.hostId == found.hostId && it.workspaceId == found.workspaceId } == true
         }
-        if (manual == null) upsertConnection(acc, found)
-        else {
+        if (manual == null) {
+            upsertConnection(
+                acc,
+                found,
+                activatePriorDirectToken = activatePriorDirectToken,
+            )
+        } else {
             val twins = acc.filter { it.id != manual.id && sameWorkspace(it, found) }
             acc
                 .filterNot { it in twins }
                 .map {
-                    if (it.id == manual.id) adopt(listOf(manual) + twins, found) else it
+                    if (it.id == manual.id) {
+                        adopt(
+                            listOf(manual) + twins,
+                            found,
+                            activatePriorDirectToken,
+                        )
+                    } else it
                 }
         }
     }
@@ -340,20 +378,30 @@ fun adoptManualConnections(
 
 
 /** Reconcile one host from an authoritative `GET /workspaces` response.
- * Existing rows with a stable or URL-derived workspace id that are missing from
- * [discovered] are gone on the host; unresolved legacy roots survive so a later
- * refresh can retry identity verification. Other hosts and manual rows
- * are untouched. */
+ * Existing rows with a stable or URL-derived workspace id that are uniquely
+ * owned by this host and missing from [discovered] are gone. Ownership of
+ * legacy URL-valued/null-host rows is resolved from normalized host evidence;
+ * unmatched or ambiguous rows and true roots survive. Other hosts are
+ * untouched. */
 fun replaceHostConnections(
     existing: List<WorkspaceConnection>,
     hostId: String,
     discovered: List<WorkspaceConnection>,
     identities: List<VerifiedIdentity>,
+    hosts: List<HostConnection> = emptyList(),
+    activatePriorDirectToken: Boolean = false,
 ): List<WorkspaceConnection> {
     val liveWorkspaceIds = discovered.mapNotNullTo(mutableSetOf()) { it.workspaceId }
-    return adoptManualConnections(existing, discovered, identities).filterNot {
-        val workspaceId = legacyWorkspaceId(it)
-        it.hostId == hostId &&
+    return adoptManualConnections(
+        existing,
+        discovered,
+        identities,
+        activatePriorDirectToken,
+    ).filterNot { connection ->
+        val workspaceId = legacyWorkspaceId(connection)
+        val ownedByHost = connection.hostId == hostId ||
+            knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
+        ownedByHost &&
             workspaceId != null &&
             workspaceId !in liveWorkspaceIds
     }
@@ -365,12 +413,15 @@ fun replaceHostConnections(
 private fun adopt(
     priors: List<WorkspaceConnection>,
     found: WorkspaceConnection,
+    activatePriorDirectToken: Boolean,
 ): WorkspaceConnection {
     val manual = priors.first()
+    val retainedDirectToken =
+        found.directToken ?: found.token ?: manual.directToken ?: manual.token
     return found.copy(
         id = manual.id,
-        token = found.token,
-        directToken = found.directToken ?: found.token ?: manual.directToken ?: manual.token,
+        token = found.token ?: retainedDirectToken.takeIf { activatePriorDirectToken },
+        directToken = retainedDirectToken,
         workspaceName = found.workspaceName.ifBlank { manual.workspaceName },
         colorOverride = manual.colorOverride ?: found.colorOverride,
         glyphOverride = manual.glyphOverride ?: found.glyphOverride,

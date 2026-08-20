@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.applyIdentityOverride
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import com.atomikpanda.groundcontrol.data.replaceHostConnections
@@ -179,6 +180,96 @@ class ConnectionsCodecTest {
 
         assertEquals(listOf("live"), replaced.map { it.workspaceId })
     }
+    @Test fun host_refresh_removes_a_uniquely_owned_url_valued_legacy_suffix() {
+        val oldBase = "https://old.relay"
+        val host = HostConnection(
+            hostId = "host-a",
+            publicUrl = "https://current.relay",
+            legacyPublicUrls = listOf(oldBase),
+        )
+        val stale = WorkspaceConnection(
+            id = "legacy-stale",
+            baseUrl = "$oldBase/workspaces/deleted",
+            hostId = oldBase,
+        )
+        val live = WorkspaceConnection(
+            id = "live",
+            baseUrl = "${host.publicUrl}/workspaces/live",
+            hostId = host.hostId,
+            workspaceId = "live",
+        )
+
+        val replaced = replaceHostConnections(
+            existing = listOf(stale),
+            hostId = host.hostId,
+            discovered = listOf(live),
+            identities = emptyList(),
+            hosts = listOf(host),
+        )
+
+        assertEquals(listOf("live"), replaced.map { it.id })
+    }
+
+    @Test fun host_refresh_removes_a_uniquely_owned_null_host_legacy_suffix() {
+        val oldBase = "https://old.relay"
+        val host = HostConnection(
+            hostId = "host-a",
+            publicUrl = "https://current.relay",
+            legacyPublicUrls = listOf(oldBase),
+        )
+        val stale = WorkspaceConnection(
+            id = "legacy-stale",
+            baseUrl = "$oldBase/workspaces/deleted",
+            hostId = null,
+        )
+
+        val replaced = replaceHostConnections(
+            existing = listOf(stale),
+            hostId = host.hostId,
+            discovered = emptyList(),
+            identities = emptyList(),
+            hosts = listOf(host),
+        )
+
+        assertEquals(emptyList<WorkspaceConnection>(), replaced)
+    }
+
+    @Test fun host_refresh_preserves_unmatched_ambiguous_and_root_legacy_rows() {
+        val sharedBase = "https://shared.relay"
+        val host = HostConnection(
+            hostId = "host-a",
+            publicUrl = "https://a.relay",
+            legacyPublicUrls = listOf(sharedBase),
+        )
+        val otherHost = HostConnection(
+            hostId = "host-b",
+            publicUrl = "https://b.relay",
+            legacyPublicUrls = listOf(sharedBase),
+        )
+        val unmatched = WorkspaceConnection(
+            id = "unmatched",
+            baseUrl = "https://unknown.relay/workspaces/deleted",
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "ambiguous",
+            baseUrl = "$sharedBase/workspaces/deleted",
+        )
+        val root = WorkspaceConnection(
+            id = "root",
+            baseUrl = "https://a.relay",
+        )
+
+        val replaced = replaceHostConnections(
+            existing = listOf(unmatched, ambiguous, root),
+            hostId = host.hostId,
+            discovered = emptyList(),
+            identities = emptyList(),
+            hosts = listOf(host, otherHost),
+        )
+
+        assertEquals(listOf("unmatched", "ambiguous", "root"), replaced.map { it.id })
+    }
+
 
     @Test fun upsert_same_id_replaces_entry() {
         val existing = listOf(
@@ -218,11 +309,39 @@ class ConnectionsCodecTest {
         assertNull(result.directToken)
     }
 
-    @Test fun stable_host_rediscovery_without_a_token_preserves_the_direct_credential() {
+    @Test fun direct_host_rediscovery_without_a_token_reactivates_the_preserved_credential() {
         val existing = listOf(
             WorkspaceConnection(
                 id = "local-id",
                 baseUrl = "http://direct/workspaces/ws",
+                hostId = "host-a",
+                workspaceId = "ws",
+                directToken = "direct-token",
+            ),
+        )
+        val incoming = WorkspaceConnection(
+            id = "derived-id",
+            baseUrl = "http://direct/workspaces/ws",
+            hostId = "host-a",
+            workspaceId = "ws",
+        )
+
+        val result = upsertConnection(
+            existing,
+            incoming,
+            activatePriorDirectToken = true,
+        ).single()
+
+        assertEquals("direct-token", result.token)
+        assertEquals("direct-token", result.directToken)
+    }
+
+    @Test fun relay_host_rediscovery_preserves_but_does_not_activate_the_direct_credential() {
+        val existing = listOf(
+            WorkspaceConnection(
+                id = "local-id",
+                baseUrl = "http://direct/workspaces/ws",
+                token = "direct-token",
                 hostId = "host-a",
                 workspaceId = "ws",
                 directToken = "direct-token",
@@ -237,6 +356,7 @@ class ConnectionsCodecTest {
 
         val result = upsertConnection(existing, incoming).single()
 
+        assertNull(result.token)
         assertEquals("direct-token", result.directToken)
     }
 

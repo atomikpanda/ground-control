@@ -24,6 +24,7 @@ import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import com.atomikpanda.groundcontrol.ui.settings.legacyConnectionsForDiscovery
+import com.atomikpanda.groundcontrol.ui.settings.fleetWorkspaceRefreshTargets
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -217,6 +218,30 @@ class HostWorkspacesTest {
         assertEquals("local-uuid", out.single().id)
         assertEquals("standing-tok", out.single().token)
     }
+    @Test fun verified_tokenless_direct_adoption_reactivates_the_prior_direct_token() {
+        val directManual = manual.copy(
+            baseUrl = "http://host-a:47100/workspaces/ws-1",
+        )
+        val discovered = deriveConnection(
+            "http://host-a:47100",
+            null,
+            "host-a",
+            "ws-1",
+            "alpha",
+            "healthy",
+        )
+
+        val adopted = adoptManualConnections(
+            existing = listOf(directManual),
+            discovered = listOf(discovered),
+            identities = listOf(VerifiedIdentity("local-uuid", "host-a", "ws-1")),
+            activatePriorDirectToken = true,
+        ).single()
+
+        assertEquals("standing-tok", adopted.token)
+        assertEquals("standing-tok", adopted.directToken)
+    }
+
 
     @Test fun verified_adoption_preserves_urls_from_an_existing_discovered_twin() {
         val twin = deriveConnection(
@@ -1530,9 +1555,10 @@ class HostWorkspacesTest {
         )
     }
 
-    @Test fun relay_replacement_preserves_an_authenticated_root_for_singleton_verification() = runTest {
+    @Test fun relay_replacement_migrates_an_authenticated_direct_root_end_to_end() = runTest {
         val oldPublic = "https://old.relay.example"
         val direct = "http://direct.example"
+        val replacement = RelayAccount("new.example", "new-fleet-token")
         val oldHost = HostConnection(
             hostId = "host-a",
             publicUrl = oldPublic,
@@ -1542,7 +1568,7 @@ class HostWorkspacesTest {
         )
         val fleet = replaceRelayAccountFleet(
             previous = RelayAccount("relay.example", "old-fleet-token"),
-            replacement = RelayAccount("new.example", "new-fleet-token"),
+            replacement = replacement,
             hosts = listOf(oldHost),
             connections = listOf(
                 WorkspaceConnection(
@@ -1574,16 +1600,47 @@ class HostWorkspacesTest {
             listOf(restored),
             fleet.hosts,
         ).identities
+        val target = fleetWorkspaceRefreshTargets(
+            hosts = fleet.hosts,
+            connections = fleet.connections,
+            account = replacement,
+            identities = identities,
+        ).single()
+        val refreshed = refreshHostWorkspaceConnections(
+            SpecApi(client.client),
+            target.host,
+            identities,
+            directToken = target.directToken,
+        )!!
+        val migrated = replaceHostConnections(
+            existing = fleet.connections,
+            hostId = oldHost.hostId,
+            discovered = refreshed.connections,
+            identities = refreshed.identities,
+            hosts = fleet.hosts,
+            activatePriorDirectToken = true,
+        ).single()
 
         assertEquals(direct, restored.baseUrl)
         assertNull(restored.workspaceId)
         assertEquals("direct-token", restored.token)
-        assertEquals(listOf("$direct/workspaces"), urls)
-        assertEquals(listOf("Bearer direct-token"), authorizations)
+        assertEquals(
+            listOf("$direct/workspaces", "$direct/workspaces"),
+            urls,
+        )
+        assertEquals(
+            listOf("Bearer direct-token", "Bearer direct-token"),
+            authorizations,
+        )
         assertEquals(
             listOf(VerifiedIdentity("legacy-root", oldHost.hostId, "ws-1")),
             identities,
         )
+        assertEquals("legacy-root", migrated.id)
+        assertEquals("ws-1", migrated.workspaceId)
+        assertEquals("$direct/workspaces/ws-1", migrated.baseUrl)
+        assertEquals("direct-token", migrated.token)
+        assertEquals("direct-token", migrated.directToken)
     }
 
     @Test fun transient_root_verification_failure_is_retained_and_retried() = runTest {

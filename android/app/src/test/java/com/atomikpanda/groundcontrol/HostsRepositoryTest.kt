@@ -6,9 +6,11 @@ import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
+import com.atomikpanda.groundcontrol.data.directRefreshSourceStillCurrent
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
+import com.atomikpanda.groundcontrol.data.matchesWorkspaceRefreshRoute
 import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.replaceRelayDirectoryFleet
 import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
@@ -17,6 +19,7 @@ import com.atomikpanda.groundcontrol.data.relayAccountMatchesExpected
 import com.atomikpanda.groundcontrol.data.upsertHost
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.dto.HostInfo
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -94,6 +97,96 @@ class HostsRepositoryTest {
 
         assertEquals(host.publicUrl, claimed.hostBase())
     }
+    @Test fun an_in_flight_direct_refresh_is_rejected_after_a_new_route_and_credential() {
+        val oldBase = "http://old.lan:47190"
+        val newBase = "http://new.lan:47190"
+        val inFlightHost = host.copy(
+            publicUrl = "",
+            refresh = null,
+            directUrl = oldBase,
+            relayDomain = null,
+        )
+        val currentHost = recordDirectHostDiscovery(
+            hosts = listOf(inFlightHost),
+            hostId = host.hostId,
+            directUrl = newBase,
+            runnerState = null,
+            contactedAtMillis = 2L,
+        ).single()
+        val currentConnection = upsertConnection(
+            existing = listOf(
+                WorkspaceConnection(
+                    id = "workspace",
+                    baseUrl = "$oldBase/workspaces/ws",
+                    token = "old-token",
+                ),
+            ),
+            conn = WorkspaceConnection(
+                id = "workspace",
+                baseUrl = "$newBase/workspaces/ws",
+                token = "new-token",
+            ),
+            preservePriorDirectToken = false,
+        ).single()
+
+        assertEquals(newBase, currentHost.directUrl)
+        assertEquals("new-token", currentConnection.token)
+        assertFalse(
+            currentHost.matchesWorkspaceRefreshRoute(
+                hostBase = oldBase,
+                expectedDirectOnly = true,
+            ),
+        )
+        assertFalse(
+            currentHost.copy(
+                publicUrl = oldBase,
+                refresh = "new-refresh",
+            ).matchesWorkspaceRefreshRoute(
+                hostBase = oldBase,
+                expectedDirectOnly = true,
+            ),
+        )
+    }
+    @Test fun an_in_flight_direct_refresh_is_rejected_after_same_base_re_pair() {
+        val base = "http://direct.lan:47190"
+        val oldConnection = WorkspaceConnection(
+            id = "workspace",
+            baseUrl = "$base/workspaces/ws",
+            token = "old-token",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+        val rePaired = upsertConnection(
+            existing = listOf(oldConnection),
+            conn = oldConnection.copy(
+                token = "new-token",
+                directToken = null,
+            ),
+            preservePriorDirectToken = false,
+        )
+        val sourceIds = setOf(oldConnection.id)
+
+        assertTrue(
+            directRefreshSourceStillCurrent(
+                connections = listOf(oldConnection),
+                hostId = host.hostId,
+                connectionIds = sourceIds,
+                expectedDirectToken = "old-token",
+            ),
+        )
+        assertFalse(
+            directRefreshSourceStillCurrent(
+                connections = rePaired,
+                hostId = host.hostId,
+                connectionIds = sourceIds,
+                expectedDirectToken = "old-token",
+            ),
+        )
+        assertEquals("new-token", rePaired.single().token)
+        assertEquals("new-token", rePaired.single().directToken)
+    }
+
+
 
     @Test fun a_failed_directory_read_marks_only_that_relays_hosts_unknown() {
         val other = host.copy(hostId = "h-2", relayDomain = "other.example.com", state = "online")
