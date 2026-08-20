@@ -69,6 +69,12 @@ fun HostConnection.hostBases(): List<String> =
  * known. Fleet refresh replaces it with the first base it actually reaches. */
 fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
 
+/** Whether [identity] is any current or recorded base for this stable host. */
+internal fun HostConnection.hasKnownBaseIdentity(identity: String): Boolean =
+    directUrl?.let(::normalizedBaseUrl) == identity ||
+        normalizedBaseUrl(publicUrl) == identity ||
+        legacyPublicUrls.any { normalizedBaseUrl(it) == identity }
+
 /** Probe candidates in order and retain the base that answered. Authentication
  * failures requiring operator action and cancellation are not reachability
  * failures, so they propagate instead of silently falling through. */
@@ -104,16 +110,20 @@ suspend fun reachableHostWorkspaces(
 ): Pair<String, List<WorkspaceInfo>> {
     val base = requestedBase.trimEnd('/')
     val baseIdentity = normalizedBaseUrl(base)
-    val knownHost = hosts.filter { host ->
-        baseIdentity != null && host.hostBases().any {
-            normalizedBaseUrl(it) == baseIdentity
-        }
-    }.singleOrNull()
-        ?: return base to api.listWorkspaces(
+    val matchingHosts = if (baseIdentity == null) {
+        emptyList()
+    } else {
+        hosts.filter { it.hasKnownBaseIdentity(baseIdentity) }
+    }
+    val knownHost = when (matchingHosts.size) {
+        0 -> return base to api.listWorkspaces(
             base,
             token,
             allowHostFallback = false,
         )
+        1 -> matchingHosts.single()
+        else -> throw IOException("ambiguous known host base $base")
+    }
     return reachableHostWorkspaces(
         api = api,
         host = knownHost,

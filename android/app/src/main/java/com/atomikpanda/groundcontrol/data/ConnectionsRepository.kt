@@ -30,7 +30,10 @@ class ConnectionsRepository(private val context: Context) {
         }
     }
 
-    suspend fun upsert(conn: WorkspaceConnection) = mutate { upsertConnection(it, conn) }
+    /** Explicit pair/re-pair input is authoritative: a blank token must not
+     * resurrect the prior row's retained direct credential. */
+    suspend fun upsert(conn: WorkspaceConnection) =
+        mutate { upsertConnection(it, conn, preservePriorDirectToken = false) }
 
     /** Upsert one explicitly selected discovery, adopting only identities the
      * selected row's own host verified before this serialized write. */

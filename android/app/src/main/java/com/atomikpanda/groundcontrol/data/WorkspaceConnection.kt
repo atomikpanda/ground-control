@@ -132,10 +132,15 @@ private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boole
  * [conn] omits them, so it never silently resets a customized identity (ac5); an
  * explicit override on [conn] still wins. Previously-used base URLs are
  * accumulated so already-issued notification intents keep resolving.
+ *
+ * [preservePriorDirectToken] is true for discovery, where an omitted credential
+ * is not a request to erase the operator's direct route. Explicit pairing sets
+ * it false so a blank token clears both credential fields.
  */
 fun upsertConnection(
     existing: List<WorkspaceConnection>,
     conn: WorkspaceConnection,
+    preservePriorDirectToken: Boolean = true,
 ): List<WorkspaceConnection> {
     val matches: (WorkspaceConnection) -> Boolean = { prior ->
         sameWorkspace(prior, conn) ||
@@ -154,7 +159,13 @@ fun upsertConnection(
         id = if (prior != null && sameWorkspace(prior, conn)) prior.id else conn.id,
         colorOverride = conn.colorOverride ?: prior?.colorOverride,
         glyphOverride = conn.glyphOverride ?: prior?.glyphOverride,
-        directToken = conn.directToken ?: conn.token ?: prior?.directToken ?: prior?.token,
+        // Explicit/manual upserts pass false so a blank token is authoritative;
+        // host rediscovery retains the standing direct credential by default.
+        directToken = conn.directToken ?: conn.token ?: if (preservePriorDirectToken) {
+            prior?.directToken ?: prior?.token
+        } else {
+            null
+        },
         legacyBaseUrls = carryLegacyUrls(listOfNotNull(prior), conn),
     )
     return existing.filterNot(matches) + merged

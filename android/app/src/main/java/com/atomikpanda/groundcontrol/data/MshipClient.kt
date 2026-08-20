@@ -332,15 +332,13 @@ fun hostAwareClient(
             }.orEmpty()
             if (cache == null) return@on proceed(request)
             val host = when {
-                routedHostId != null ->
+                routedHostId != null && normalizedRoutedHostId == null ->
                     knownHosts.firstOrNull { it.hostId == routedHostId }
-                        ?: knownHosts.filter { candidate ->
-                            normalizedRoutedHostId != null &&
-                                candidate.legacyPublicUrls.any {
-                                    normalizedBaseUrl(it) == normalizedRoutedHostId
-                                }
+                routedHostId != null && normalizedRoutedHostId != null ->
+                    knownHosts.firstOrNull { it.hostId == routedHostId }
+                        ?: knownHosts.filter {
+                            it.hasKnownBaseIdentity(normalizedRoutedHostId)
                         }.singleOrNull()
-                        ?: matchingHosts.singleOrNull()
                 base != null -> matchingHosts.singleOrNull()
                 else -> null
             } ?: return@on proceed(request)
@@ -361,9 +359,9 @@ fun hostAwareClient(
 
             while (true) {
                 val preferredBase = base?.let { baseIdentity ->
-                    routedHost.hostBases().filter {
+                    routedHost.hostBases().firstOrNull {
                         normalizedBaseUrl(it) == baseIdentity
-                    }.singleOrNull()
+                    }
                 }
                 val candidateBases = when {
                     explicitHostBase -> listOfNotNull(preferredBase)

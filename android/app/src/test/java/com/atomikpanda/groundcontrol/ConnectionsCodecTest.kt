@@ -191,6 +191,55 @@ class ConnectionsCodecTest {
         assertEquals("ws-new", result[0].workspaceName)
     }
 
+    @Test fun manual_re_pair_with_a_blank_token_clears_active_and_direct_credentials() {
+        val existing = listOf(
+            WorkspaceConnection(
+                id = "id-1",
+                baseUrl = "http://host:47100",
+                token = "old-token",
+                workspaceName = "ws",
+                directToken = "hidden-direct-token",
+            ),
+        )
+        val incoming = WorkspaceConnection(
+            id = "id-1",
+            baseUrl = "http://host:47100",
+            token = null,
+            workspaceName = "ws",
+        )
+
+        val result = upsertConnection(
+            existing,
+            incoming,
+            preservePriorDirectToken = false,
+        ).single()
+
+        assertNull(result.token)
+        assertNull(result.directToken)
+    }
+
+    @Test fun stable_host_rediscovery_without_a_token_preserves_the_direct_credential() {
+        val existing = listOf(
+            WorkspaceConnection(
+                id = "local-id",
+                baseUrl = "http://direct/workspaces/ws",
+                hostId = "host-a",
+                workspaceId = "ws",
+                directToken = "direct-token",
+            ),
+        )
+        val incoming = WorkspaceConnection(
+            id = "derived-id",
+            baseUrl = "https://relay/workspaces/ws",
+            hostId = "host-a",
+            workspaceId = "ws",
+        )
+
+        val result = upsertConnection(existing, incoming).single()
+
+        assertEquals("direct-token", result.directToken)
+    }
+
     @Test fun round_trips_color_and_glyph_overrides() {
         val list = listOf(
             WorkspaceConnection("1", "http://h:47100", "tok", "ws-a",

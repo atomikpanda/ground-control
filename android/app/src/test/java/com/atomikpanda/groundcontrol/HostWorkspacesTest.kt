@@ -932,6 +932,50 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer current-bearer"), authorizations)
     }
 
+    @Test fun stable_host_id_never_falls_back_to_a_different_hosts_matching_base() = runTest {
+        val base = "https://other.relay.example.com"
+        val other = host.copy(
+            hostId = "host-other",
+            publicUrl = base,
+            refresh = "other-refresh",
+        )
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                when (request.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += (request.body as OutgoingContent.ByteArrayContent)
+                            .bytes()
+                            .decodeToString()
+                        respond(
+                            """{"token":"other-bearer","expires_in":300}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    "/workspaces/ws-1/threads/thread-1/seen" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(other) },
+        )
+        val stale = WorkspaceConnection(
+            id = "ws-1",
+            baseUrl = "$base/workspaces/ws-1",
+            hostId = "host-missing",
+            workspaceId = "ws-1",
+        )
+
+        SpecApi(client.client).markThreadSeen(stale, "thread-1", null)
+
+        assertTrue(exchanges.isEmpty())
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
     @Test fun a_legacy_url_host_handle_follows_a_recorded_public_url_rotation() = runTest {
         val oldBase = "https://old.relay.example.com"
         val current = host.copy(
@@ -1123,6 +1167,36 @@ class HostWorkspacesTest {
 
         assertTrue(exchanges.isEmpty())
         assertEquals(listOf<String?>(null), authorizations)
+    }
+
+    @Test fun explicit_route_prefers_the_first_raw_base_within_one_normalized_host_identity() = runTest {
+        val preferred = "HTTPS://SAME.RELAY.EXAMPLE/CaseSensitive"
+        val equivalent = "https://same.relay.example/CaseSensitive"
+        val known = HostConnection(
+            hostId = "host-a",
+            directUrl = preferred,
+            publicUrl = equivalent,
+        )
+        val attempted = mutableListOf<String>()
+        val api = SpecApi(
+            HttpClient(
+                MockEngine { request ->
+                    attempted += request.url.toString()
+                    respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                },
+            ) { mshipDefaults() },
+        )
+
+        val (reachedBase, workspaces) = reachableHostWorkspaces(
+            api = api,
+            requestedBase = equivalent,
+            token = null,
+            hosts = listOf(known),
+        )
+
+        assertEquals(preferred, reachedBase)
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(1, attempted.size)
     }
 
     @Test fun stale_workspace_url_routes_to_the_hosts_current_public_url_before_send() = runTest {
@@ -1350,6 +1424,73 @@ class HostWorkspacesTest {
         assertEquals(public, reachedBase)
         assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
         assertEquals(listOf("direct.example", "public.example"), attempted)
+    }
+
+    @Test fun settings_discovery_routes_a_unique_legacy_public_alias_to_the_current_base() = runTest {
+        val legacy = "HTTPS://OLD.RELAY.EXAMPLE/CaseSensitive"
+        val current = "https://current.relay.example/CaseSensitive"
+        val known = HostConnection(
+            hostId = "host-a",
+            publicUrl = current,
+            legacyPublicUrls = listOf("https://old.relay.example/CaseSensitive"),
+        )
+        val attempted = mutableListOf<String>()
+        val api = SpecApi(
+            HttpClient(
+                MockEngine { request ->
+                    attempted += request.url.toString()
+                    respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                },
+            ) { mshipDefaults() },
+        )
+
+        val (reachedBase, workspaces) = reachableHostWorkspaces(
+            api = api,
+            requestedBase = legacy,
+            token = null,
+            hosts = listOf(known),
+        )
+
+        assertEquals(current, reachedBase)
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("$current/workspaces"), attempted)
+    }
+
+    @Test fun settings_discovery_refuses_an_ambiguous_legacy_public_alias() = runTest {
+        val legacy = "https://old.relay.example"
+        val hosts = listOf(
+            HostConnection(
+                hostId = "host-a",
+                publicUrl = "https://a.relay.example",
+                legacyPublicUrls = listOf(legacy),
+            ),
+            HostConnection(
+                hostId = "host-b",
+                publicUrl = "https://b.relay.example",
+                legacyPublicUrls = listOf("HTTPS://OLD.RELAY.EXAMPLE"),
+            ),
+        )
+        var attempts = 0
+        val api = SpecApi(
+            HttpClient(
+                MockEngine {
+                    attempts++
+                    respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                },
+            ) { mshipDefaults() },
+        )
+
+        val error = runCatching {
+            reachableHostWorkspaces(
+                api = api,
+                requestedBase = legacy,
+                token = null,
+                hosts = hosts,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is java.io.IOException)
+        assertEquals(0, attempts)
     }
 
     @Test fun uppercase_known_host_direct_failure_reaches_its_public_base() = runTest {
