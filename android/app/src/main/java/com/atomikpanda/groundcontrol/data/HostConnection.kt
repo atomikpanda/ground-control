@@ -324,3 +324,13 @@ fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
         requestId = info.requestId,
     )
 }
+
+/** Project an entire relay directory while distinguishing an authoritative
+ * empty response from a non-empty response with no usable identities. */
+fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
+    val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
+    check(infos.isEmpty() || hosts.isNotEmpty()) {
+        "Relay directory contained no usable host identities"
+    }
+    return hosts
+}

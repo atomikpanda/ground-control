@@ -9,6 +9,7 @@ import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
 import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.hostFrom
+import com.atomikpanda.groundcontrol.data.hostsFrom
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
 import com.atomikpanda.groundcontrol.data.matchesWorkspaceRefreshRoute
@@ -413,6 +414,39 @@ class HostsRepositoryTest {
                 "relay.example.com",
             )?.hostId,
         )
+    }
+
+    @Test fun a_non_empty_directory_without_any_usable_identity_is_rejected() {
+        val result = runCatching {
+            hostsFrom(
+                listOf(
+                    HostInfo(hostId = ""),
+                    HostInfo(hostId = "  ", requestId = " "),
+                ),
+                "relay.example.com",
+            )
+        }
+
+        assertTrue(result.exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test fun a_genuinely_empty_directory_remains_authoritative() {
+        val workspace = WorkspaceConnection(
+            id = "removed",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+
+        val replaced = replaceRelayDirectoryFleet(
+            relayDomain = "relay.example.com",
+            existingHosts = listOf(host),
+            replacementHosts = hostsFrom(emptyList(), "relay.example.com"),
+            connections = listOf(workspace),
+        )
+
+        assertEquals(emptyList<HostConnection>(), replaced.hosts)
+        assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
     }
 
 

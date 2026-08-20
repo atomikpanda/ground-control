@@ -80,6 +80,9 @@ import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceScreen
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 import kotlinx.coroutines.runBlocking
 
+internal fun newThreadRoute(connectionId: String?): String =
+    if (connectionId != null) "newThread?connectionId=$connectionId" else "newThread"
+
 @Composable
 fun GroundControlApp(
     context: Context,
@@ -181,7 +184,7 @@ fun GroundControlApp(
                     onThreadClick = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onNewThread = {
                         val connId = (messagesVm.state.value as? MessagesUiState.Content)?.selectedConnectionId
-                        nav.navigate(if (connId != null) "newThread?connectionId=$connId" else "newThread")
+                        nav.navigate(newThreadRoute(connId))
                     },
                     onBack = { nav.popBackStack() },
                 )
@@ -253,16 +256,17 @@ fun GroundControlApp(
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
                 } else {
-                    val vm = viewModel(key = "workspace-$connectionId") {
+                    val canonicalConnectionId = conn.id
+                    val vm = viewModel(key = "workspace-$canonicalConnectionId") {
                         WorkspaceViewModel(api, conn)
                     }
                     WorkspaceScreen(
                         vm,
                         workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
-                        onThread = { id -> nav.navigate("thread/$connectionId/$id") },
-                        onSpec = { id -> nav.navigate("specDetail/$connectionId/$id") },
-                        onTask = { slug -> nav.navigate("taskDetail/$connectionId/$slug") },
-                        onNewConversation = { nav.navigate("newThread?connectionId=$connectionId") },
+                        onThread = { id -> nav.navigate("thread/$canonicalConnectionId/$id") },
+                        onSpec = { id -> nav.navigate("specDetail/$canonicalConnectionId/$id") },
+                        onTask = { slug -> nav.navigate("taskDetail/$canonicalConnectionId/$slug") },
+                        onNewConversation = { nav.navigate(newThreadRoute(canonicalConnectionId)) },
                         onBack = { nav.popBackStack() },
                         onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                     )

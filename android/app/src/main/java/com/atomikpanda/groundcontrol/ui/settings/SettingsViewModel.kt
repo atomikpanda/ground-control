@@ -14,7 +14,7 @@ import com.atomikpanda.groundcontrol.data.acceptsDirectCredential
 import com.atomikpanda.groundcontrol.data.displayLabel
 import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
-import com.atomikpanda.groundcontrol.data.hostFrom
+import com.atomikpanda.groundcontrol.data.hostsFrom
 import com.atomikpanda.groundcontrol.data.ladderForHost
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
 import com.atomikpanda.groundcontrol.data.reachableHostWorkspaces
@@ -364,8 +364,11 @@ class SettingsViewModel(
             setTestResult("No relay account paired yet")
             return
         }
-        val entries = try {
-            api.listHosts(account.relayDomain, account.fleetToken)
+        var entryCount = 0
+        val incoming = try {
+            val entries = api.listHosts(account.relayDomain, account.fleetToken)
+            entryCount = entries.size
+            hostsFrom(entries, account.relayDomain)
         } catch (error: Exception) {
             val failure = classifyFleetRefreshFailure(error)
             val current = if (failure.requiresRePair) {
@@ -376,9 +379,8 @@ class SettingsViewModel(
             if (current) setTestResult(failure.message, account)
             return
         }
-        val incoming = entries.mapNotNull { hostFrom(it, account.relayDomain) }
         if (!hosts.replaceFromRelay(account, incoming)) return
-        setTestResult("Fleet: ${entries.size} host(s)", account)
+        setTestResult("Fleet: $entryCount host(s)", account)
         val currentHosts = hosts.snapshot()
 
         val currentConnections = repo.snapshot()
