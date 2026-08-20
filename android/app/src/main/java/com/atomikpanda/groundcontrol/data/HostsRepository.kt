@@ -77,8 +77,11 @@ internal fun replaceRelayAccountFleet(
                 ?: directCredentialByHostId[directHost.hostId]
                 ?: return@mapNotNull null
             val workspaceId = legacyWorkspaceId(connection)
-                ?: return@mapNotNull null
-            val directBase = workspaceBaseUrl(directHost.directUrl!!, workspaceId)
+            // An authenticated root remains probeable: singleton verification
+            // can supply its workspace id after the account replacement.
+            val directBase = workspaceId?.let {
+                workspaceBaseUrl(directHost.directUrl!!, it)
+            } ?: directHost.directUrl!!
             connection.copy(
                 hostId = directHost.hostId,
                 workspaceId = workspaceId,

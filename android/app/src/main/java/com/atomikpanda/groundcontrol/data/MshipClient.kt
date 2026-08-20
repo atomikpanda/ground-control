@@ -247,14 +247,19 @@ class HostTokens(
 }
 
 
-/** Which host base [url] belongs to, longest prefix first (a URL under two
- *  known bases belongs to the more specific one). The exchange route itself is
- *  excluded: it carries the credential, never a bearer, and its 401 is final. */
+/** Normalized identity of the host base [url] belongs to, longest prefix first.
+ * The exchange route itself is excluded: it carries the credential, never a
+ * bearer, and its 401 is final. Callers must still require one unique host for
+ * the identity before routing. */
 fun hostBaseFor(url: String, hosts: List<HostConnection>): String? {
-    if (url.substringBefore('?').trimEnd('/').endsWith(HOST_TOKEN_PATH)) return null
+    val requestPath = url.substringBefore('?').substringBefore('#')
+    if (requestPath.trimEnd('/').endsWith(HOST_TOKEN_PATH)) return null
+    val requestIdentity = normalizedBaseUrl(requestPath) ?: return null
     return hosts.flatMap { it.hostBases() }
-        .filter { url.startsWith("$it/") }
-        .maxByOrNull { it.length }
+        .mapNotNull(::normalizedBaseUrl)
+        .distinct()
+        .filter { identity -> requestIdentity.startsWith("$identity/") }
+        .maxByOrNull { identity -> identity.length }
 }
 
 private suspend fun notifyHostContact(
@@ -289,9 +294,10 @@ private suspend inline fun <reified T> HttpResponse.bodyAfterHostContact(): T {
  * The interceptor is host-scoped: it attaches a bearer only to requests that
  * fall under a known host base, and on a 401 it exchanges the PERSISTED refresh
  * credential at that host's own `POST /host/token` — never at the relay — and
- * retries once. It never touches a request that already carries an
- * Authorization header, so manually paired connections keep their standing
- * token untouched.
+ * retries once. A standing Authorization header is retained only on a
+ * direct-only host. Once a relay refresh credential exists, every routed
+ * request replaces that header with a minted bearer so direct credentials
+ * never cross the relay.
  */
 
 fun hostAwareClient(
@@ -306,6 +312,10 @@ fun hostAwareClient(
             val cache = tokens
             val knownHosts = hosts()
             val originalUrl = request.url.buildString()
+            val originalPath = originalUrl.substringBefore('?').substringBefore('#')
+            val originalUrlIdentity = normalizedBaseUrl(originalPath)
+                ?: return@on proceed(request)
+            val originalUrlSuffix = originalUrl.removePrefix(originalPath)
             val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
             val routedHostId = workspaceRoute?.hostId
                 ?: request.attributes.getOrNull(HOST_ROUTE_ID)
@@ -313,6 +323,13 @@ fun hostAwareClient(
             val reportContact =
                 request.attributes.getOrNull(SUPPRESS_HOST_CONTACT) == null
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
+            val matchingHosts = base?.let { baseIdentity ->
+                knownHosts.filter { candidate ->
+                    candidate.hostBases().any {
+                        normalizedBaseUrl(it) == baseIdentity
+                    }
+                }
+            }.orEmpty()
             if (cache == null) return@on proceed(request)
             val host = when {
                 routedHostId != null ->
@@ -323,16 +340,17 @@ fun hostAwareClient(
                                     normalizedBaseUrl(it) == normalizedRoutedHostId
                                 }
                         }.singleOrNull()
-                        ?: base?.let { candidateBase ->
-                            knownHosts.filter { candidateBase in it.hostBases() }.singleOrNull()
-                        }
-                base != null -> knownHosts.filter { base in it.hostBases() }.singleOrNull()
+                        ?: matchingHosts.singleOrNull()
+                base != null -> matchingHosts.singleOrNull()
                 else -> null
             } ?: return@on proceed(request)
-            val originalBase = base ?: workspaceRoute?.baseUrl
-                ?.let(::normalizedBaseUrl)
-                ?.takeIf { originalUrl.startsWith("$it/") }
+            val originalBaseIdentity = (
+                base ?: workspaceRoute?.baseUrl?.let(::normalizedBaseUrl)
+                )
+                ?.takeIf { originalUrlIdentity.startsWith("$it/") }
                 ?: return@on proceed(request)
+            val routeSuffix =
+                originalUrlIdentity.removePrefix(originalBaseIdentity) + originalUrlSuffix
             val explicitHostBase =
                 request.attributes.getOrNull(EXPLICIT_HOST_BASE) != null
             val retryRequest = request.method == HttpMethod.Get ||
@@ -342,7 +360,11 @@ fun hostAwareClient(
             var snapshotRefreshed = false
 
             while (true) {
-                val preferredBase = base?.takeIf { it in routedHost.hostBases() }
+                val preferredBase = base?.let { baseIdentity ->
+                    routedHost.hostBases().filter {
+                        normalizedBaseUrl(it) == baseIdentity
+                    }.singleOrNull()
+                }
                 val candidateBases = when {
                     explicitHostBase -> listOfNotNull(preferredBase)
                     preferredBase != null ->
@@ -351,10 +373,10 @@ fun hostAwareClient(
                 }
                 val candidateRequests = candidateBases.map { candidateBase ->
                     val candidateUrl = if (base != null) {
-                        candidateBase + originalUrl.removePrefix(originalBase)
+                        candidateBase + routeSuffix
                     } else {
                         workspaceBaseUrl(candidateBase, workspaceRoute!!.workspaceId) +
-                            originalUrl.removePrefix(originalBase)
+                            routeSuffix
                     }
                     candidateBase to candidateUrl
                 }
@@ -402,7 +424,13 @@ fun hostAwareClient(
                             ),
                         )
                     }
-                    if (candidateRequest.headers.contains(HttpHeaders.Authorization)) {
+                    if (routedHost.refresh != null) {
+                        candidateRequest.headers.remove(HttpHeaders.Authorization)
+                    }
+                    if (
+                        routedHost.refresh == null &&
+                        candidateRequest.headers.contains(HttpHeaders.Authorization)
+                    ) {
                         val call = try {
                             proceed(candidateRequest)
                         } catch (error: IOException) {
@@ -468,7 +496,8 @@ fun hostAwareClient(
                     snapshotRefreshed = true
                     continue
                 }
-                throw lastTransportFailure ?: IOException("no reachable base for $originalBase")
+                throw lastTransportFailure
+                    ?: IOException("no reachable base for $originalBaseIdentity")
             }
             error("host route loop exited")
         }
