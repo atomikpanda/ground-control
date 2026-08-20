@@ -50,17 +50,22 @@ data class HostConnection(
      *  ladder's staleness input, and the phone's own evidence rather than the
      *  directory's claim. */
     val lastContactAtMillis: Long? = null,
-    /** Prior relay-published bases for this stable host id. These are identity
-     * aliases only: requests route to [publicUrl], never back to a stale base. */
+    /** Prior relay-published or direct bases for this stable host id. These are
+     * identity aliases only: requests route to a current [hostBases] entry,
+     * never back to a stale base. */
     val legacyPublicUrls: List<String> = emptyList(),
 )
 
+/** A standing direct credential belongs only to a host outside relay ownership.
+ * A relay directory row with a temporarily absent refresh must never inherit it. */
+internal fun HostConnection.acceptsDirectCredential(): Boolean =
+    relayDomain == null && refresh == null
+
 /** Candidate bases in reachability order. A LAN/tailnet address is eligible
- * only before this host owns a persisted refresh credential; once it does,
- * sending that credential to an address learned from unauthenticated health
- * would disclose it. */
+ * only for a direct host outside relay ownership; relay hosts always use their
+ * directory-published route. */
 fun HostConnection.hostBases(): List<String> =
-    listOfNotNull(directUrl.takeIf { refresh == null }, publicUrl)
+    listOfNotNull(directUrl.takeIf { acceptsDirectCredential() }, publicUrl)
         .map { it.trimEnd('/') }
         .filter { it.isNotBlank() }
         .distinct()
@@ -140,7 +145,7 @@ suspend fun reachableHostWorkspaces(
     return reachableHostWorkspaces(
         api = api,
         host = knownHost,
-        token = token.takeIf { knownHost.refresh == null },
+        token = token.takeIf { knownHost.acceptsDirectCredential() },
         recordContact = true,
     ) ?: throw IOException("no reachable base for $base")
 }
@@ -161,7 +166,7 @@ suspend fun refreshHostWorkspaceConnections(
     identities: List<VerifiedIdentity> = emptyList(),
     directToken: String? = null,
 ): HostWorkspaceRefresh? {
-    val routeToken = directToken.takeIf { host.refresh == null }
+    val routeToken = directToken.takeIf { host.acceptsDirectCredential() }
     val (base, workspaces) =
         reachableHostWorkspaces(api, host, token = routeToken) ?: return null
     return HostWorkspaceRefresh(
@@ -186,14 +191,20 @@ fun recordHostContact(
     hostId: String,
     hostBase: String,
     contactedAtMillis: Long,
-): List<HostConnection> = hosts.map { host ->
-    if (host.hostId == hostId && hostBase in host.hostBases()) {
-        host.copy(
-            lastContactAtMillis = contactedAtMillis.coerceAtLeast(
-                host.lastContactAtMillis ?: contactedAtMillis,
-            ),
-        )
-    } else host
+): List<HostConnection> {
+    val contactedIdentity = normalizedBaseUrl(hostBase) ?: return hosts
+    return hosts.map { host ->
+        val contactedCurrentRoute =
+            host.hostId == hostId &&
+                host.hostBases().any { normalizedBaseUrl(it) == contactedIdentity }
+        if (contactedCurrentRoute) {
+            host.copy(
+                lastContactAtMillis = contactedAtMillis.coerceAtLeast(
+                    host.lastContactAtMillis ?: contactedAtMillis,
+                ),
+            )
+        } else host
+    }
 }
 
 /** Persist the observations made by one reachable direct-host discovery. */
@@ -248,23 +259,21 @@ object HostsCodec {
  */
 fun upsertHost(existing: List<HostConnection>, host: HostConnection): List<HostConnection> {
     val prior = existing.firstOrNull { it.hostId == host.hostId }
+    val retainedDirectUrl = host.directUrl ?: prior?.directUrl
+    val currentPublicIdentity = normalizedBaseUrl(host.publicUrl)
+    val currentDirectIdentity = retainedDirectUrl?.let(::normalizedBaseUrl)
     val merged = host.copy(
         labelOverride = host.labelOverride ?: prior?.labelOverride,
-        directUrl = host.directUrl ?: prior?.directUrl,
+        directUrl = retainedDirectUrl,
         refresh = host.refresh ?: prior?.refresh,
         lastContactAtMillis = host.lastContactAtMillis ?: prior?.lastContactAtMillis,
         legacyPublicUrls = (
             host.legacyPublicUrls +
                 prior?.legacyPublicUrls.orEmpty() +
-                listOfNotNull(
-                    prior?.publicUrl?.takeIf {
-                        host.publicUrl.isNotBlank() &&
-                            it.isNotBlank() &&
-                            it != host.publicUrl
-                    },
-                )
+                listOfNotNull(prior?.publicUrl, prior?.directUrl)
             )
-            .filter { it.isNotBlank() && it != host.publicUrl }
+            .mapNotNull(::normalizedBaseUrl)
+            .filter { it != currentPublicIdentity && it != currentDirectIdentity }
             .distinct(),
     )
     return if (prior == null) existing + merged

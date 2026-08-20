@@ -841,6 +841,36 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer relay-bearer"), authorizations)
     }
 
+    @Test fun relay_ownership_without_refresh_never_sends_a_preserved_direct_token() = runTest {
+        val publicBase = "https://public.relay.example"
+        val relayHost = HostConnection(
+            hostId = "host-stable",
+            publicUrl = publicBase,
+            refresh = null,
+            relayDomain = "relay.example",
+        )
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(relayHost) },
+        )
+        val restored = WorkspaceConnection(
+            id = "restored",
+            baseUrl = "$publicBase/workspaces/ws-1",
+            token = "preserved-direct-token",
+            hostId = relayHost.hostId,
+            workspaceId = "ws-1",
+            directToken = "preserved-direct-token",
+        )
+
+        SpecApi(client.client).markThreadSeen(restored, "thread-1", null)
+
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
     @Test fun direct_only_routes_keep_their_standing_authorization() = runTest {
         val directBase = "http://direct.example"
         val directHost = HostConnection(
@@ -2014,6 +2044,22 @@ class HostWorkspacesTest {
 
         assertNull(updated.single { it.hostId == first.hostId }.lastContactAtMillis)
         assertEquals(30L, updated.single { it.hostId == second.hostId }.lastContactAtMillis)
+    }
+
+    @Test fun contact_freshness_matches_the_normalized_current_route_identity() {
+        val stored = host.copy(
+            publicUrl = "https://relay.example/CaseSensitive",
+            lastContactAtMillis = null,
+        )
+
+        val updated = recordHostContact(
+            listOf(stored),
+            stored.hostId,
+            "HTTPS://RELAY.EXAMPLE/CaseSensitive/",
+            30,
+        )
+
+        assertEquals(30L, updated.single().lastContactAtMillis)
     }
 
     @Test fun contact_persistence_failure_does_not_fail_a_successful_api_call() = runTest {

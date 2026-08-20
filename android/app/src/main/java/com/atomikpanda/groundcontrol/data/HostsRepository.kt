@@ -24,6 +24,33 @@ internal fun relayAccountMatchesExpected(
     expected: RelayAccount,
 ): Boolean = current == expected
 
+/** Require the exact host route/credential generation that issued a workspace
+ * response to remain current before that response can mutate either store. */
+internal fun workspaceRefreshSourceStillCurrent(
+    currentHost: HostConnection,
+    currentHosts: List<HostConnection>,
+    currentConnections: List<WorkspaceConnection>,
+    expectedAccount: RelayAccount,
+    hostBase: String,
+    expectedDirectOnly: Boolean,
+    expectedRelayRefresh: String?,
+    expectedDirectGeneration: DirectRefreshGeneration?,
+    identities: List<VerifiedIdentity>,
+): Boolean {
+    if (!currentHost.matchesWorkspaceRefreshRoute(hostBase, expectedDirectOnly)) return false
+    if (expectedDirectGeneration == null) {
+        return currentHost.relayDomain == expectedAccount.relayDomain &&
+            currentHost.refresh == expectedRelayRefresh
+    }
+    if (!currentHost.acceptsDirectCredential()) return false
+    return directRefreshGeneration(
+        connections = currentConnections,
+        hostId = currentHost.hostId,
+        hosts = currentHosts,
+        identities = identities,
+    ) == expectedDirectGeneration
+}
+
 
 internal fun replaceRelayAccountFleet(
     previous: RelayAccount?,
@@ -214,17 +241,15 @@ class HostsRepository(private val context: Context) {
         )
     }
 
-    /** Atomically apply one host response only while the account that authorized
-     * the refresh is current. Retained direct hosts are also eligible when a
-     * verified identity binds one of their persisted connections to that stable
-     * host id. */
-    suspend fun applyHostWorkspaceRefresh(
+    /** Atomically apply one host response only while the account, route, and
+     * exact relay/direct credential generation that authorized it are current. */
+    internal suspend fun applyHostWorkspaceRefresh(
         expectedAccount: RelayAccount,
         hostId: String,
         hostBase: String,
         expectedDirectOnly: Boolean,
-        expectedDirectToken: String?,
-        expectedDirectConnectionIds: Set<String>,
+        expectedRelayRefresh: String?,
+        expectedDirectGeneration: DirectRefreshGeneration?,
         contactedAtMillis: Long,
         discovered: List<WorkspaceConnection>,
         identities: List<VerifiedIdentity>,
@@ -235,29 +260,20 @@ class HostsRepository(private val context: Context) {
             val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
             val currentHost = currentHosts.singleOrNull { it.hostId == hostId }
                 ?: return@edit
-            if (!currentHost.matchesWorkspaceRefreshRoute(hostBase, expectedDirectOnly)) {
-                return@edit
-            }
             val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
-            if (currentHost.relayDomain != expectedAccount.relayDomain) {
-                val verifiedConnectionIds = identities
-                    .filter {
-                        it.hostId == hostId &&
-                            !it.workspaceId.isNullOrBlank()
-                    }
-                    .mapTo(mutableSetOf()) { it.connectionId }
-                if (
-                    expectedDirectConnectionIds.isEmpty() ||
-                    !verifiedConnectionIds.containsAll(expectedDirectConnectionIds) ||
-                    !directRefreshSourceStillCurrent(
-                        connections = currentConnections,
-                        hostId = hostId,
-                        connectionIds = expectedDirectConnectionIds,
-                        expectedDirectToken = expectedDirectToken,
-                    )
-                ) {
-                    return@edit
-                }
+            if (!workspaceRefreshSourceStillCurrent(
+                    currentHost = currentHost,
+                    currentHosts = currentHosts,
+                    currentConnections = currentConnections,
+                    expectedAccount = expectedAccount,
+                    hostBase = hostBase,
+                    expectedDirectOnly = expectedDirectOnly,
+                    expectedRelayRefresh = expectedRelayRefresh,
+                    expectedDirectGeneration = expectedDirectGeneration,
+                    identities = identities,
+                )
+            ) {
+                return@edit
             }
             it[HOSTS] = HostsCodec.encode(
                 recordHostContact(currentHosts, hostId, hostBase, contactedAtMillis),
@@ -269,7 +285,7 @@ class HostsRepository(private val context: Context) {
                     discovered = discovered,
                     identities = identities,
                     hosts = currentHosts,
-                    activatePriorDirectToken = currentHost.refresh == null,
+                    activatePriorDirectToken = expectedDirectGeneration != null,
                 ),
             )
             applied = true

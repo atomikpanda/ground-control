@@ -4,9 +4,10 @@ import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
-import com.atomikpanda.groundcontrol.data.directRefreshSourceStillCurrent
+import com.atomikpanda.groundcontrol.data.directRefreshGeneration
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
@@ -18,6 +19,7 @@ import com.atomikpanda.groundcontrol.data.recordDirectHostDiscovery
 import com.atomikpanda.groundcontrol.data.relayAccountMatchesExpected
 import com.atomikpanda.groundcontrol.data.upsertHost
 import com.atomikpanda.groundcontrol.data.upsertConnection
+import com.atomikpanda.groundcontrol.data.workspaceRefreshSourceStillCurrent
 import com.atomikpanda.groundcontrol.data.dto.HostInfo
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -87,6 +89,7 @@ class HostsRepositoryTest {
             "http://192.168.1.9:47190",
             host.copy(
                 refresh = null,
+                relayDomain = null,
                 directUrl = "http://192.168.1.9:47190/",
             ).hostBase(),
         )
@@ -149,12 +152,24 @@ class HostsRepositoryTest {
     }
     @Test fun an_in_flight_direct_refresh_is_rejected_after_same_base_re_pair() {
         val base = "http://direct.lan:47190"
+        val directHost = host.copy(
+            publicUrl = "",
+            refresh = null,
+            directUrl = base,
+            relayDomain = null,
+        )
         val oldConnection = WorkspaceConnection(
             id = "workspace",
             baseUrl = "$base/workspaces/ws",
             token = "old-token",
             hostId = host.hostId,
             workspaceId = "ws",
+        )
+        val expected = directRefreshGeneration(
+            connections = listOf(oldConnection),
+            hostId = host.hostId,
+            hosts = listOf(directHost),
+            identities = emptyList(),
         )
         val rePaired = upsertConnection(
             existing = listOf(oldConnection),
@@ -164,26 +179,126 @@ class HostsRepositoryTest {
             ),
             preservePriorDirectToken = false,
         )
-        val sourceIds = setOf(oldConnection.id)
 
+        assertEquals("old-token", expected?.credential)
         assertTrue(
-            directRefreshSourceStillCurrent(
-                connections = listOf(oldConnection),
-                hostId = host.hostId,
-                connectionIds = sourceIds,
-                expectedDirectToken = "old-token",
+            workspaceRefreshSourceStillCurrent(
+                currentHost = directHost,
+                currentHosts = listOf(directHost),
+                currentConnections = listOf(oldConnection),
+                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
+                hostBase = base,
+                expectedDirectOnly = true,
+                expectedRelayRefresh = null,
+                expectedDirectGeneration = expected,
+                identities = emptyList(),
             ),
         )
         assertFalse(
-            directRefreshSourceStillCurrent(
-                connections = rePaired,
-                hostId = host.hostId,
-                connectionIds = sourceIds,
-                expectedDirectToken = "old-token",
+            workspaceRefreshSourceStillCurrent(
+                currentHost = directHost,
+                currentHosts = listOf(directHost),
+                currentConnections = rePaired,
+                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
+                hostBase = base,
+                expectedDirectOnly = true,
+                expectedRelayRefresh = null,
+                expectedDirectGeneration = expected,
+                identities = emptyList(),
             ),
         )
         assertEquals("new-token", rePaired.single().token)
         assertEquals("new-token", rePaired.single().directToken)
+    }
+
+    @Test fun legacy_direct_identity_migration_invalidates_its_captured_generation() {
+        val oldBase = "http://old.direct.example"
+        val currentBase = "http://current.direct.example"
+        val directHost = HostConnection(
+            hostId = "direct-host",
+            directUrl = currentBase,
+            legacyPublicUrls = listOf(oldBase),
+        )
+        val legacySource = WorkspaceConnection(
+            id = "legacy-source",
+            baseUrl = "$oldBase/workspaces/ws",
+            token = "direct-token",
+            hostId = oldBase,
+            workspaceId = "ws",
+        )
+        val identities = listOf(
+            VerifiedIdentity(legacySource.id, directHost.hostId, "ws"),
+        )
+        val expected = directRefreshGeneration(
+            connections = listOf(legacySource),
+            hostId = directHost.hostId,
+            hosts = listOf(directHost),
+            identities = identities,
+        )
+        val migrated = legacySource.copy(
+            baseUrl = "$currentBase/workspaces/ws",
+            hostId = directHost.hostId,
+        )
+
+        assertTrue(
+            workspaceRefreshSourceStillCurrent(
+                currentHost = directHost,
+                currentHosts = listOf(directHost),
+                currentConnections = listOf(legacySource),
+                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
+                hostBase = currentBase,
+                expectedDirectOnly = true,
+                expectedRelayRefresh = null,
+                expectedDirectGeneration = expected,
+                identities = identities,
+            ),
+        )
+        assertFalse(
+            workspaceRefreshSourceStillCurrent(
+                currentHost = directHost,
+                currentHosts = listOf(directHost),
+                currentConnections = listOf(migrated),
+                expectedAccount = RelayAccount("relay.example.com", "fleet-token"),
+                hostBase = currentBase,
+                expectedDirectOnly = true,
+                expectedRelayRefresh = null,
+                expectedDirectGeneration = expected,
+                identities = identities,
+            ),
+        )
+    }
+
+    @Test fun an_in_flight_relay_refresh_is_rejected_after_credential_rotation() {
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val snapshot = host.copy(refresh = "old-refresh")
+        val rotated = snapshot.copy(refresh = "new-refresh")
+
+        assertTrue(
+            workspaceRefreshSourceStillCurrent(
+                currentHost = snapshot,
+                currentHosts = listOf(snapshot),
+                currentConnections = emptyList(),
+                expectedAccount = account,
+                hostBase = snapshot.publicUrl,
+                expectedDirectOnly = false,
+                expectedRelayRefresh = "old-refresh",
+                expectedDirectGeneration = null,
+                identities = emptyList(),
+            ),
+        )
+        assertFalse(
+            workspaceRefreshSourceStillCurrent(
+                currentHost = rotated,
+                currentHosts = listOf(rotated),
+                currentConnections = emptyList(),
+                expectedAccount = account,
+                hostBase = snapshot.publicUrl,
+                expectedDirectOnly = false,
+                expectedRelayRefresh = "old-refresh",
+                expectedDirectGeneration = null,
+                identities = emptyList(),
+            ),
+        )
     }
 
 
@@ -581,6 +696,31 @@ class HostsRepositoryTest {
         ).single()
 
         assertEquals(200L, updated.lastContactAtMillis)
+    }
+
+    @Test fun rotating_a_direct_url_retains_one_normalized_legacy_identity() {
+        val existing = HostConnection(
+            hostId = "direct-host",
+            directUrl = "HTTP://OLD.DIRECT.EXAMPLE/",
+            legacyPublicUrls = listOf(
+                "https://OLD.RELAY.EXAMPLE/",
+                "https://old.relay.example",
+            ),
+        )
+
+        val updated = recordDirectHostDiscovery(
+            hosts = listOf(existing),
+            hostId = existing.hostId,
+            directUrl = "http://new.direct.example/",
+            runnerState = null,
+            contactedAtMillis = 100L,
+        ).single()
+
+        assertEquals("http://new.direct.example", updated.directUrl)
+        assertEquals(
+            listOf("https://old.relay.example", "http://old.direct.example"),
+            updated.legacyPublicUrls,
+        )
     }
 
     @Test fun old_persisted_state_without_the_hosts_key_decodes_to_empty() {

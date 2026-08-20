@@ -93,10 +93,11 @@ class SettingsFleetTest {
         collecting.cancel()
     }
 
-    @Test fun fleet_refresh_includes_a_retained_direct_host_that_owns_a_verified_identity() {
+    @Test fun fleet_refresh_includes_relay_and_owned_direct_generations() {
         val account = RelayAccount("new.example", "new-token")
         val relayHost = HostConnection(
             hostId = "new-host",
+            refresh = "relay-refresh",
             relayDomain = account.relayDomain,
         )
         val retainedDirect = HostConnection(
@@ -109,32 +110,93 @@ class SettingsFleetTest {
             directUrl = "http://other.example",
             relayDomain = null,
         )
+        val stableDirectConnection = WorkspaceConnection(
+            id = "stable-workspace",
+            baseUrl = "${retainedDirect.directUrl}/workspaces/ws-1",
+            token = "direct-token",
+            hostId = retainedDirect.hostId,
+            workspaceId = "ws-1",
+        )
+
         val selected = fleetWorkspaceRefreshTargets(
             hosts = listOf(relayHost, retainedDirect, unrelatedDirect),
-            connections = listOf(
-                WorkspaceConnection(
-                    id = "legacy-root",
-                    baseUrl = retainedDirect.directUrl!!,
-                    token = "direct-token",
-                    hostId = retainedDirect.hostId,
-                ),
-            ),
+            connections = listOf(stableDirectConnection),
             account = account,
-            identities = listOf(
-                VerifiedIdentity(
-                    connectionId = "legacy-root",
-                    hostId = retainedDirect.hostId,
-                    workspaceId = "ws-1",
-                ),
-            ),
+            identities = emptyList(),
         )
 
         assertEquals(listOf(relayHost, retainedDirect), selected.map { it.host })
+        assertEquals(listOf("relay-refresh", null), selected.map { it.expectedRelayRefresh })
         assertEquals(listOf(null, "direct-token"), selected.map { it.directToken })
         assertEquals(
-            listOf(emptySet(), setOf("legacy-root")),
-            selected.map { it.verifiedConnectionIds },
+            listOf(emptyList(), listOf(stableDirectConnection)),
+            selected.map { it.expectedDirectGeneration?.sources.orEmpty() },
         )
+    }
+
+    @Test fun verified_url_and_null_host_sources_authorize_their_known_direct_host() {
+        val account = RelayAccount("new.example", "new-token")
+        val directHost = HostConnection(
+            hostId = "retained-host",
+            directUrl = "http://direct.example",
+        )
+        val urlSource = WorkspaceConnection(
+            id = "url-source",
+            baseUrl = "${directHost.directUrl}/workspaces/ws-url",
+            token = "direct-token",
+            hostId = "HTTP://DIRECT.EXAMPLE",
+            workspaceId = "ws-url",
+        )
+        val nullSource = WorkspaceConnection(
+            id = "null-source",
+            baseUrl = "${directHost.directUrl}/workspaces/ws-null",
+            token = "direct-token",
+            hostId = null,
+            workspaceId = "ws-null",
+        )
+
+        val selected = fleetWorkspaceRefreshTargets(
+            hosts = listOf(directHost),
+            connections = listOf(urlSource, nullSource),
+            account = account,
+            identities = listOf(
+                VerifiedIdentity(urlSource.id, directHost.hostId, "ws-url"),
+                VerifiedIdentity(nullSource.id, directHost.hostId, "ws-null"),
+            ),
+        ).single()
+
+        assertEquals("direct-token", selected.directToken)
+        assertEquals(
+            listOf(nullSource, urlSource),
+            selected.expectedDirectGeneration?.sources,
+        )
+    }
+
+    @Test fun a_relay_owned_host_without_refresh_is_not_treated_as_retained_direct() {
+        val account = RelayAccount("relay.example", "fleet-token")
+        val relayHost = HostConnection(
+            hostId = "relay-host",
+            directUrl = "http://direct.example",
+            relayDomain = account.relayDomain,
+            refresh = null,
+        )
+        val preservedDirect = WorkspaceConnection(
+            id = "workspace",
+            baseUrl = "${relayHost.directUrl}/workspaces/ws",
+            directToken = "preserved-direct",
+            hostId = relayHost.hostId,
+            workspaceId = "ws",
+        )
+
+        val target = fleetWorkspaceRefreshTargets(
+            hosts = listOf(relayHost),
+            connections = listOf(preservedDirect),
+            account = account,
+            identities = emptyList(),
+        ).single()
+
+        assertNull(target.directToken)
+        assertNull(target.expectedDirectGeneration)
     }
 
     @Test fun fleet_auth_failure_requires_repair_but_transport_failure_is_an_outage() {
@@ -170,6 +232,16 @@ class SettingsFleetTest {
             canAdoptDirectHostIdentity(
                 "host-relay",
                 HostConnection(hostId = "host-relay", refresh = "secret"),
+            ),
+        )
+        assertFalse(
+            canAdoptDirectHostIdentity(
+                "host-relay-without-refresh",
+                HostConnection(
+                    hostId = "host-relay-without-refresh",
+                    relayDomain = "relay.example",
+                    refresh = null,
+                ),
             ),
         )
         assertFalse(canAdoptDirectHostIdentity(claimedHostId = null, claimedHost = null))

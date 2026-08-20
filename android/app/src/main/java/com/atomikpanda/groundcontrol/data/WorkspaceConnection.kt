@@ -193,28 +193,37 @@ data class VerifiedIdentity(
     val workspaceId: String?,
 )
 
-/** Whether the exact verified direct-connection generation that authorized an
- * in-flight host refresh is still current. Re-pairing at the same URL changes
- * the credential without changing route identity, so route checks alone are
- * insufficient. */
-internal fun directRefreshSourceStillCurrent(
+/** The exact persisted direct sources and unique credential that authorize one
+ * host refresh. Equality is the optimistic generation: any re-pair, identity
+ * migration, or source replacement invalidates an in-flight response. */
+internal data class DirectRefreshGeneration(
+    val sources: List<WorkspaceConnection>,
+    val credential: String,
+)
+
+internal fun directRefreshGeneration(
     connections: List<WorkspaceConnection>,
     hostId: String,
-    connectionIds: Set<String>,
-    expectedDirectToken: String?,
-): Boolean {
-    if (connectionIds.isEmpty()) return false
-    val sources = connections.filter { it.id in connectionIds }
-    if (sources.size != connectionIds.size || sources.any { it.hostId != hostId }) return false
-    val credentials = sources.mapNotNull { connection ->
+    hosts: List<HostConnection>,
+    identities: List<VerifiedIdentity>,
+): DirectRefreshGeneration? {
+    val verifiedSourceIds = identities
+        .filter { it.hostId == hostId && !it.workspaceId.isNullOrBlank() }
+        .mapTo(mutableSetOf()) { it.connectionId }
+    val sources = connections.filter { connection ->
+        val stableOwner =
+            connection.hostId == hostId && !connection.workspaceId.isNullOrBlank()
+        val verifiedLegacyOwner =
+            connection.id in verifiedSourceIds &&
+                knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
+        stableOwner || verifiedLegacyOwner
+    }.sortedBy { it.id }
+    if (sources.isEmpty() || sources.map { it.id }.distinct().size != sources.size) return null
+    val credential = sources.mapNotNull { connection ->
         connection.directToken?.takeIf { it.isNotBlank() }
             ?: connection.token?.takeIf { it.isNotBlank() }
-    }.toSet()
-    return if (expectedDirectToken == null) {
-        credentials.isEmpty()
-    } else {
-        credentials == setOf(expectedDirectToken)
-    }
+    }.distinct().singleOrNull() ?: return null
+    return DirectRefreshGeneration(sources, credential)
 }
 
 /** Rows that still lack a stable host/workspace identity tuple remain eligible for verified
@@ -284,7 +293,7 @@ suspend fun verifyLegacyIdentity(
     val (_, workspaces) = reachableHostWorkspaces(
         api = api,
         host = host,
-        token = connection.token.takeIf { host.refresh == null },
+        token = connection.token.takeIf { host.acceptsDirectCredential() },
         recordContact = false,
     ) ?: return null
     val knownWorkspaceId = legacyWorkspaceId(connection)

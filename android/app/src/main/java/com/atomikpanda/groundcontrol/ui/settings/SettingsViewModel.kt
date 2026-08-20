@@ -3,13 +3,16 @@ package com.atomikpanda.groundcontrol.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.DirectRefreshGeneration
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.RePairNeededException
+import com.atomikpanda.groundcontrol.data.acceptsDirectCredential
 import com.atomikpanda.groundcontrol.data.displayLabel
+import com.atomikpanda.groundcontrol.data.directRefreshGeneration
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderForHost
@@ -108,7 +111,7 @@ internal fun canAdoptDirectHostIdentity(
     id.isNotBlank() &&
         !id.startsWith("http://", ignoreCase = true) &&
         !id.startsWith("https://", ignoreCase = true) &&
-        (claimedHost == null || claimedHost.refresh == null)
+        (claimedHost == null || claimedHost.acceptsDirectCredential())
 } == true
 
 internal fun directUrlForDiscovery(
@@ -134,42 +137,37 @@ internal fun legacyConnectionsForDiscovery(
 }
 internal data class FleetWorkspaceRefreshTarget(
     val host: HostConnection,
-    val directToken: String?,
-    val verifiedConnectionIds: Set<String>,
-)
+    val expectedRelayRefresh: String?,
+    val expectedDirectGeneration: DirectRefreshGeneration?,
+) {
+    val directToken: String? get() = expectedDirectGeneration?.credential
+}
 
 internal fun fleetWorkspaceRefreshTargets(
     hosts: List<HostConnection>,
     connections: List<WorkspaceConnection>,
     account: RelayAccount,
     identities: List<VerifiedIdentity>,
-): List<FleetWorkspaceRefreshTarget> {
-    val connectionsById = connections.associateBy { it.id }
-    val verifiedByHost = identities
-        .filter { it.hostId != null && it.workspaceId != null }
-        .groupBy { it.hostId }
-    return hosts.mapNotNull { host ->
-        if (host.relayDomain == account.relayDomain) {
-            return@mapNotNull FleetWorkspaceRefreshTarget(
-                host,
-                directToken = null,
-                verifiedConnectionIds = emptySet(),
-            )
-        }
-        val verified = verifiedByHost[host.hostId].orEmpty()
-            .filter { identity ->
-                connectionsById[identity.connectionId]?.hostId == host.hostId
-            }
-        if (verified.isEmpty()) return@mapNotNull null
-        val verifiedConnectionIds = verified.mapTo(mutableSetOf()) { it.connectionId }
-        val directToken = verified.mapNotNull { identity ->
-            connectionsById[identity.connectionId]?.let { connection ->
-                connection.directToken?.takeIf { it.isNotBlank() }
-                    ?: connection.token?.takeIf { it.isNotBlank() }
-            }
-        }.distinct().singleOrNull()
-        FleetWorkspaceRefreshTarget(host, directToken, verifiedConnectionIds)
+): List<FleetWorkspaceRefreshTarget> = hosts.mapNotNull { host ->
+    if (host.relayDomain == account.relayDomain) {
+        return@mapNotNull FleetWorkspaceRefreshTarget(
+            host = host,
+            expectedRelayRefresh = host.refresh,
+            expectedDirectGeneration = null,
+        )
     }
+    if (!host.acceptsDirectCredential()) return@mapNotNull null
+    val generation = directRefreshGeneration(
+        connections = connections,
+        hostId = host.hostId,
+        hosts = hosts,
+        identities = identities,
+    ) ?: return@mapNotNull null
+    FleetWorkspaceRefreshTarget(
+        host = host,
+        expectedRelayRefresh = null,
+        expectedDirectGeneration = generation,
+    )
 }
 
 
@@ -419,8 +417,8 @@ class SettingsViewModel(
                     hostId = host.hostId,
                     hostBase = refreshed.hostBase,
                     expectedDirectOnly = host.refresh == null,
-                    expectedDirectToken = target.directToken,
-                    expectedDirectConnectionIds = target.verifiedConnectionIds,
+                    expectedRelayRefresh = target.expectedRelayRefresh,
+                    expectedDirectGeneration = target.expectedDirectGeneration,
                     contactedAtMillis = System.currentTimeMillis(),
                     discovered = refreshed.connections,
                     identities = refreshed.identities,
@@ -433,9 +431,9 @@ class SettingsViewModel(
 
 
     /** Persist a selected direct-host workspace. A host id learned from
-     * unauthenticated `/health` is adopted only while no relay refresh
-     * credential exists; otherwise the URL remains a separate manual
-     * connection and can never receive that credential. */
+     * unauthenticated `/health` is adopted only for an unowned direct host;
+     * relay-owned entries remain separate manual connections even while their
+     * refresh credential is absent. */
     fun addDiscovered(from: DiscoveredWorkspaces, info: WorkspaceInfo) {
         viewModelScope.launch {
             val claimedHost = from.hostId?.let { claimed ->
@@ -458,9 +456,11 @@ class SettingsViewModel(
             }
             val currentHosts = hosts.snapshot()
             val storedHost = currentHosts.firstOrNull { it.hostId == hostId }
+            val directCredentialRoute =
+                storedHost?.acceptsDirectCredential() ?: true
             val discovered = deriveConnection(
                 hostBase = from.hostBase,
-                hostToken = from.hostToken.takeIf { storedHost?.refresh == null },
+                hostToken = from.hostToken.takeIf { directCredentialRoute },
                 hostId = hostId,
                 workspaceId = info.id,
                 workspaceName = info.name,
@@ -475,7 +475,7 @@ class SettingsViewModel(
             repo.upsertDiscovered(
                 discovered,
                 identities,
-                activatePriorDirectToken = storedHost?.refresh == null,
+                activatePriorDirectToken = directCredentialRoute,
             )
         }
     }

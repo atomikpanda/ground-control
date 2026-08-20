@@ -422,11 +422,11 @@ fun hostAwareClient(
                             ),
                         )
                     }
-                    if (routedHost.refresh != null) {
+                    if (!routedHost.acceptsDirectCredential()) {
                         candidateRequest.headers.remove(HttpHeaders.Authorization)
                     }
                     if (
-                        routedHost.refresh == null &&
+                        routedHost.acceptsDirectCredential() &&
                         candidateRequest.headers.contains(HttpHeaders.Authorization)
                     ) {
                         val call = try {
