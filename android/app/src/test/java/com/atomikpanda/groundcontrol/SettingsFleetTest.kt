@@ -144,6 +144,17 @@ class SettingsFleetTest {
         assertEquals(listOf(legacy), unresolvedLegacyConnections(listOf(legacy, adopted)))
     }
 
+    @Test fun uppercase_url_host_handles_remain_eligible_for_legacy_verification() {
+        val legacy = WorkspaceConnection(
+            id = "manual",
+            baseUrl = "https://host.example/workspaces/ws-1",
+            hostId = "HTTPS://host.example",
+            workspaceId = "ws-1",
+        )
+
+        assertEquals(listOf(legacy), unresolvedLegacyConnections(listOf(legacy)))
+    }
+
     @Test fun direct_discovery_verifies_requested_and_reached_legacy_rows() {
         val requestedRoot = WorkspaceConnection("root", "http://host:47190")
         val requestedWorkspace =

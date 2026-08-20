@@ -183,6 +183,55 @@ class HostsRepositoryTest {
         assertEquals("direct-token", replaced.connections.single().token)
     }
 
+    @Test fun replacing_a_relay_account_recovers_a_legacy_direct_credential_from_its_host() {
+        val directBase = "http://lan:47190"
+        val credentialOwner = WorkspaceConnection(
+            id = "credential-owner",
+            baseUrl = "$directBase/workspaces/other",
+            token = "standing-token",
+            hostId = host.hostId,
+            workspaceId = "other",
+        )
+        val preDirectTokenAdoption = WorkspaceConnection(
+            id = "adopted",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            token = null,
+            hostId = host.hostId,
+            workspaceId = "ws",
+            directToken = null,
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = directBase)),
+            connections = listOf(credentialOwner, preDirectTokenAdoption),
+        )
+
+        val restored = replaced.connections.single { it.id == "adopted" }
+        assertEquals("$directBase/workspaces/ws", restored.baseUrl)
+        assertEquals("standing-token", restored.token)
+        assertEquals("standing-token", restored.directToken)
+    }
+
+    @Test fun replacing_a_relay_account_removes_an_owned_route_without_a_direct_credential() {
+        val unrestorable = WorkspaceConnection(
+            id = "unrestorable",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = "http://lan:47190")),
+            connections = listOf(unrestorable),
+        )
+
+        assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
+    }
+
     @Test fun replacing_a_relay_account_restores_a_legacy_direct_workspace_route() {
         val directBase = "http://lan:47190"
         val legacy = WorkspaceConnection(
@@ -253,6 +302,24 @@ class HostsRepositoryTest {
         assertEquals("null-token", restoredById.getValue("null-host").token)
         assertEquals("null-token", restoredById.getValue("null-host").directToken)
         assertEquals(listOf(nullHost.baseUrl), restoredById.getValue("null-host").legacyBaseUrls)
+    }
+
+    @Test fun replacing_a_relay_account_removes_a_legacy_route_owned_by_a_host_without_direct_access() {
+        val stale = WorkspaceConnection(
+            id = "stale",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            hostId = host.publicUrl,
+            directToken = "standing-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = null)),
+            connections = listOf(stale),
+        )
+
+        assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
     }
 
     @Test fun replacing_a_relay_account_does_not_guess_legacy_host_ownership() {

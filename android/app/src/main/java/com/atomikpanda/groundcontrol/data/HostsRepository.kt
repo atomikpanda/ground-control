@@ -52,28 +52,43 @@ internal fun replaceRelayAccountFleet(
         )
     }
     val retainedDirectById = retainedDirectHosts.associateBy { it.hostId }
-    val removedHostIds = previousHosts.mapTo(mutableSetOf()) { it.hostId }
-        .apply { removeAll(retainedDirectById.keys) }
+    val ownedConnections = connections.map { connection ->
+        connection to knownHostForLegacyConnection(connection, previousHosts)
+    }
+    val credentialCandidatesByHostId = mutableMapOf<String, MutableSet<String>>()
+    for ((connection, knownHost) in ownedConnections) {
+        val credential = connection.directToken?.takeIf { it.isNotBlank() }
+            ?: connection.token?.takeIf { it.isNotBlank() }
+        if (knownHost != null && credential != null) {
+            credentialCandidatesByHostId.getOrPut(knownHost.hostId, ::mutableSetOf).add(credential)
+        }
+    }
+    val directCredentialByHostId = credentialCandidatesByHostId.mapValues { (_, credentials) ->
+        credentials.singleOrNull()
+    }
     return RelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
-        connections = connections.mapNotNull { connection ->
-            if (connection.hostId in removedHostIds) return@mapNotNull null
-            val directHost = retainedDirectById[connection.hostId]
-                ?: knownHostForLegacyConnection(connection, previousHosts)
-                    ?.let { retainedDirectById[it.hostId] }
-                ?: return@mapNotNull connection
+        connections = ownedConnections.mapNotNull { (connection, knownHost) ->
+            knownHost ?: return@mapNotNull connection
+            val directHost = retainedDirectById[knownHost.hostId]
+                ?: return@mapNotNull null
+            val directCredential = connection.directToken?.takeIf { it.isNotBlank() }
+                ?: connection.token?.takeIf { it.isNotBlank() }
+                ?: directCredentialByHostId[directHost.hostId]
+                ?: return@mapNotNull null
             val workspaceId = legacyWorkspaceId(connection)
-                ?: return@mapNotNull connection
+                ?: return@mapNotNull null
             val directBase = workspaceBaseUrl(directHost.directUrl!!, workspaceId)
             connection.copy(
                 hostId = directHost.hostId,
                 workspaceId = workspaceId,
                 baseUrl = directBase,
-                token = connection.directToken ?: connection.token,
+                token = directCredential,
                 state = null,
                 legacyBaseUrls = (connection.legacyBaseUrls + connection.baseUrl)
                     .filter { it != directBase }
                     .distinct(),
+                directToken = directCredential,
             )
         },
     )

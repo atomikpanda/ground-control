@@ -111,8 +111,8 @@ object ConnectionsCodec {
 fun WorkspaceConnection.hasStableIdentityTuple(): Boolean =
     !hostId.isNullOrBlank() &&
         !workspaceId.isNullOrBlank() &&
-        !hostId.startsWith("http://") &&
-        !hostId.startsWith("https://")
+        !hostId.startsWith("http://", ignoreCase = true) &&
+        !hostId.startsWith("https://", ignoreCase = true)
 
 /** The same verified workspace on the same host, whatever URL it answers on. */
 private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boolean =
