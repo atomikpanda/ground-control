@@ -193,20 +193,28 @@ data class VerifiedIdentity(
     val workspaceId: String?,
 )
 
-/** The exact persisted direct sources and unique credential that authorize one
- * host refresh. Equality is the optimistic generation: any re-pair, identity
- * migration, or source replacement invalidates an in-flight response. */
-internal data class DirectRefreshGeneration(
+/** The exact persisted workspace sources that authorize one host refresh.
+ * Equality is the optimistic generation: any re-pair, identity migration, or
+ * source replacement invalidates an in-flight response. */
+internal data class WorkspaceRefreshGeneration(
     val sources: List<WorkspaceConnection>,
-    val credential: String,
-)
+) {
+    /** A direct refresh is authorized only when every source agrees on one
+     * nonblank standing credential. Relay refreshes use the same source
+     * generation but authenticate from their host row instead. */
+    val uniqueCredential: String?
+        get() = sources.mapNotNull { connection ->
+            connection.directToken?.takeIf { it.isNotBlank() }
+                ?: connection.token?.takeIf { it.isNotBlank() }
+        }.distinct().singleOrNull()
+}
 
-internal fun directRefreshGeneration(
+internal fun workspaceRefreshGeneration(
     connections: List<WorkspaceConnection>,
     hostId: String,
     hosts: List<HostConnection>,
     identities: List<VerifiedIdentity>,
-): DirectRefreshGeneration? {
+): WorkspaceRefreshGeneration? {
     val verifiedSourceIds = identities
         .filter { it.hostId == hostId && !it.workspaceId.isNullOrBlank() }
         .mapTo(mutableSetOf()) { it.connectionId }
@@ -218,12 +226,8 @@ internal fun directRefreshGeneration(
                 knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
         stableOwner || verifiedLegacyOwner
     }.sortedBy { it.id }
-    if (sources.isEmpty() || sources.map { it.id }.distinct().size != sources.size) return null
-    val credential = sources.mapNotNull { connection ->
-        connection.directToken?.takeIf { it.isNotBlank() }
-            ?: connection.token?.takeIf { it.isNotBlank() }
-    }.distinct().singleOrNull() ?: return null
-    return DirectRefreshGeneration(sources, credential)
+    if (sources.map { it.id }.distinct().size != sources.size) return null
+    return WorkspaceRefreshGeneration(sources)
 }
 
 /** Rows that still lack a stable host/workspace identity tuple remain eligible for verified
@@ -425,8 +429,14 @@ private fun adopt(
     activatePriorDirectToken: Boolean,
 ): WorkspaceConnection {
     val manual = priors.first()
+    val priorDirectToken = priors.mapNotNull { prior ->
+        prior.directToken?.takeIf { it.isNotBlank() }
+            ?: prior.token?.takeIf { it.isNotBlank() }
+    }.distinct().singleOrNull()
     val retainedDirectToken =
-        found.directToken ?: found.token ?: manual.directToken ?: manual.token
+        found.directToken?.takeIf { it.isNotBlank() }
+            ?: found.token?.takeIf { it.isNotBlank() }
+            ?: priorDirectToken
     return found.copy(
         id = manual.id,
         token = found.token ?: retainedDirectToken.takeIf { activatePriorDirectToken },

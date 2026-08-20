@@ -130,7 +130,7 @@ class SettingsFleetTest {
         assertEquals(listOf(null, "direct-token"), selected.map { it.directToken })
         assertEquals(
             listOf(emptyList(), listOf(stableDirectConnection)),
-            selected.map { it.expectedDirectGeneration?.sources.orEmpty() },
+            selected.map { it.expectedSourceGeneration.sources },
         )
     }
 
@@ -168,7 +168,7 @@ class SettingsFleetTest {
         assertEquals("direct-token", selected.directToken)
         assertEquals(
             listOf(nullSource, urlSource),
-            selected.expectedDirectGeneration?.sources,
+            selected.expectedSourceGeneration.sources,
         )
     }
 
@@ -196,7 +196,7 @@ class SettingsFleetTest {
         ).single()
 
         assertNull(target.directToken)
-        assertNull(target.expectedDirectGeneration)
+        assertEquals(listOf(preservedDirect), target.expectedSourceGeneration.sources)
     }
 
     @Test fun fleet_auth_failure_requires_repair_but_transport_failure_is_an_outage() {

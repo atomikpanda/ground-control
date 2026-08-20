@@ -242,6 +242,54 @@ class HostWorkspacesTest {
         assertEquals("standing-tok", adopted.directToken)
     }
 
+    @Test fun adoption_preserves_a_unique_direct_credential_from_a_discovered_twin() {
+        val manualWithoutCredential = manual.copy(
+            baseUrl = "http://host-a:47100/workspaces/ws-1",
+            token = null,
+        )
+        val twin = deriveConnection(
+            "http://host-a:47100", null, "host-a", "ws-1", "alpha", "healthy",
+        ).copy(directToken = "twin-token")
+        val refreshed = deriveConnection(
+            "http://host-a:47100", null, "host-a", "ws-1", "alpha", "healthy",
+        )
+
+        val adopted = adoptManualConnections(
+            existing = listOf(manualWithoutCredential, twin),
+            discovered = listOf(refreshed),
+            identities = listOf(VerifiedIdentity("local-uuid", "host-a", "ws-1")),
+            activatePriorDirectToken = true,
+        ).single()
+
+        assertEquals("twin-token", adopted.token)
+        assertEquals("twin-token", adopted.directToken)
+    }
+
+    @Test fun adoption_rejects_conflicting_direct_credentials_from_matching_twins() {
+        val manualCredential = manual.copy(
+            baseUrl = "http://host-a:47100/workspaces/ws-1",
+            token = null,
+            directToken = "manual-token",
+        )
+        val twin = deriveConnection(
+            "http://host-a:47100", null, "host-a", "ws-1", "alpha", "healthy",
+        ).copy(directToken = "twin-token")
+        val refreshed = deriveConnection(
+            "http://host-a:47100", null, "host-a", "ws-1", "alpha", "healthy",
+        )
+
+        val adopted = adoptManualConnections(
+            existing = listOf(manualCredential, twin),
+            discovered = listOf(refreshed),
+            identities = listOf(VerifiedIdentity("local-uuid", "host-a", "ws-1")),
+            activatePriorDirectToken = true,
+        ).single()
+
+        assertNull(adopted.token)
+        assertNull(adopted.directToken)
+    }
+
+
 
     @Test fun verified_adoption_preserves_urls_from_an_existing_discovered_twin() {
         val twin = deriveConnection(
@@ -1121,6 +1169,55 @@ class HostWorkspacesTest {
             urls,
         )
         assertEquals(listOf("Bearer relay-bearer"), authorizations)
+    }
+
+    @Test fun a_null_host_legacy_workspace_routes_through_its_unique_rotated_alias() = runTest {
+        val legacyBase = "HTTPS://OLD.RELAY.EXAMPLE/CaseSensitive"
+        val currentBase = "https://new.relay.example/CaseSensitive"
+        val current = host.copy(
+            hostId = "host-stable",
+            publicUrl = currentBase,
+            refresh = "refresh-current",
+            legacyPublicUrls = listOf("https://old.relay.example/CaseSensitive"),
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                when (request.url.encodedPath) {
+                    "/CaseSensitive/host/token" -> respond(
+                        """{"token":"current-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/CaseSensitive/workspaces/ws-2/threads/ThreadCase/seen" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+        )
+        val legacy = WorkspaceConnection(
+            id = "legacy-row",
+            baseUrl = "$legacyBase/workspaces/ws-2",
+            token = "old-standing-token",
+            hostId = null,
+            workspaceId = "ws-2",
+        )
+
+        SpecApi(client.client).markThreadSeen(legacy, "ThreadCase", null)
+
+        assertEquals(
+            listOf(
+                "$currentBase/host/token",
+                "$currentBase/workspaces/ws-2/threads/ThreadCase/seen",
+            ),
+            urls,
+        )
+        assertEquals(listOf("Bearer current-bearer"), authorizations)
     }
 
     @Test fun uppercase_url_identity_routes_without_changing_path_case() = runTest {

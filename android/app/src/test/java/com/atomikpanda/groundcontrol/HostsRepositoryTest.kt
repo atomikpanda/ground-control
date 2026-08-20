@@ -7,7 +7,7 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
-import com.atomikpanda.groundcontrol.data.directRefreshGeneration
+import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
@@ -165,12 +165,12 @@ class HostsRepositoryTest {
             hostId = host.hostId,
             workspaceId = "ws",
         )
-        val expected = directRefreshGeneration(
+        val expected = workspaceRefreshGeneration(
             connections = listOf(oldConnection),
             hostId = host.hostId,
             hosts = listOf(directHost),
             identities = emptyList(),
-        )
+        )!!
         val rePaired = upsertConnection(
             existing = listOf(oldConnection),
             conn = oldConnection.copy(
@@ -180,7 +180,7 @@ class HostsRepositoryTest {
             preservePriorDirectToken = false,
         )
 
-        assertEquals("old-token", expected?.credential)
+        assertEquals("old-token", expected.uniqueCredential)
         assertTrue(
             workspaceRefreshSourceStillCurrent(
                 currentHost = directHost,
@@ -190,7 +190,7 @@ class HostsRepositoryTest {
                 hostBase = base,
                 expectedDirectOnly = true,
                 expectedRelayRefresh = null,
-                expectedDirectGeneration = expected,
+                expectedSourceGeneration = expected,
                 identities = emptyList(),
             ),
         )
@@ -203,7 +203,7 @@ class HostsRepositoryTest {
                 hostBase = base,
                 expectedDirectOnly = true,
                 expectedRelayRefresh = null,
-                expectedDirectGeneration = expected,
+                expectedSourceGeneration = expected,
                 identities = emptyList(),
             ),
         )
@@ -229,12 +229,12 @@ class HostsRepositoryTest {
         val identities = listOf(
             VerifiedIdentity(legacySource.id, directHost.hostId, "ws"),
         )
-        val expected = directRefreshGeneration(
+        val expected = workspaceRefreshGeneration(
             connections = listOf(legacySource),
             hostId = directHost.hostId,
             hosts = listOf(directHost),
             identities = identities,
-        )
+        )!!
         val migrated = legacySource.copy(
             baseUrl = "$currentBase/workspaces/ws",
             hostId = directHost.hostId,
@@ -249,7 +249,7 @@ class HostsRepositoryTest {
                 hostBase = currentBase,
                 expectedDirectOnly = true,
                 expectedRelayRefresh = null,
-                expectedDirectGeneration = expected,
+                expectedSourceGeneration = expected,
                 identities = identities,
             ),
         )
@@ -262,7 +262,7 @@ class HostsRepositoryTest {
                 hostBase = currentBase,
                 expectedDirectOnly = true,
                 expectedRelayRefresh = null,
-                expectedDirectGeneration = expected,
+                expectedSourceGeneration = expected,
                 identities = identities,
             ),
         )
@@ -272,6 +272,12 @@ class HostsRepositoryTest {
         val account = RelayAccount("relay.example.com", "fleet-token")
         val snapshot = host.copy(refresh = "old-refresh")
         val rotated = snapshot.copy(refresh = "new-refresh")
+        val expected = workspaceRefreshGeneration(
+            connections = emptyList(),
+            hostId = snapshot.hostId,
+            hosts = listOf(snapshot),
+            identities = emptyList(),
+        )!!
 
         assertTrue(
             workspaceRefreshSourceStillCurrent(
@@ -282,7 +288,7 @@ class HostsRepositoryTest {
                 hostBase = snapshot.publicUrl,
                 expectedDirectOnly = false,
                 expectedRelayRefresh = "old-refresh",
-                expectedDirectGeneration = null,
+                expectedSourceGeneration = expected,
                 identities = emptyList(),
             ),
         )
@@ -295,7 +301,80 @@ class HostsRepositoryTest {
                 hostBase = snapshot.publicUrl,
                 expectedDirectOnly = false,
                 expectedRelayRefresh = "old-refresh",
-                expectedDirectGeneration = null,
+                expectedSourceGeneration = expected,
+                identities = emptyList(),
+            ),
+        )
+    }
+
+    @Test fun a_relay_owned_host_without_refresh_accepts_its_relay_route_generation() {
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val snapshot = host.copy(
+            relayDomain = account.relayDomain,
+            refresh = null,
+        )
+        val expected = workspaceRefreshGeneration(
+            connections = emptyList(),
+            hostId = snapshot.hostId,
+            hosts = listOf(snapshot),
+            identities = emptyList(),
+        )!!
+
+        assertTrue(
+            workspaceRefreshSourceStillCurrent(
+                currentHost = snapshot,
+                currentHosts = listOf(snapshot),
+                currentConnections = emptyList(),
+                expectedAccount = account,
+                hostBase = snapshot.publicUrl,
+                expectedDirectOnly = false,
+                expectedRelayRefresh = null,
+                expectedSourceGeneration = expected,
+                identities = emptyList(),
+            ),
+        )
+    }
+
+    @Test fun an_in_flight_relay_refresh_is_rejected_after_workspace_source_mutation() {
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val snapshot = host.copy(refresh = "relay-refresh")
+        val original = WorkspaceConnection(
+            id = "workspace",
+            baseUrl = "${snapshot.publicUrl}/workspaces/ws",
+            hostId = snapshot.hostId,
+            workspaceId = "ws",
+        )
+        val rePaired = original.copy(token = "new-standing-token")
+        val expected = workspaceRefreshGeneration(
+            connections = listOf(original),
+            hostId = snapshot.hostId,
+            hosts = listOf(snapshot),
+            identities = emptyList(),
+        )!!
+
+        assertTrue(
+            workspaceRefreshSourceStillCurrent(
+                currentHost = snapshot,
+                currentHosts = listOf(snapshot),
+                currentConnections = listOf(original),
+                expectedAccount = account,
+                hostBase = snapshot.publicUrl,
+                expectedDirectOnly = false,
+                expectedRelayRefresh = snapshot.refresh,
+                expectedSourceGeneration = expected,
+                identities = emptyList(),
+            ),
+        )
+        assertFalse(
+            workspaceRefreshSourceStillCurrent(
+                currentHost = snapshot,
+                currentHosts = listOf(snapshot),
+                currentConnections = listOf(rePaired),
+                expectedAccount = account,
+                hostBase = snapshot.publicUrl,
+                expectedDirectOnly = false,
+                expectedRelayRefresh = snapshot.refresh,
+                expectedSourceGeneration = expected,
                 identities = emptyList(),
             ),
         )

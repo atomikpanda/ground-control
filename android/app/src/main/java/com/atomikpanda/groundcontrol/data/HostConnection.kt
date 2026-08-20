@@ -74,14 +74,14 @@ fun HostConnection.hostBases(): List<String> =
  * known. Fleet refresh replaces it with the first base it actually reaches. */
 fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
 /** A response may publish only while the route generation that issued it is
- * still current. Normalized base membership catches direct URL replacement;
- * the mode check catches direct-to-relay adoption even when the public base is
- * textually unchanged. */
+ * still current. Normalized base membership catches route replacement; the
+ * direct-credential ownership check catches direct-to-relay adoption without
+ * misclassifying relay-owned rows whose refresh is temporarily absent. */
 internal fun HostConnection.matchesWorkspaceRefreshRoute(
     hostBase: String,
     expectedDirectOnly: Boolean,
 ): Boolean {
-    if ((refresh == null) != expectedDirectOnly) return false
+    if (acceptsDirectCredential() != expectedDirectOnly) return false
     val identity = normalizedBaseUrl(hostBase) ?: return false
     return hostBases().any { normalizedBaseUrl(it) == identity }
 }

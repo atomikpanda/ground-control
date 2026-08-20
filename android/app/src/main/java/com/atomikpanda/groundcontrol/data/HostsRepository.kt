@@ -24,8 +24,8 @@ internal fun relayAccountMatchesExpected(
     expected: RelayAccount,
 ): Boolean = current == expected
 
-/** Require the exact host route/credential generation that issued a workspace
- * response to remain current before that response can mutate either store. */
+/** Require the exact host route/credential and workspace source generation
+ * that issued a response to remain current before it can mutate either store. */
 internal fun workspaceRefreshSourceStillCurrent(
     currentHost: HostConnection,
     currentHosts: List<HostConnection>,
@@ -34,21 +34,24 @@ internal fun workspaceRefreshSourceStillCurrent(
     hostBase: String,
     expectedDirectOnly: Boolean,
     expectedRelayRefresh: String?,
-    expectedDirectGeneration: DirectRefreshGeneration?,
+    expectedSourceGeneration: WorkspaceRefreshGeneration,
     identities: List<VerifiedIdentity>,
 ): Boolean {
     if (!currentHost.matchesWorkspaceRefreshRoute(hostBase, expectedDirectOnly)) return false
-    if (expectedDirectGeneration == null) {
-        return currentHost.relayDomain == expectedAccount.relayDomain &&
-            currentHost.refresh == expectedRelayRefresh
+    if (expectedDirectOnly) {
+        if (!currentHost.acceptsDirectCredential()) return false
+    } else if (
+        currentHost.relayDomain != expectedAccount.relayDomain ||
+        currentHost.refresh != expectedRelayRefresh
+    ) {
+        return false
     }
-    if (!currentHost.acceptsDirectCredential()) return false
-    return directRefreshGeneration(
+    return workspaceRefreshGeneration(
         connections = currentConnections,
         hostId = currentHost.hostId,
         hosts = currentHosts,
         identities = identities,
-    ) == expectedDirectGeneration
+    ) == expectedSourceGeneration
 }
 
 
@@ -241,15 +244,16 @@ class HostsRepository(private val context: Context) {
         )
     }
 
-    /** Atomically apply one host response only while the account, route, and
-     * exact relay/direct credential generation that authorized it are current. */
+    /** Atomically apply one host response only while the account, route,
+     * credential, and exact workspace source generation that authorized it
+     * remain current. */
     internal suspend fun applyHostWorkspaceRefresh(
         expectedAccount: RelayAccount,
         hostId: String,
         hostBase: String,
         expectedDirectOnly: Boolean,
         expectedRelayRefresh: String?,
-        expectedDirectGeneration: DirectRefreshGeneration?,
+        expectedSourceGeneration: WorkspaceRefreshGeneration,
         contactedAtMillis: Long,
         discovered: List<WorkspaceConnection>,
         identities: List<VerifiedIdentity>,
@@ -269,7 +273,7 @@ class HostsRepository(private val context: Context) {
                     hostBase = hostBase,
                     expectedDirectOnly = expectedDirectOnly,
                     expectedRelayRefresh = expectedRelayRefresh,
-                    expectedDirectGeneration = expectedDirectGeneration,
+                    expectedSourceGeneration = expectedSourceGeneration,
                     identities = identities,
                 )
             ) {
@@ -285,7 +289,7 @@ class HostsRepository(private val context: Context) {
                     discovered = discovered,
                     identities = identities,
                     hosts = currentHosts,
-                    activatePriorDirectToken = expectedDirectGeneration != null,
+                    activatePriorDirectToken = expectedDirectOnly,
                 ),
             )
             applied = true

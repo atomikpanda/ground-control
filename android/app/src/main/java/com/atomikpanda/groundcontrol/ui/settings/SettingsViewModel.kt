@@ -3,7 +3,7 @@ package com.atomikpanda.groundcontrol.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
-import com.atomikpanda.groundcontrol.data.DirectRefreshGeneration
+import com.atomikpanda.groundcontrol.data.WorkspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
@@ -12,7 +12,7 @@ import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.data.acceptsDirectCredential
 import com.atomikpanda.groundcontrol.data.displayLabel
-import com.atomikpanda.groundcontrol.data.directRefreshGeneration
+import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hostFrom
 import com.atomikpanda.groundcontrol.data.ladderForHost
@@ -138,9 +138,10 @@ internal fun legacyConnectionsForDiscovery(
 internal data class FleetWorkspaceRefreshTarget(
     val host: HostConnection,
     val expectedRelayRefresh: String?,
-    val expectedDirectGeneration: DirectRefreshGeneration?,
+    val expectedSourceGeneration: WorkspaceRefreshGeneration,
+    val directToken: String?,
 ) {
-    val directToken: String? get() = expectedDirectGeneration?.credential
+    val directOnly: Boolean get() = directToken != null
 }
 
 internal fun fleetWorkspaceRefreshTargets(
@@ -149,24 +150,27 @@ internal fun fleetWorkspaceRefreshTargets(
     account: RelayAccount,
     identities: List<VerifiedIdentity>,
 ): List<FleetWorkspaceRefreshTarget> = hosts.mapNotNull { host ->
-    if (host.relayDomain == account.relayDomain) {
-        return@mapNotNull FleetWorkspaceRefreshTarget(
-            host = host,
-            expectedRelayRefresh = host.refresh,
-            expectedDirectGeneration = null,
-        )
-    }
-    if (!host.acceptsDirectCredential()) return@mapNotNull null
-    val generation = directRefreshGeneration(
+    val generation = workspaceRefreshGeneration(
         connections = connections,
         hostId = host.hostId,
         hosts = hosts,
         identities = identities,
     ) ?: return@mapNotNull null
+    if (host.relayDomain == account.relayDomain) {
+        return@mapNotNull FleetWorkspaceRefreshTarget(
+            host = host,
+            expectedRelayRefresh = host.refresh,
+            expectedSourceGeneration = generation,
+            directToken = null,
+        )
+    }
+    if (!host.acceptsDirectCredential()) return@mapNotNull null
+    val directToken = generation.uniqueCredential ?: return@mapNotNull null
     FleetWorkspaceRefreshTarget(
         host = host,
         expectedRelayRefresh = null,
-        expectedDirectGeneration = generation,
+        expectedSourceGeneration = generation,
+        directToken = directToken,
     )
 }
 
@@ -416,9 +420,9 @@ class SettingsViewModel(
                     expectedAccount = account,
                     hostId = host.hostId,
                     hostBase = refreshed.hostBase,
-                    expectedDirectOnly = host.refresh == null,
+                    expectedDirectOnly = target.directOnly,
                     expectedRelayRefresh = target.expectedRelayRefresh,
-                    expectedDirectGeneration = target.expectedDirectGeneration,
+                    expectedSourceGeneration = target.expectedSourceGeneration,
                     contactedAtMillis = System.currentTimeMillis(),
                     discovered = refreshed.connections,
                     identities = refreshed.identities,

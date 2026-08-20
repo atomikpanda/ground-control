@@ -135,9 +135,8 @@ private data class PendingHostContact(
 )
 private val PENDING_HOST_CONTACT = AttributeKey<PendingHostContact>("PendingHostContact")
 private data class WorkspaceRoute(
-    val hostId: String,
+    val connection: WorkspaceConnection,
     val workspaceId: String,
-    val baseUrl: String,
 )
 private val WORKSPACE_ROUTE = AttributeKey<WorkspaceRoute>("WorkspaceRoute")
 private val HOST_ROUTE_ID = AttributeKey<String>("HostRouteId")
@@ -317,7 +316,7 @@ fun hostAwareClient(
                 ?: return@on proceed(request)
             val originalUrlSuffix = originalUrl.removePrefix(originalPath)
             val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
-            val routedHostId = workspaceRoute?.hostId
+            val routedHostId = workspaceRoute?.connection?.hostId
                 ?: request.attributes.getOrNull(HOST_ROUTE_ID)
             val normalizedRoutedHostId = routedHostId?.let(::normalizedBaseUrl)
             val reportContact =
@@ -340,10 +339,12 @@ fun hostAwareClient(
                             it.hasKnownBaseIdentity(normalizedRoutedHostId)
                         }.singleOrNull()
                 base != null -> matchingHosts.singleOrNull()
+                workspaceRoute != null ->
+                    knownHostForLegacyConnection(workspaceRoute.connection, knownHosts)
                 else -> null
             } ?: return@on proceed(request)
             val originalBaseIdentity = (
-                base ?: workspaceRoute?.baseUrl?.let(::normalizedBaseUrl)
+                base ?: workspaceRoute?.connection?.baseUrl?.let(::normalizedBaseUrl)
                 )
                 ?.takeIf { originalUrlIdentity.startsWith("$it/") }
                 ?: return@on proceed(request)
@@ -705,12 +706,11 @@ class SpecApi(private val client: HttpClient) {
         conn.token?.takeIf { it.isNotBlank() }?.let {
             header(HttpHeaders.Authorization, "Bearer $it")
         }
-        val hostId = conn.hostId
         val workspaceId = legacyWorkspaceId(conn)
-        if (!hostId.isNullOrBlank() && workspaceId != null) {
+        if (workspaceId != null) {
             attributes.put(
                 WORKSPACE_ROUTE,
-                WorkspaceRoute(hostId, workspaceId, conn.baseUrl),
+                WorkspaceRoute(conn, workspaceId),
             )
         }
     }
