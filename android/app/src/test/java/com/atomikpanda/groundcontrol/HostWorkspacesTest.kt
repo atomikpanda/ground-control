@@ -1156,6 +1156,33 @@ class HostWorkspacesTest {
         assertEquals(listOf<String?>(null), authorizations)
     }
 
+    @Test
+    fun unresolved_explicit_host_id_strips_caller_authorization_from_a_different_known_host() = runTest {
+        val base = "https://other.relay.example.com"
+        val other = host.copy(
+            hostId = "host-other",
+            publicUrl = base,
+            refresh = "other-refresh",
+        )
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond(listPayload, HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(other) },
+        )
+
+        val workspaces = SpecApi(client.client).listWorkspaces(
+            hostBase = base,
+            token = "caller-supplied-token",
+            hostId = "host-missing",
+        )
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
     @Test fun a_legacy_url_host_handle_follows_a_recorded_public_url_rotation() = runTest {
         val oldBase = "https://old.relay.example.com"
         val current = host.copy(

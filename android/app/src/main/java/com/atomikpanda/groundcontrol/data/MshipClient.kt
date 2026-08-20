@@ -316,8 +316,8 @@ fun hostAwareClient(
                 ?: return@on proceed(request)
             val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
             val connectionHostId = workspaceRoute?.connection?.hostId
-            val routedHostId = connectionHostId
-                ?: request.attributes.getOrNull(HOST_ROUTE_ID)
+            val explicitHostRouteId = request.attributes.getOrNull(HOST_ROUTE_ID)
+            val routedHostId = connectionHostId ?: explicitHostRouteId
             val normalizedRoutedHostId = routedHostId?.let(::normalizedBaseUrl)
             val reportContact =
                 request.attributes.getOrNull(SUPPRESS_HOST_CONTACT) == null
@@ -351,12 +351,10 @@ fun hostAwareClient(
                 else -> null
             }
             var routedHost = host ?: run {
-                val fleetBoundRoute =
+                val fleetBoundWorkspaceRoute =
                     workspaceRoute != null &&
-                        (
-                            !connectionHostId.isNullOrBlank() ||
-                                legacyMatchingHosts.size > 1
-                        )
+                        (!connectionHostId.isNullOrBlank() || legacyMatchingHosts.size > 1)
+                val fleetBoundRoute = explicitHostRouteId != null || fleetBoundWorkspaceRoute
                 if (fleetBoundRoute) {
                     request.headers.remove(HttpHeaders.Authorization)
                 }

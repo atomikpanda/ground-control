@@ -67,7 +67,6 @@ import com.atomikpanda.groundcontrol.ui.projects.ProjectsScreen
 import com.atomikpanda.groundcontrol.ui.projects.ProjectsViewModel
 import com.atomikpanda.groundcontrol.ui.theme.LocalWorkspaceIdentityResolver
 import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
-import com.atomikpanda.groundcontrol.ui.theme.autoIdentity
 import com.atomikpanda.groundcontrol.ui.theme.resolveIdentity
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
@@ -133,7 +132,7 @@ fun GroundControlApp(
         // staticCompositionLocalOf invalidates every badge reader on a by-reference change, so a fresh
         // lambda each recomposition would needlessly re-render all badge sites (Greptile P2).
         val identityResolver: (String, String) -> WorkspaceIdentity = remember(connsForBadges) {
-            { id, name -> connsForBadges.firstOrNull { it.id == id }?.let(::resolveIdentity) ?: autoIdentity(name) }
+            { id, name -> resolveIdentity(connsForBadges, id, name) }
         }
         CompositionLocalProvider(LocalWorkspaceIdentityResolver provides identityResolver) {
         NavHost(nav, startDestination = Section.HOME.route, modifier = Modifier.padding(padding)) {
