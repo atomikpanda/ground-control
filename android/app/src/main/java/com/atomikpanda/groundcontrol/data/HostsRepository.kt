@@ -60,10 +60,11 @@ internal fun replaceRelayAccountFleet(
             if (connection.hostId in removedHostIds) return@mapNotNull null
             val directHost = retainedDirectById[connection.hostId]
                 ?: return@mapNotNull connection
-            val workspaceId = connection.workspaceId?.takeIf { it.isNotBlank() }
+            val workspaceId = legacyWorkspaceId(connection)
                 ?: return@mapNotNull connection
             val directBase = workspaceBaseUrl(directHost.directUrl!!, workspaceId)
             connection.copy(
+                workspaceId = workspaceId,
                 baseUrl = directBase,
                 token = connection.directToken ?: connection.token,
                 state = null,

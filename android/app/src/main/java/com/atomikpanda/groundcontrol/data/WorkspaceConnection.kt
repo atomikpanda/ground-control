@@ -190,7 +190,7 @@ fun unresolvedLegacyConnections(
 /** Workspace id encoded in a legacy row without trusting its unauthenticated
  * `/health` response. Root rows remain identifiable only when the authenticated
  * host route exposes exactly one workspace. */
-private fun legacyWorkspaceId(connection: WorkspaceConnection): String? {
+internal fun legacyWorkspaceId(connection: WorkspaceConnection): String? {
     connection.workspaceId?.takeIf { it.isNotBlank() }?.let { return it }
     val base = connection.baseUrl.trimEnd('/')
     return base.substringAfterLast("/workspaces/", "")

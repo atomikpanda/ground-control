@@ -183,6 +183,40 @@ class HostsRepositoryTest {
         assertEquals("direct-token", replaced.connections.single().token)
     }
 
+    @Test fun replacing_a_relay_account_restores_a_legacy_direct_workspace_route() {
+        val directBase = "http://lan:47190"
+        val legacy = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "${host.publicUrl}/workspaces/legacy-ws",
+            token = null,
+            hostId = host.hostId,
+            workspaceId = null,
+            directToken = "direct-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = "$directBase/")),
+            connections = listOf(legacy),
+        )
+
+        val retainedHost = replaced.hosts.single()
+        assertEquals(host.hostId, retainedHost.hostId)
+        assertEquals(directBase, retainedHost.directUrl)
+        assertNull(retainedHost.relayDomain)
+        assertEquals("", retainedHost.publicUrl)
+        assertNull(retainedHost.refresh)
+
+        val restored = replaced.connections.single()
+        assertEquals(host.hostId, restored.hostId)
+        assertEquals("legacy-ws", restored.workspaceId)
+        assertEquals("$directBase/workspaces/legacy-ws", restored.baseUrl)
+        assertEquals("direct-token", restored.token)
+        assertEquals("direct-token", restored.directToken)
+        assertTrue(restored.legacyBaseUrls.contains(legacy.baseUrl))
+    }
+
     @Test fun replacing_a_same_domain_relay_token_clears_the_previous_fleet() {
         val oldWorkspace = WorkspaceConnection(
             id = "old",
