@@ -551,4 +551,21 @@ class ConnectionsCodecTest {
             },
         )
     }
+    @Test fun duplicate_candidate_host_records_make_ownership_ambiguous() {
+        val first = HostConnection(hostId = "host-1", publicUrl = "https://host.test/root")
+        val second = HostConnection(hostId = "host-1", publicUrl = "https://host.test/root")
+        val connection = WorkspaceConnection(
+            "legacy",
+            "https://host.test/root/workspaces/ws-1",
+        )
+
+        assertEquals(
+            LegacyRouteOwnership.Ambiguous,
+            legacyRouteOwnership(connection, listOf(first, second)),
+        )
+        assertEquals(
+            LegacyRouteOwnership.Owned("host-1", "https://host.test/root", "ws-1"),
+            legacyRouteOwnership(connection, listOf(first)),
+        )
+    }
 }

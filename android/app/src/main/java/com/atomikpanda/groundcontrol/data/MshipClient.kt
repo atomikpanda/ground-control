@@ -332,9 +332,8 @@ fun hostAwareClient(
             val stripWorkspaceAuthorization = when (workspaceOwnership) {
                 LegacyRouteOwnership.Ambiguous -> true
                 is LegacyRouteOwnership.Owned -> workspaceEvidence == null
-                LegacyRouteOwnership.Unknown -> workspaceRoute?.connection?.hostId
-                    ?.let { it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true) }
-                    ?: false
+                LegacyRouteOwnership.Unknown ->
+                    !workspaceRoute?.connection?.hostId.isNullOrBlank()
                 null -> false
             }
             if (stripWorkspaceAuthorization) {

@@ -2863,4 +2863,77 @@ class HostWorkspacesTest {
 
         assertTrue(verifyLegacyIdentities(api, listOf(deleted), listOf(host)).identities.isEmpty())
     }
+    @Test fun unknown_managed_workspace_strips_authorization_but_manual_workspace_keeps_it() = runTest {
+        val known = HostConnection(hostId = "host-1", publicUrl = "https://known.test/root")
+        val orphanAuthorizations = mutableListOf<String?>()
+        val orphanClient = hostAwareClient(
+            engine = MockEngine { request ->
+                orphanAuthorizations += request.headers[HttpHeaders.Authorization]
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(known) },
+        )
+        SpecApi(orphanClient.client).markThreadSeen(
+            WorkspaceConnection(
+                "orphan",
+                "https://orphan.test/root/workspaces/ws-1",
+                token = "standing-token",
+                hostId = "missing-host",
+            ),
+            "thread-1",
+            null,
+        )
+
+        val manualAuthorizations = mutableListOf<String?>()
+        val manualClient = hostAwareClient(
+            engine = MockEngine { request ->
+                manualAuthorizations += request.headers[HttpHeaders.Authorization]
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(known) },
+        )
+        SpecApi(manualClient.client).markThreadSeen(
+            WorkspaceConnection(
+                "manual",
+                "https://orphan.test/root/workspaces/ws-1",
+                token = "standing-token",
+            ),
+            "thread-1",
+            null,
+        )
+
+        assertEquals(listOf<String?>(null), orphanAuthorizations)
+        assertEquals(listOf("Bearer standing-token"), manualAuthorizations)
+    }
+
+    @Test fun duplicate_host_snapshot_strips_workspace_authorization_without_minting() = runTest {
+        val duplicate = HostConnection(
+            hostId = "host-1",
+            publicUrl = "https://host.test/root",
+            refresh = "refresh-token",
+        )
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                if (request.url.encodedPath.endsWith("/host/token")) exchanges += "unexpected"
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(duplicate, duplicate) },
+        )
+
+        SpecApi(client.client).markThreadSeen(
+            WorkspaceConnection(
+                "legacy",
+                "https://host.test/root/workspaces/ws-1",
+                token = "standing-token",
+            ),
+            "thread-1",
+            null,
+        )
+
+        assertTrue(exchanges.isEmpty())
+        assertEquals(listOf<String?>(null), authorizations)
+    }
 }

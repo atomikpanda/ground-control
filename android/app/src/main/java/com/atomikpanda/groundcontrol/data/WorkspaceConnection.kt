@@ -302,6 +302,15 @@ internal fun legacyRouteOwnership(
     connection: WorkspaceConnection,
     candidateHosts: List<HostConnection>,
 ): LegacyRouteOwnership {
+    if (
+        candidateHosts
+            .map(HostConnection::hostId)
+            .filter(String::isNotBlank)
+            .distinct()
+            .size != candidateHosts.count { it.hostId.isNotBlank() }
+    ) {
+        return LegacyRouteOwnership.Ambiguous
+    }
     val connectionBase = normalizedBaseUrl(connection.baseUrl)
         ?: return LegacyRouteOwnership.Unknown
     val claims = candidateHosts.flatMap { host ->
