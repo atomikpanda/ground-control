@@ -290,7 +290,7 @@ internal fun validateUniqueHostIds(hosts: List<HostConnection>) {
 fun replaceRelayHosts(
     existing: List<HostConnection>,
     relayDomain: String,
-    directory: ValidatedRelayDirectory,
+    hosts: List<HostConnection>,
 ): List<HostConnection> {
     validateUniqueHostIds(existing)
     validateUniqueHostIds(hosts)
@@ -302,37 +302,3 @@ fun replaceRelayHosts(
     }
 }
 
-/** Project a directory entry into the stored model. Pending-approval rows have
- *  no `host_id` yet and are keyed by their enroll request id instead. */
-fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
-    val stableId = info.hostId?.takeIf { it.isNotBlank() }
-    val id = stableId
-        ?: info.requestId?.takeIf { it.isNotBlank() }?.let { "pending:$it" }
-        ?: return null
-    val publicUrl = normalizedBaseUrl(info.publicUrl)
-    if (stableId != null && publicUrl == null) return null
-    return HostConnection(
-        hostId = id,
-        label = info.label,
-        subdomain = info.subdomain,
-        publicUrl = publicUrl.orEmpty(),
-        state = info.state,
-        refresh = info.refresh,
-        relayDomain = relayDomain,
-        lastSeen = info.lastSeen,
-        runnerState = info.runner?.state,
-        requestId = info.requestId,
-    )
-}
-
-/** Project an entire relay directory atomically: an empty response is valid,
- * but every row in a nonempty response must carry a usable stable or pending
- * identity before the caller may authoritatively replace cached hosts. */
-fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
-    val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
-    check(hosts.size == infos.size && hosts.map { it.hostId }.toSet().size == hosts.size) {
-        "Relay directory contained an unusable or duplicate host identity"
-    }
-    validateUniqueHostIds(hosts)
-    return hosts
-}

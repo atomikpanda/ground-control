@@ -200,12 +200,12 @@ internal fun replaceRelayAccountFleet(
 internal fun replaceRelayDirectoryFleet(
     relayDomain: String,
     existingHosts: List<HostConnection>,
-    directory: ValidatedRelayDirectory,
+    replacementHosts: List<HostConnection>,
     connections: List<WorkspaceConnection>,
 ): RelayAccountFleet {
     validateUniqueHostIds(existingHosts)
-    validateUniqueHostIds(directory.hosts)
-    val replacementIds = directory.hosts.mapTo(mutableSetOf()) { it.hostId }
+    validateUniqueHostIds(replacementHosts)
+    val replacementIds = replacementHosts.mapTo(mutableSetOf()) { it.hostId }
     require(
         existingHosts.none {
             it.hostId in replacementIds &&
@@ -217,7 +217,7 @@ internal fun replaceRelayDirectoryFleet(
         .filter { it.relayDomain == relayDomain && it.hostId !in replacementIds }
         .mapTo(mutableSetOf()) { it.hostId }
     return RelayAccountFleet(
-        hosts = replaceRelayHosts(existingHosts, relayDomain, directory.hosts),
+        hosts = replaceRelayHosts(existingHosts, relayDomain, replacementHosts),
         connections = connections.filterNot { connection ->
             val evidence = legacyRouteOwnership(connection, existingHosts) as? LegacyRouteOwnership.Owned
             evidence != null &&
@@ -323,7 +323,7 @@ class HostsRepository internal constructor(private val dataStore: DataStore<Pref
         directory: ValidatedRelayDirectory,
         expectedGeneration: Long,
     ): Boolean {
-        validateUniqueHostIds(hosts)
+        validateUniqueHostIds(directory.hosts)
         var applied = false
         dataStore.edit {
             if (
@@ -335,11 +335,11 @@ class HostsRepository internal constructor(private val dataStore: DataStore<Pref
             val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
             val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
             validateUniqueHostIds(currentHosts)
-            validateUniqueHostIds(hosts)
+            validateUniqueHostIds(directory.hosts)
             val fleet = replaceRelayDirectoryFleet(
                 relayDomain = expectedAccount.relayDomain,
                 existingHosts = currentHosts,
-                directory = directory,
+                replacementHosts = directory.hosts,
                 connections = currentConnections,
             )
             it.advanceRouteOwnershipGeneration(

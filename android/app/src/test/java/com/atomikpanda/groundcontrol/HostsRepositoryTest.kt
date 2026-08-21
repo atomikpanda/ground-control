@@ -18,11 +18,12 @@ import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
 import com.atomikpanda.groundcontrol.data.InvalidRelayDirectoryException
 import com.atomikpanda.groundcontrol.data.RelayDirectoryTransformer
+import com.atomikpanda.groundcontrol.data.ValidatedRelayDirectory
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
 import com.atomikpanda.groundcontrol.data.replaceRelayDirectoryFleet
 import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
-import com.atomikpanda.groundcontrol.data.replaceValidatedRelayHosts
+import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.recordDirectHostDiscovery
 import com.atomikpanda.groundcontrol.data.routeOwnershipGenerationAfter
 import com.atomikpanda.groundcontrol.data.upsertHost
@@ -144,7 +145,7 @@ class HostsRepositoryTest {
             host.relayDomain!!,
         )
 
-        val refreshed = replaceValidatedRelayHosts(listOf(host), host.relayDomain!!, directory)
+        val refreshed = replaceRelayHosts(listOf(host), host.relayDomain!!, directory.hosts)
 
         assertEquals("refresh-credential", refreshed.single().refresh)
     }
@@ -197,7 +198,7 @@ class HostsRepositoryTest {
             ))),
             "relay.example.com",
         )
-        val out = replaceValidatedRelayHosts(listOf(pending), "relay.example.com", directory)
+        val out = replaceRelayHosts(listOf(pending), "relay.example.com", directory.hosts)
         assertEquals(listOf("h-1"), out.map { it.hostId })
         assertEquals("refresh-credential", out.single().refresh)
     }
@@ -219,7 +220,7 @@ class HostsRepositoryTest {
             account.relayDomain,
         )
 
-        val merged = replaceValidatedRelayHosts(listOf(direct), account.relayDomain, directory)
+        val merged = replaceRelayHosts(listOf(direct), account.relayDomain, directory.hosts)
 
         assertEquals(1, merged.size)
         assertEquals(account.relayDomain, merged.single().relayDomain)
@@ -263,7 +264,7 @@ class HostsRepositoryTest {
         val replaced = replaceRelayDirectoryFleet(
             relayDomain = "relay.example.com",
             existingHosts = listOf(host),
-            directory = emptyDirectory,
+            replacementHosts = emptyDirectory.hosts,
             connections = listOf(workspace),
         )
 
@@ -1104,7 +1105,7 @@ class HostsRepositoryTest {
         val replaced = replaceRelayDirectoryFleet(
             relayDomain = "relay.example.com",
             existingHosts = listOf(host, removedHost, otherHost),
-            directory = directory,
+            replacementHosts = directory.hosts,
             connections = listOf(
                 retainedWorkspace,
                 removedWorkspace,
@@ -1332,13 +1333,15 @@ class HostsRepositoryTest {
         val directoryRepository = HostsRepository(directoryStore)
         val directoryBefore = rawRouteOwnershipState(directoryStore)
         assertIllegalArgument {
-            directoryRepository.replaceFromRelay(
+            directoryRepository.replaceValidatedRelayDirectory(
                 directoryAccount,
-                17L,
-                listOf(
-                    HostConnection("duplicate", publicUrl = "https://one.test"),
-                    HostConnection("duplicate", publicUrl = "https://two.test"),
+                ValidatedRelayDirectory(
+                    listOf(
+                        HostConnection("duplicate", publicUrl = "https://one.test"),
+                        HostConnection("duplicate", publicUrl = "https://two.test"),
+                    ),
                 ),
+                17L,
             )
         }
         assertEquals(directoryBefore, rawRouteOwnershipState(directoryStore))
