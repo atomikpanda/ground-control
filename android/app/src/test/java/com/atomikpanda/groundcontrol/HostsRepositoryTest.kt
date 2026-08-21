@@ -285,6 +285,73 @@ class HostsRepositoryTest {
         )
     }
 
+    @Test fun repeated_pending_placeholder_directory_does_not_advance_generation_or_stale_discovery() = runTest {
+        val dataStore = newDataStore("pending-placeholder.preferences_pb", backgroundScope)
+        val repository = HostsRepository(dataStore)
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val pendingDirectory = RelayDirectoryTransformer().transform(
+            HostsResponse(listOf(HostInfo(
+                state = "pending-approval",
+                requestId = "request-1",
+            ))),
+            account.relayDomain,
+        )
+        repository.setRelayAccount(account)
+        val beforeFirst = repository.routeOwnershipSnapshot()
+        assertTrue(
+            repository.replaceValidatedRelayDirectory(
+                expectedAccount = account,
+                directory = pendingDirectory,
+                expectedGeneration = beforeFirst.generation,
+            )
+        )
+        val captured = repository.routeOwnershipSnapshot()
+        assertTrue(
+            repository.replaceValidatedRelayDirectory(
+                expectedAccount = account,
+                directory = pendingDirectory,
+                expectedGeneration = captured.generation,
+            )
+        )
+        val unchanged = repository.routeOwnershipSnapshot()
+
+        assertEquals(captured.generation, unchanged.generation)
+        assertEquals(captured.hosts, unchanged.hosts)
+        assertTrue(
+            repository.applyDiscoveredWorkspace(
+                expectedGeneration = captured.generation,
+                directHostId = null,
+                discovered = WorkspaceConnection(
+                    id = "manual",
+                    baseUrl = "http://manual.example/workspaces/ws-1",
+                ),
+                identities = emptyList(),
+                activatePriorDirectToken = false,
+                directUrl = null,
+                runnerState = null,
+                contactedAtMillis = 1L,
+            )
+        )
+        val beforeRouteChange = repository.routeOwnershipSnapshot()
+        val routedDirectory = RelayDirectoryTransformer().transform(
+            HostsResponse(listOf(HostInfo(
+                hostId = "pending:request-1",
+                state = "online",
+                publicUrl = "https://host.relay.example",
+            ))),
+            account.relayDomain,
+        )
+
+        assertTrue(
+            repository.replaceValidatedRelayDirectory(
+                expectedAccount = account,
+                directory = routedDirectory,
+                expectedGeneration = beforeRouteChange.generation,
+            )
+        )
+        assertTrue(repository.routeOwnershipSnapshot().generation > beforeRouteChange.generation)
+    }
+
     @Test fun direct_discovery_generation_rejects_an_account_A_B_A_change() {
         val accountA = RelayAccount("relay.example.com", "token-a")
         val accountB = RelayAccount("other.example.com", "token-b")

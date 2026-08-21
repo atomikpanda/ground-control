@@ -346,7 +346,9 @@ class HostsRepository internal constructor(private val dataStore: DataStore<Pref
                 updatedAccount = expectedAccount,
                 updatedHosts = fleet.hosts,
                 updatedConnections = fleet.connections,
-                validatedRoutes = directory.hosts.associate { host -> host.hostId to host.publicUrl },
+                validatedRoutes = directory.hosts.mapNotNull { host ->
+                    host.publicUrl.takeIf(String::isNotBlank)?.let { host.hostId to it }
+                }.toMap(),
             )
             it[HOSTS] = HostsCodec.encode(fleet.hosts)
             it[CONNECTIONS] = ConnectionsCodec.encode(fleet.connections)
