@@ -30,7 +30,7 @@ interface Notifier {
     fun notify(event: NeedsYouEvent)
 }
 
-internal enum class ReplyCapabilityAdoption {
+enum class ReplyCapabilityAdoption {
     ADOPTED,
     RETIRED_WITHOUT_REPLACEMENT,
     RETRY,
