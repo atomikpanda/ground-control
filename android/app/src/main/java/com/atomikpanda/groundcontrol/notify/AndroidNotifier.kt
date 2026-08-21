@@ -21,7 +21,7 @@ import kotlinx.serialization.encodeToString
  * (RemoteInput) and, for a single-select decision, up to [MAX_OPTION_ACTIONS] recommended-first
  * option buttons. Pure render step — enrichment (the thread fetch) happens in the reconciler.
  */
-class AndroidNotifier(private val context: Context) : Notifier, ReplyNotificationRenderer {
+internal class AndroidNotifier(private val context: Context) : Notifier, ReplyNotificationRenderer {
 
     override fun notify(event: NeedsYouEvent) {
         render(event, capability = null, errorLine = null)
@@ -31,6 +31,7 @@ class AndroidNotifier(private val context: Context) : Notifier, ReplyNotificatio
         render(event, capability, errorLine)
 
     private fun render(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?): Boolean {
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
         val notifId = needsYouNotificationId(event.connectionId, event.threadId)
         val agentName = event.workspaceName.ifBlank { "Ground Control" }
         val title = event.subject.ifBlank { agentName }

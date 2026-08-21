@@ -85,16 +85,36 @@ class ReplyReceiverOutboxTest {
         database.close()
     }
 
-    @Test fun unknown_alias_is_cancelled_without_creating_executable_row() = runBlocking {
+    @Test fun missing_connection_persists_exact_reply_and_resumes_when_connection_returns() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        val scheduled = mutableListOf<String>()
         val cancelled = mutableListOf<String>()
-        val outbox = ReplyOutbox(database, object : ReplyWorkScheduler { override fun enqueue(actionKey: String) = Unit }, { emptyList() }, { cancelled += it.connectionId })
-        val submission = validIntent().putExtra(ReplyReceiver.EXTRA_CONN_ID, "unknown")
-            .putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A").toReplySubmission()!!
-        assertEquals(false, outbox.submit(submission))
-        assertEquals(listOf("unknown"), cancelled)
-        assertNull(database.replyOutboxDao().get("opaque-key"))
+        var connections = emptyList<WorkspaceConnection>()
+        val outbox = ReplyOutbox(
+            database,
+            object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
+            { connections },
+            { cancelled += it.connectionId },
+        )
+        val submission = validIntent().putExtra(ReplyReceiver.EXTRA_CONN_ID, "restored")
+            .putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "exact reply").toReplySubmission()!!
+
+        assertEquals(true, outbox.submit(submission))
+        val waiting = database.replyOutboxDao().get("opaque-key")!!
+        assertEquals(ReplyOutboxState.WAITING_FOR_CONNECTION, waiting.state)
+        assertEquals("exact reply", waiting.replyText)
+        assertEquals(listOf("restored"), cancelled)
+        assertTrue(scheduled.isEmpty())
+
+        connections = listOf(WorkspaceConnection("restored", "https://example", "token", "workspace"))
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("restored", "thread", "source#1", 1, true, "opaque-key"),
+        )
+        outbox.reconcileEligible()
+
+        assertEquals(ReplyOutboxState.READY, database.replyOutboxDao().get("opaque-key")!!.state)
+        assertEquals(listOf("opaque-key"), scheduled)
         database.close()
     }
 
@@ -167,7 +187,7 @@ class ReplyReceiverOutboxTest {
         val cancelled = mutableListOf<String>()
         NotificationRenderCoordinator(database, object : ReplyNotificationRenderer {
             override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?) = true
-        }) { c, t -> cancelled += "$c|$t" }.retire("canonical", "thread")
+        }) { c, t -> cancelled += "$c|$t" }.retire("canonical", "thread", "source")
         val outbox = ReplyOutbox(database, object : ReplyWorkScheduler { override fun enqueue(actionKey: String) = Unit },
             { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace")) }, {})
         assertEquals(false, outbox.submit(validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A").toReplySubmission()!!))
@@ -193,6 +213,70 @@ class ReplyReceiverOutboxTest {
         database.close()
     }
 
+
+    @Test fun adopted_waiting_reply_matches_canonical_generation_and_resumes_once() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "opaque-key"),
+        )
+        database.replyOutboxDao().insert(
+            ReplyOutboxRecord(
+                "opaque-key", "alias", "thread", "source#1", ReplyOutboxState.WAITING_FOR_CONNECTION,
+                null, null, null, null, "exact reply", ReplyInputKind.FREE_TEXT, "", "", "", null, 0, 1,
+            ),
+        )
+        NotificationRenderCoordinator(database, object : ReplyNotificationRenderer {
+            override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?) = true
+        }) { _, _ -> }.adopt("alias", "canonical", "thread")
+        val scheduled = mutableListOf<String>()
+        val outbox = ReplyOutbox(
+            database,
+            object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
+            { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace")) },
+            {},
+        )
+
+        outbox.reconcileEligible()
+        outbox.reconcileEligible()
+
+        val row = database.replyOutboxDao().get("opaque-key")!!
+        assertEquals("canonical", row.connectionId)
+        assertEquals(ReplyOutboxState.READY, row.state)
+        assertEquals(listOf("opaque-key", "opaque-key"), scheduled)
+        database.close()
+    }
+
+    @Test fun restarted_same_execution_terminalizes_uncertain_without_reposting() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("canonical", "thread", "source#1", 1, true, "opaque-key"),
+        )
+        database.replyOutboxDao().insert(
+            ReplyOutboxRecord(
+                "opaque-key", "canonical", "thread", "source#1", ReplyOutboxState.IN_FLIGHT,
+                "same-execution", 1, null, null, "exact reply", ReplyInputKind.FREE_TEXT,
+                "", "", "", null, 0, 1,
+            ),
+        )
+        var posts = 1 // The first process may have posted before dying.
+        val rendered = mutableListOf<String>()
+        ReplyExecutor(
+            RoomReplyOutboxStore(database),
+            { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace")) },
+            { _, _ ->
+                posts += 1
+                error("restart must not repeat the side effect")
+            },
+            { rendered += it },
+        ).execute("opaque-key", "same-execution")
+
+        assertEquals(1, posts)
+        assertEquals(ReplyOutboxState.UNCERTAIN_PENDING_RENDER, database.replyOutboxDao().get("opaque-key")!!.state)
+        assertEquals(listOf("opaque-key"), rendered)
+        database.close()
+    }
     @Test fun stale_ready_generation_is_terminalized_and_not_reenqueued() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()

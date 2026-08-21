@@ -120,8 +120,20 @@ interface ReplyOutboxDao {
     @Query("UPDATE reply_outbox SET state = 'STALE' WHERE actionKey = :actionKey AND state IN ('DELIVERED_PENDING_RENDER', 'SAFE_FAILURE_PENDING_RENDER', 'UNCERTAIN_PENDING_RENDER')")
     suspend fun markStale(actionKey: String): Int
 
-    @Query("UPDATE reply_outbox SET connectionId = :targetConnectionId WHERE connectionId = :sourceConnectionId AND threadId = :threadId AND state IN ('READY', 'WAITING_FOR_CONNECTION')")
+    @Query(
+        "UPDATE reply_outbox SET connectionId = :targetConnectionId " +
+            "WHERE connectionId = :sourceConnectionId AND threadId = :threadId AND state IN " +
+            "('READY', 'WAITING_FOR_CONNECTION', 'SAFE_FAILURE_PENDING_RENDER', " +
+            "'DELIVERED_PENDING_RENDER', 'UNCERTAIN_PENDING_RENDER')",
+    )
     suspend fun adoptConnection(sourceConnectionId: String, targetConnectionId: String, threadId: String): Int
+
+    @Query(
+        "UPDATE reply_outbox SET state = 'STALE' WHERE connectionId = :connectionId AND threadId = :threadId " +
+            "AND state IN ('READY', 'WAITING_FOR_CONNECTION', 'SAFE_FAILURE_PENDING_RENDER', " +
+            "'DELIVERED_PENDING_RENDER', 'UNCERTAIN_PENDING_RENDER')",
+    )
+    suspend fun terminalizeConnectionActions(connectionId: String, threadId: String): Int
 
     @Query("UPDATE reply_outbox SET renderVersion = :renderVersion, renderCapabilityKey = :capabilityKey WHERE actionKey = :actionKey AND state = 'SAFE_FAILURE_PENDING_RENDER'")
     suspend fun setRenderTarget(actionKey: String, renderVersion: String, capabilityKey: String): Int

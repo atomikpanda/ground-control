@@ -4,7 +4,6 @@ import androidx.room.withTransaction
 import com.atomikpanda.groundcontrol.data.buildJson
 import com.atomikpanda.groundcontrol.data.dto.Decision
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.decodeFromString
@@ -30,6 +29,14 @@ internal class NotificationRenderCoordinator(
             val versions = database.replyNotificationVersionDao()
             val current = versions.get(event.connectionId, event.threadId)
             val currentSource = current?.version?.substringBeforeLast('#')
+            if (
+                current != null &&
+                !current.active &&
+                (event.updatedAt.isBlank() || currentSource.isNullOrBlank() || event.updatedAt <= currentSource)
+            ) {
+                // Retirement is authoritative for that generation: a stale poll must not resurrect it.
+                return@withTransaction null
+            }
             if (current?.active == true) {
                 when {
                     currentSource == event.updatedAt -> return@withTransaction ReplyCapability(current.version, requireNotNull(current.capabilityKey))
@@ -44,12 +51,6 @@ internal class NotificationRenderCoordinator(
             next
         } ?: return@withThreadLock false
         val rendered = runCatching { notifier.renderCurrent(event, capability) }.getOrDefault(false)
-        if (!rendered) database.withTransaction {
-            val current = database.replyNotificationVersionDao().get(event.connectionId, event.threadId)
-            if (current?.active == true && current.version == capability.version && current.capabilityKey == capability.key) {
-                database.replyNotificationVersionDao().deactivate(event.connectionId, event.threadId, capability.version)
-            }
-        }
         rendered
     }
 
@@ -70,10 +71,11 @@ internal class NotificationRenderCoordinator(
         database.replyOutboxDao().pendingRender().forEach { renderPending(it.actionKey) }
     }
 
-    suspend fun retire(connectionId: String, threadId: String) = withThreadLock(connectionId, threadId) {
+    suspend fun retire(connectionId: String, threadId: String, sourceVersion: String) = withThreadLock(connectionId, threadId) {
         val retired = database.withTransaction {
             val current = database.replyNotificationVersionDao().get(connectionId, threadId)
-            if (current?.active == true) {
+            val currentSource = current?.version?.substringBeforeLast('#')
+            if (current?.active == true && (sourceVersion.isBlank() || currentSource == sourceVersion)) {
                 database.replyNotificationVersionDao().deactivate(connectionId, threadId, current.version)
                 true
             } else false
@@ -83,15 +85,22 @@ internal class NotificationRenderCoordinator(
 
     suspend fun adopt(sourceConnectionId: String, targetConnectionId: String, threadId: String) {
         if (sourceConnectionId == targetConnectionId) return
-        database.withTransaction {
-            val versions = database.replyNotificationVersionDao()
-            val source = versions.get(sourceConnectionId, threadId) ?: return@withTransaction
-            val target = versions.get(targetConnectionId, threadId)
-            if (target == null || !target.active) {
-                versions.insert(source.copy(connId = targetConnectionId))
+        withThreadLock(sourceConnectionId, threadId) {
+            database.withTransaction {
+                val versions = database.replyNotificationVersionDao()
+                val source = versions.get(sourceConnectionId, threadId) ?: return@withTransaction
+                val target = versions.get(targetConnectionId, threadId)
+                if (target != null) {
+                    // Any canonical record is authoritative, including an inactive retirement
+                    // tombstone. Never resurrect the alias capability over it.
+                    database.replyOutboxDao().terminalizeConnectionActions(sourceConnectionId, threadId)
+                } else {
+                    versions.insert(source.copy(connId = targetConnectionId))
+                    database.replyOutboxDao().adoptConnection(sourceConnectionId, targetConnectionId, threadId)
+                }
+                versions.deactivate(sourceConnectionId, threadId, source.version)
             }
-            versions.deactivate(sourceConnectionId, threadId, source.version)
-            database.replyOutboxDao().adoptConnection(sourceConnectionId, targetConnectionId, threadId)
+            cancel(sourceConnectionId, threadId)
         }
     }
 
@@ -152,7 +161,7 @@ internal class NotificationRenderCoordinator(
     }
 
     private suspend fun <T> withThreadLock(connectionId: String, threadId: String, block: suspend () -> T): T =
-        locks.getOrPut("$connectionId|$threadId") { Mutex() }.withLock { block() }
+        coordinatorLock.withLock { block() }
 
     private fun ReplyOutboxRecord.toEvent(): NeedsYouEvent = NeedsYouEvent(
         connectionId = connectionId,
@@ -166,6 +175,6 @@ internal class NotificationRenderCoordinator(
     )
 
     private companion object {
-        val locks = ConcurrentHashMap<String, Mutex>()
+        val coordinatorLock = Mutex()
     }
 }

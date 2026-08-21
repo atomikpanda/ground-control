@@ -54,26 +54,24 @@ internal class ReplyOutbox(
 ) {
     suspend fun submit(submission: ReplySubmission): Boolean {
         val canonical = currentConnections().findByConnectionId(submission.connectionId)
-        if (canonical == null) {
-            notificationActionHandler(submission)
-            return false
-        }
-        val persisted = submission.copy(connectionId = canonical.id)
+        val persisted = submission.copy(connectionId = canonical?.id ?: submission.connectionId)
         val accepted = database.withTransaction {
             if (database.replyActionTombstoneDao().get(persisted.actionKey) != null ||
                 database.replyOutboxDao().get(persisted.actionKey) != null
             ) return@withTransaction false
-            val current = database.replyNotificationVersionDao().get(persisted.connectionId, persisted.threadId)
-            if (current == null || !current.active || current.version != persisted.notificationVersion ||
-                current.capabilityKey != persisted.actionKey
-            ) return@withTransaction false
+            if (canonical != null) {
+                val current = database.replyNotificationVersionDao().get(persisted.connectionId, persisted.threadId)
+                if (current == null || !current.active || current.version != persisted.notificationVersion ||
+                    current.capabilityKey != persisted.actionKey
+                ) return@withTransaction false
+            }
             database.replyOutboxDao().insert(
                 ReplyOutboxRecord(
                     actionKey = persisted.actionKey,
                     connectionId = persisted.connectionId,
                     threadId = persisted.threadId,
                     notificationVersion = persisted.notificationVersion,
-                    state = ReplyOutboxState.READY,
+                    state = if (canonical == null) ReplyOutboxState.WAITING_FOR_CONNECTION else ReplyOutboxState.READY,
                     executionId = null,
                     claimedAtMillis = null,
                     renderVersion = null,
@@ -89,12 +87,8 @@ internal class ReplyOutbox(
                 ),
             ) != -1L
         }
-        // A stale canonical tap must not dismiss the newer live notification. Retired aliases are
-        // physical old notifications, so they are still cancelled even when their capability fails.
-        if (accepted || submission.connectionId != persisted.connectionId) {
-            notificationActionHandler(submission)
-        }
-        if (accepted) scheduler.enqueue(persisted.actionKey)
+        if (accepted || submission.connectionId != persisted.connectionId) notificationActionHandler(submission)
+        if (accepted && canonical != null) scheduler.enqueue(persisted.actionKey)
         return accepted
     }
 

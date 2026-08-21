@@ -129,14 +129,46 @@ class NeedsYouReconcilerTest {
         val retired = mutableListOf<String>(); val transfers = mutableListOf<String>()
         NeedsYouReconciler(
             store, notifier, routedRepo(),
-            retire = { connectionId, threadId -> retired += "$connectionId|$threadId" },
+            retire = { connectionId, threadId, _ -> retired += "$connectionId|$threadId" },
             adopt = { source, target, threadId -> transfers += "$source|$target|$threadId" },
         ).reconcile(adopted, listOf(summary("t1", false)))
-        assertEquals(listOf("alias|t1"), retired)
+        assertEquals(listOf("alias|t1", "canonical|t1"), retired)
         assertTrue(transfers.isEmpty())
         assertFalse("alias|t1" in store.marks)
     }
 
+    @Test fun resolved_thread_retires_active_capability_when_dedupe_mark_is_missing() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        val retired = mutableListOf<String>()
+
+        NeedsYouReconciler(
+            store, notifier, routedRepo(),
+            retire = { connectionId, threadId, _ -> retired += "$connectionId|$threadId" },
+        ).reconcile(conn, listOf(summary("t1", false)))
+
+        assertEquals(listOf("${conn.id}|t1"), retired)
+    }
+
+
+    @Test fun failed_publication_is_not_deduped_and_retries_on_next_reconcile() = runTest {
+        val store = FakeStore()
+        var attempts = 0
+        val reconciler = NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            publish = {
+                attempts += 1
+                false
+            },
+        )
+
+        reconciler.reconcile(conn, listOf(summary("t1", true)))
+        reconciler.reconcile(conn, listOf(summary("t1", true)))
+
+        assertEquals(2, attempts)
+        assertFalse("${conn.id}|t1" in store.marks)
+    }
     @Test fun plain_note_does_not_notify() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
         NeedsYouReconciler(store, notifier, routedRepo()).reconcile(conn, listOf(summary("t1", false)))

@@ -25,8 +25,14 @@ class NotificationRenderCoordinatorTest {
         ApplicationProvider.getApplicationContext<android.content.Context>(), NotifiedDatabase::class.java,
     ).build()
 
-    private fun row(state: ReplyOutboxState, version: String = "source#1", key: String = "cap") = ReplyOutboxRecord(
-        key, "c", "t", version, state, null, null, null, null, "reply", ReplyInputKind.FREE_TEXT,
+    private fun row(
+        state: ReplyOutboxState,
+        version: String = "source#1",
+        key: String = "cap",
+        connectionId: String = "c",
+        threadId: String = "t",
+    ) = ReplyOutboxRecord(
+        key, connectionId, threadId, version, state, null, null, null, null, "reply", ReplyInputKind.FREE_TEXT,
         "subject", "workspace", "https://example", null, 0, 1,
     )
 
@@ -121,6 +127,136 @@ class NotificationRenderCoordinatorTest {
         assertTrue(persisted.renderCapabilityKey != "cap")
         assertEquals(1, renderer.renders.size)
         assertEquals(persisted.renderCapabilityKey, renderer.renders.single()!!.key)
+        db.close()
+    }
+
+    @Test fun failed_publication_remains_eligible_without_duplicate_capability() = runBlocking {
+        val db = database()
+        val renderer = FakeReplyRenderer().apply { succeeds = false }
+        val coordinator = NotificationRenderCoordinator(db, renderer) { _, _ -> }
+        val event = NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "source")
+
+        assertFalse(coordinator.publish(event))
+        val first = db.replyNotificationVersionDao().get("c", "t")!!
+        renderer.succeeds = true
+        assertTrue(coordinator.publish(event))
+        val retried = db.replyNotificationVersionDao().get("c", "t")!!
+
+        assertTrue(retried.active)
+        assertEquals(first.version, retried.version)
+        assertEquals(first.capabilityKey, retried.capabilityKey)
+        assertEquals(2, renderer.renders.size)
+        db.close()
+    }
+
+    @Test fun stale_resolution_cannot_retire_a_newer_publication() = runBlocking {
+        val db = database()
+        val renderer = FakeReplyRenderer()
+        val cancelled = mutableListOf<String>()
+        val coordinator = NotificationRenderCoordinator(db, renderer) { c, t -> cancelled += "$c|$t" }
+        coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "new"))
+
+        coordinator.retire("c", "t", "old")
+
+        assertTrue(db.replyNotificationVersionDao().get("c", "t")!!.active)
+        assertTrue(cancelled.isEmpty())
+        db.close()
+    }
+
+    @Test fun stale_publication_cannot_resurrect_a_retired_generation() = runBlocking {
+        val db = database()
+        val renderer = FakeReplyRenderer()
+        val coordinator = NotificationRenderCoordinator(db, renderer) { _, _ -> }
+        coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "new"))
+        coordinator.retire("c", "t", "new")
+
+        assertFalse(coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "old")))
+
+        assertFalse(db.replyNotificationVersionDao().get("c", "t")!!.active)
+        assertEquals(1, renderer.renders.size)
+        db.close()
+    }
+
+    @Test fun adoption_moves_every_recoverable_pending_state_to_an_empty_target() = runBlocking {
+        val states = listOf(
+            ReplyOutboxState.READY,
+            ReplyOutboxState.WAITING_FOR_CONNECTION,
+            ReplyOutboxState.SAFE_FAILURE_PENDING_RENDER,
+            ReplyOutboxState.DELIVERED_PENDING_RENDER,
+            ReplyOutboxState.UNCERTAIN_PENDING_RENDER,
+        )
+        states.forEachIndexed { index, state ->
+            val db = database()
+            val key = "cap-$index"
+            val thread = "thread-$index"
+            db.replyNotificationVersionDao().insert(
+                ReplyNotificationVersionRecord("alias", thread, "source#1", 1, true, key),
+            )
+            db.replyOutboxDao().insert(row(state, key = key, connectionId = "alias", threadId = thread))
+            val cancelled = mutableListOf<String>()
+
+            NotificationRenderCoordinator(db, FakeReplyRenderer()) { c, t -> cancelled += "$c|$t" }
+                .adopt("alias", "canonical", thread)
+
+            assertEquals("canonical", db.replyOutboxDao().get(key)!!.connectionId)
+            assertTrue(db.replyNotificationVersionDao().get("canonical", thread)!!.active)
+            assertFalse(db.replyNotificationVersionDao().get("alias", thread)!!.active)
+            assertEquals(listOf("alias|$thread"), cancelled)
+            db.close()
+        }
+    }
+
+    @Test fun canonical_collision_terminalizes_every_alias_pending_state() = runBlocking {
+        val states = listOf(
+            ReplyOutboxState.READY,
+            ReplyOutboxState.WAITING_FOR_CONNECTION,
+            ReplyOutboxState.SAFE_FAILURE_PENDING_RENDER,
+            ReplyOutboxState.DELIVERED_PENDING_RENDER,
+            ReplyOutboxState.UNCERTAIN_PENDING_RENDER,
+        )
+        states.forEachIndexed { index, state ->
+            val db = database()
+            val key = "alias-cap-$index"
+            val thread = "thread-$index"
+            db.replyNotificationVersionDao().insert(
+                ReplyNotificationVersionRecord("alias", thread, "source#1", 1, true, key),
+            )
+            db.replyNotificationVersionDao().insert(
+                ReplyNotificationVersionRecord("canonical", thread, "source#2", 2, true, "canonical-cap"),
+            )
+            db.replyOutboxDao().insert(row(state, key = key, connectionId = "alias", threadId = thread))
+
+            NotificationRenderCoordinator(db, FakeReplyRenderer()) { _, _ -> }
+                .adopt("alias", "canonical", thread)
+
+            assertEquals(ReplyOutboxState.STALE, db.replyOutboxDao().get(key)!!.state)
+            val canonical = db.replyNotificationVersionDao().get("canonical", thread)!!
+            assertTrue(canonical.active)
+            assertEquals("canonical-cap", canonical.capabilityKey)
+            assertFalse(db.replyNotificationVersionDao().get("alias", thread)!!.active)
+            db.close()
+        }
+    }
+
+    @Test fun adoption_cannot_resurrect_an_inactive_canonical_tombstone() = runBlocking {
+        val db = database()
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "t", "old#1", 1, true, "alias-cap"),
+        )
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("canonical", "t", "new#2", 2, false, null),
+        )
+        db.replyOutboxDao().insert(
+            row(ReplyOutboxState.WAITING_FOR_CONNECTION, version = "old#1", key = "alias-cap", connectionId = "alias"),
+        )
+
+        NotificationRenderCoordinator(db, FakeReplyRenderer()) { _, _ -> }
+            .adopt("alias", "canonical", "t")
+
+        val canonical = db.replyNotificationVersionDao().get("canonical", "t")!!
+        assertFalse(canonical.active)
+        assertEquals("new#2", canonical.version)
+        assertEquals(ReplyOutboxState.STALE, db.replyOutboxDao().get("alias-cap")!!.state)
         db.close()
     }
 }

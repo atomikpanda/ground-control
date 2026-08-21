@@ -37,7 +37,7 @@ class NeedsYouReconciler(
     /** Production supplies generation-safe Room publication; existing non-Android consumers retain
      * the plain notifier seam. */
     private val publish: suspend (NeedsYouEvent) -> Boolean = { notifier.notify(it); true },
-    private val retire: suspend (String, String) -> Unit = { _, _ -> },
+    private val retire: suspend (String, String, String) -> Unit = { _, _, _ -> },
     private val adopt: suspend (String, String, String) -> Unit = { _, _, _ -> },
     /** The thread currently open+foregrounded (see [OpenThreadRegistry]), or null. Suppresses a
      *  duplicate notification for the thread the user is already viewing (#378). Defaults to
@@ -68,12 +68,8 @@ class NeedsYouReconciler(
                     // A resolved alias must be retired, not adopted: otherwise its capability
                     // remains actionable under the canonical identity after dedupe is cleared.
                     for (retiredId in conn.legacyConnectionIds) {
-                        retire(retiredId, t.id)
+                        retire(retiredId, t.id, t.updatedAt.orEmpty())
                         store.clear(retiredId, t.id)
-                    }
-                    if (currentNotified) {
-                        retire(conn.id, t.id)
-                        store.clear(conn.id, t.id)
                     }
                 }
             }
@@ -103,8 +99,10 @@ class NeedsYouReconciler(
                     ),
                 )
                 if (published) store.markNotified(conn.id, t.id)
-            } else if (!needsAttention && currentNotified) {
-                retire(conn.id, t.id)
+            } else if (!needsAttention) {
+                // Publication can succeed immediately before a process death prevents the dedupe
+                // write; capability retirement, not the dedupe bit, is authoritative on resolve.
+                retire(conn.id, t.id, t.updatedAt.orEmpty())
                 store.clear(conn.id, t.id)
             }
         }

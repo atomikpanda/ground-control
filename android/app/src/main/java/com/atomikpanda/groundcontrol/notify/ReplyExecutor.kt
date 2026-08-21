@@ -81,6 +81,17 @@ internal class ReplyExecutor(
 ) {
     suspend fun execute(actionKey: String, executionId: String = UUID.randomUUID().toString()): Result {
         val initial = store.get(actionKey) ?: return Result.success()
+        if (initial.state == ReplyOutboxState.IN_FLIGHT) {
+            // WorkManager restarts the same request with the same id. The previous process may
+            // already have posted before dying, so recovery must never execute the side effect again.
+            if (
+                initial.executionId == executionId &&
+                store.complete(initial, executionId, ReplyOutboxState.UNCERTAIN_PENDING_RENDER)
+            ) {
+                renderPending(actionKey)
+            }
+            return Result.success()
+        }
         if (currentConnections().findByConnectionId(initial.connectionId) == null) {
             store.moveReadyToWaiting(initial)
             return Result.success()
