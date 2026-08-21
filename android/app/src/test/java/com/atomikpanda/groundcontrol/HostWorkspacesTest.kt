@@ -1067,6 +1067,7 @@ class HostWorkspacesTest {
             baseUrl = "$sharedBase/workspaces/ws-1",
             hostId = second.hostId,
             workspaceId = "ws-1",
+            token = "standing-token",
         )
 
         SpecApi(client.client).markThreadSeen(connection, "thread-1", null)
@@ -1332,7 +1333,7 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer relay-bearer"), authorizations)
     }
 
-    @Test fun another_hosts_longer_alias_does_not_slice_a_stable_hosts_route() = runTest {
+    @Test fun another_hosts_owned_alias_conflicts_with_stored_host_and_strips_authorization() = runTest {
         val currentBase = "https://relay.example"
         val overlappingAlias = "$currentBase/old"
         val stableHost = host.copy(
@@ -1380,7 +1381,7 @@ class HostWorkspacesTest {
             listOf("$currentBase/old/workspaces/ws-1/threads/thread-1/seen"),
             urls,
         )
-        assertEquals(listOf("Bearer old-standing-token"), authorizations)
+        assertEquals(listOf<String?>(null), authorizations)
     }
 
     @Test fun a_legacy_root_alias_routes_with_current_bearer_and_preserves_path_and_query_case() = runTest {
@@ -1485,7 +1486,7 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer current-bearer"), authorizations)
     }
 
-    @Test fun ambiguous_and_unowned_legacy_roots_leave_their_request_unchanged() = runTest {
+    @Test fun ambiguous_and_unowned_legacy_roots_strip_their_stored_authorization() = runTest {
         val oldBase = "https://old.relay.example"
         val ambiguousAuthorizations = mutableListOf<String?>()
         val ambiguousClient = hostAwareClient(
@@ -1540,8 +1541,8 @@ class HostWorkspacesTest {
 
         SpecApi(unownedClient.client).listThreads(unownedRoot)
 
-        assertEquals(listOf("Bearer must-not-leak"), ambiguousAuthorizations)
-        assertEquals(listOf("Bearer must-not-leak"), unownedAuthorizations)
+        assertEquals(listOf<String?>(null), ambiguousAuthorizations)
+        assertEquals(listOf<String?>(null), unownedAuthorizations)
     }
 
     @Test fun unrelated_fleet_hosts_do_not_strip_manual_root_or_workspace_credentials() = runTest {
@@ -2769,7 +2770,7 @@ class HostWorkspacesTest {
         )
         assertEquals(listOf("Bearer relay-bearer"), authorizations)
     }
-    @Test fun legacy_alias_ownership_without_a_current_base_leaves_workspace_request_unchanged() = runTest {
+    @Test fun legacy_alias_ownership_without_a_current_base_strips_stale_workspace_authorization() = runTest {
         val legacyBase = "https://old.relay.example/root"
         val host = HostConnection(
             hostId = "host-1",
@@ -2803,6 +2804,63 @@ class HostWorkspacesTest {
             listOf("$legacyBase/workspaces/ws-1/threads/thread-1/seen"),
             urls,
         )
-        assertEquals(listOf("Bearer standing-token"), authorizations)
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+    @Test fun URL_valued_host_id_for_another_candidate_strips_workspace_authorization() = runTest {
+        val owner = HostConnection(
+            hostId = "host-a",
+            publicUrl = "https://host-a.test/root",
+            refresh = "refresh-a",
+        )
+        val conflictingHost = HostConnection(
+            hostId = "host-b",
+            publicUrl = "https://host-b.test/root",
+            refresh = "refresh-b",
+        )
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                if (request.url.encodedPath.endsWith("/host/token")) exchanges += "unexpected"
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(owner, conflictingHost) },
+        )
+
+        SpecApi(client.client).markThreadSeen(
+            WorkspaceConnection(
+                "legacy",
+                "https://host-a.test/root/workspaces/ws-1",
+                token = "standing-token",
+                hostId = conflictingHost.publicUrl,
+            ),
+            "thread-1",
+            null,
+        )
+
+        assertTrue(exchanges.isEmpty())
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
+    @Test fun verification_does_not_adopt_a_missing_claimed_workspace_from_a_singleton_response() = runTest {
+        val host = HostConnection(hostId = "host-1", publicUrl = "https://host.test/root")
+        val api = SpecApi(
+            HttpClient(
+                MockEngine {
+                    respond(
+                        """{"workspaces":[{"id":"other","name":"other","state":"healthy"}]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                },
+            ) { mshipDefaults() },
+        )
+        val deleted = WorkspaceConnection(
+            "legacy",
+            "https://host.test/root/workspaces/deleted",
+        )
+
+        assertTrue(verifyLegacyIdentities(api, listOf(deleted), listOf(host)).identities.isEmpty())
     }
 }

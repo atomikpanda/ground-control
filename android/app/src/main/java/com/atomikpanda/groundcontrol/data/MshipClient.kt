@@ -312,9 +312,10 @@ fun hostAwareClient(
             val originalUrlIdentity = normalizedBaseUrl(originalPath)
                 ?: return@on proceed(request)
             val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
-            val workspaceEvidence = workspaceRoute
-                ?.let { legacyRouteOwnership(it.connection, knownHosts) as? LegacyRouteOwnership.Owned }
-                ?.takeIf { workspaceRoute.connection.agreesWith(it) }
+            val workspaceOwnership = workspaceRoute
+                ?.let { legacyRouteOwnership(it.connection, knownHosts) }
+            val workspaceEvidence = (workspaceOwnership as? LegacyRouteOwnership.Owned)
+                ?.takeIf { workspaceRoute?.connection?.agreesWith(it, knownHosts) == true }
             val workspaceHost = workspaceEvidence
                 ?.let { evidence -> knownHosts.singleOrNull { it.hostId == evidence.hostId } }
             val explicitHostRouteId = request.attributes.getOrNull(HOST_ROUTE_ID)
@@ -328,6 +329,18 @@ fun hostAwareClient(
                     candidate.hasKnownBaseIdentity(baseIdentity)
                 }
             }.orEmpty()
+            val stripWorkspaceAuthorization = when (workspaceOwnership) {
+                LegacyRouteOwnership.Ambiguous -> true
+                is LegacyRouteOwnership.Owned -> workspaceEvidence == null
+                LegacyRouteOwnership.Unknown -> workspaceRoute?.connection?.hostId
+                    ?.let { it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true) }
+                    ?: false
+                null -> false
+            }
+            if (stripWorkspaceAuthorization) {
+                request.headers.remove(HttpHeaders.Authorization)
+                return@on proceed(request)
+            }
             if (cache == null) return@on proceed(request)
             val host = when {
                 workspaceRoute != null -> workspaceHost
@@ -346,7 +359,10 @@ fun hostAwareClient(
                 if (fleetBoundRoute) request.headers.remove(HttpHeaders.Authorization)
                 return@on proceed(request)
             }
-            if (routedHost.hostBases().isEmpty()) return@on proceed(request)
+            if (routedHost.hostBases().isEmpty()) {
+                request.headers.remove(HttpHeaders.Authorization)
+                return@on proceed(request)
+            }
             val routedBase = when {
                 workspaceEvidence?.workspaceId != null ->
                     workspaceBaseUrl(workspaceEvidence.hostBase, workspaceEvidence.workspaceId)

@@ -10,6 +10,7 @@ import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.LegacyRouteOwnership
 import com.atomikpanda.groundcontrol.data.legacyRouteOwnership
+import com.atomikpanda.groundcontrol.data.agreesWith
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -528,6 +529,26 @@ class ConnectionsCodecTest {
         assertEquals(
             LegacyRouteOwnership.Owned("host1", "https://host1.test/root", "ws-1"),
             legacyRouteOwnership(connection, listOf(host)),
+        )
+    }
+
+    @Test fun URL_valued_stored_host_id_must_not_resolve_to_a_different_candidate() {
+        val hostA = HostConnection(hostId = "host-a", publicUrl = "https://host-a.test/root")
+        val hostB = HostConnection(hostId = "host-b", publicUrl = "https://host-b.test/root")
+        val conflicting = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "https://host-a.test/root/workspaces/ws-1",
+            hostId = hostB.publicUrl,
+        )
+        val evidence = legacyRouteOwnership(conflicting, listOf(hostA, hostB))
+            as LegacyRouteOwnership.Owned
+
+        assertNull(evidence.takeIf { conflicting.agreesWith(it, listOf(hostA, hostB)) })
+        assertEquals(
+            evidence,
+            evidence.takeIf {
+                conflicting.copy(hostId = hostA.publicUrl).agreesWith(it, listOf(hostA, hostB))
+            },
         )
     }
 }

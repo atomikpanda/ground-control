@@ -1177,4 +1177,35 @@ class HostsRepositoryTest {
             ).connections,
         )
     }
+    @Test fun URL_valued_host_id_for_a_different_candidate_blocks_account_migration() {
+        val previous = RelayAccount("relay.example", "old-token")
+        val owner = HostConnection(
+            hostId = "host-a",
+            publicUrl = "https://host-a.test/root",
+            directUrl = "https://direct-a.test/root",
+            relayDomain = previous.relayDomain,
+        )
+        val conflictingHost = HostConnection(
+            hostId = "host-b",
+            publicUrl = "https://host-b.test/root",
+            relayDomain = previous.relayDomain,
+        )
+        val connection = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "https://host-a.test/root/workspaces/ws-1",
+            token = "standing-secret",
+            directToken = "direct-secret",
+            hostId = conflictingHost.publicUrl,
+        )
+
+        assertEquals(
+            listOf(connection),
+            replaceRelayAccountFleet(
+                previous,
+                RelayAccount("new.example", "new-token"),
+                listOf(owner, conflictingHost),
+                listOf(connection),
+            ).connections,
+        )
+    }
 }

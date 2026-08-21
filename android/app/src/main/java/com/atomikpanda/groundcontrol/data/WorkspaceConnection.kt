@@ -255,7 +255,7 @@ internal fun workspaceRefreshGeneration(
         .mapTo(mutableSetOf()) { it.connectionId }
     val sources = connections.filter { connection ->
         val evidence = legacyRouteOwnership(connection, hosts) as? LegacyRouteOwnership.Owned
-        val agrees = evidence != null && connection.agreesWith(evidence)
+        val agrees = evidence != null && connection.agreesWith(evidence, hosts)
         val verifiedLegacyOwner =
             connection.id in verifiedSourceIds && evidence?.hostId == hostId && agrees
         (evidence?.hostId == hostId && agrees) || verifiedLegacyOwner
@@ -318,14 +318,28 @@ internal fun legacyRouteOwnership(
     }
 }
 
-/** A stored identity is corroboration, never a substitute for route evidence. */
-internal fun WorkspaceConnection.agreesWith(evidence: LegacyRouteOwnership.Owned): Boolean =
-    (
-        hostId.isNullOrBlank() ||
-            hostId.startsWith("http://", ignoreCase = true) ||
-            hostId.startsWith("https://", ignoreCase = true) ||
-            hostId == evidence.hostId
-    ) && (workspaceId.isNullOrBlank() || workspaceId == evidence.workspaceId)
+/** A stored identity is corroboration, never a substitute for route evidence.
+ * URL-valued pre-ownership handles are accepted only when they cannot resolve
+ * to a different host in this complete candidate snapshot. */
+internal fun WorkspaceConnection.agreesWith(
+    evidence: LegacyRouteOwnership.Owned,
+    candidateHosts: List<HostConnection>,
+): Boolean {
+    val storedHostAgrees = when {
+        hostId.isNullOrBlank() -> true
+        hostId.startsWith("http://", ignoreCase = true) ||
+            hostId.startsWith("https://", ignoreCase = true) -> {
+            val identity = normalizedBaseUrl(hostId)
+            val owners = identity?.let { storedBase ->
+                candidateHosts.filter { host -> host.hasKnownBaseIdentity(storedBase) }
+            }.orEmpty()
+            owners.isEmpty() || owners.singleOrNull()?.hostId == evidence.hostId
+        }
+        else -> hostId == evidence.hostId
+    }
+    return storedHostAgrees &&
+        (workspaceId.isNullOrBlank() || workspaceId == evidence.workspaceId)
+}
 
 private fun ownershipClaim(
     connectionBase: String,
@@ -376,7 +390,7 @@ suspend fun verifyLegacyIdentity(
 ): VerifiedIdentity? {
     val evidence = legacyRouteOwnership(connection, hosts) as? LegacyRouteOwnership.Owned
         ?: return null
-    if (!connection.agreesWith(evidence)) return null
+    if (!connection.agreesWith(evidence, hosts)) return null
     val host = hosts.singleOrNull { it.hostId == evidence.hostId } ?: return null
     val (_, workspaces) = reachableHostWorkspaces(
         api = api,
@@ -385,9 +399,10 @@ suspend fun verifyLegacyIdentity(
             .takeIf { host.acceptsDirectCredential() },
         recordContact = false,
     ) ?: return null
-    val workspaceId = evidence.workspaceId?.takeIf { id -> workspaces.any { it.id == id } }
-        ?: workspaces.singleOrNull()?.id
-        ?: return null
+    val workspaceId = when (val claimed = evidence.workspaceId) {
+        null -> workspaces.singleOrNull()?.id
+        else -> claimed.takeIf { id -> workspaces.any { it.id == id } }
+    } ?: return null
     return VerifiedIdentity(connection.id, host.hostId, workspaceId)
 }
 
@@ -489,8 +504,9 @@ fun replaceHostConnections(
         activatePriorDirectToken,
     ).filterNot { connection ->
         val evidence = legacyRouteOwnership(connection, hosts) as? LegacyRouteOwnership.Owned
-        evidence?.hostId == hostId &&
-            connection.agreesWith(evidence) &&
+        evidence != null &&
+            evidence.hostId == hostId &&
+            connection.agreesWith(evidence, hosts) &&
             evidence.workspaceId != null &&
             evidence.workspaceId !in liveWorkspaceIds
     }
