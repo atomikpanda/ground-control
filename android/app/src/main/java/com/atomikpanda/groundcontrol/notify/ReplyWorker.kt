@@ -155,22 +155,33 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
             )
             ReplyActionStep.RenderDelivered -> {
                 if (conn == null) {
-                    if (runAttemptCount < MAX_DELIVERED_RENDER_RETRIES) Result.retry() else Result.failure()
+                    if (!versionStore.isCurrent(canonicalConnId, threadId, notificationVersion)) {
+                        actionStore.transition(
+                            actionKey, ReplyActionState.DELIVERED_PENDING_RENDER,
+                            ReplyActionState.DELIVERED, executionId,
+                        )
+                        Result.success()
+                    } else if (runAttemptCount < MAX_DELIVERED_RENDER_RETRIES) {
+                        Result.retry()
+                    } else {
+                        Result.failure()
+                    }
                 } else {
                     runCatching {
-                        notifier.notify(
+                        notifier.notifyDeliveredIfCurrent(
                             buildReplyNotificationEvent(
                                 conn = conn, threadId = threadId, fallbackSubject = subject,
                                 preview = text, thread = null, forceNewReplyActionVersion = true,
                             ),
+                            notificationVersion,
                         )
                     }.fold(
                         onSuccess = {
-                            if (actionStore.transition(
-                                    actionKey, ReplyActionState.DELIVERED_PENDING_RENDER,
-                                    ReplyActionState.DELIVERED, executionId,
-                                )
-                            ) Result.success() else Result.success()
+                            actionStore.transition(
+                                actionKey, ReplyActionState.DELIVERED_PENDING_RENDER,
+                                ReplyActionState.DELIVERED, executionId,
+                            )
+                            Result.success()
                         },
                         onFailure = { Result.retry() },
                     )
@@ -266,12 +277,13 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
         }
     }
 
+
     private fun inputDecision(): Decision? {
         val options = inputData.getStringArray(K_DECISION_OPTIONS)?.toList().orEmpty()
         if (options.isEmpty()) return null
         return Decision(
             options = options,
-            recommended = inputData.getInt(K_DECISION_RECOMMENDED, -1).takeIf { it >= 0 },
+            recommended = inputData.getInt(K_DECISION_RECOMMENDED, -1).takeIf { it in options.indices },
             allowFreeText = inputData.getBoolean(K_DECISION_ALLOW_FREE_TEXT, true),
             multi = inputData.getBoolean(K_DECISION_MULTI, false),
         )
@@ -293,6 +305,7 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
         private const val K_DECISION_ALLOW_FREE_TEXT = "decision_allow_free_text"
         private const val K_DECISION_MULTI = "decision_multi"
 
+
         /** Durable capability identity. Retry generations contend for this same key. */
         fun actionKey(
             canonicalConnId: String,
@@ -309,6 +322,8 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
             retryAttempt: Int,
         ): String = "reply_intake_${connId}_${threadId}_${notificationVersion}_$retryAttempt"
 
+        internal fun boundedDecision(decision: Decision?): Decision? =
+            actionableDecision(decision, AndroidNotifier.MAX_OPTION_ACTIONS)
         internal val enqueuePolicy = ExistingWorkPolicy.KEEP
 
         fun enqueue(
@@ -336,10 +351,11 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
                         K_BASE_URL to baseUrl,
                         K_NOTIFICATION_VERSION to notificationVersion,
                         K_RETRY_ATTEMPT to retryAttempt,
-                        K_DECISION_OPTIONS to (decision?.options?.toTypedArray() ?: emptyArray<String>()),
-                        K_DECISION_RECOMMENDED to (decision?.recommended ?: -1),
-                        K_DECISION_ALLOW_FREE_TEXT to (decision?.allowFreeText ?: true),
-                        K_DECISION_MULTI to (decision?.multi ?: false),
+                        K_DECISION_OPTIONS to (boundedDecision(decision)?.options?.toTypedArray()
+                            ?: emptyArray<String>()),
+                        K_DECISION_RECOMMENDED to (boundedDecision(decision)?.recommended ?: -1),
+                        K_DECISION_ALLOW_FREE_TEXT to (boundedDecision(decision)?.allowFreeText ?: true),
+                        K_DECISION_MULTI to (boundedDecision(decision)?.multi ?: false),
                     ),
                 )
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)

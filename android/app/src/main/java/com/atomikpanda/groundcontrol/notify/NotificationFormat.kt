@@ -51,23 +51,46 @@ fun activeDecision(messages: List<Message>): Decision? {
     return messages.drop(lastHuman + 1).lastOrNull { it.kind == "decision" }?.decision
 }
 
+private const val MAX_REPLY_ACTION_OPTION_BYTES = 512
+private const val MAX_REPLY_ACTION_OPTIONS_BYTES = 1_024
+
 /**
- * The option-action buttons to render for a decision, recommended option first, capped to [cap].
- * Multi-select decisions render NO buttons (reply-only); so does a null/empty decision. Posting an
- * option's raw text is exactly an in-app option tap (bypasses the allow_free_text gate).
+ * Produces the exact, enqueue-safe option subset shared by notification actions and their retry
+ * payload. Oversize strings are omitted rather than altered: action text is post semantics.
  */
-fun decisionActionOptions(decision: Decision?, cap: Int): List<NotificationOption> {
+fun actionableDecisionOptions(decision: Decision?, cap: Int): List<NotificationOption> {
     if (decision == null || decision.multi || cap <= 0) return emptyList()
-    val options = decision.options
-    if (options.isEmpty()) return emptyList()
-    val rec = decision.recommended
-    val order = if (rec != null && rec in options.indices) {
-        listOf(rec) + options.indices.filter { it != rec }
-    } else {
-        options.indices.toList()
+    val order = decision.recommended?.takeIf { it in decision.options.indices }?.let { recommended ->
+        listOf(recommended) + decision.options.indices.filter { it != recommended }
+    } ?: decision.options.indices.toList()
+    var bytes = 0
+    val selected = mutableListOf<NotificationOption>()
+    for (index in order) {
+        val option = decision.options[index]
+        val optionBytes = option.toByteArray(Charsets.UTF_8).size
+        if (
+            selected.size < cap &&
+            optionBytes <= MAX_REPLY_ACTION_OPTION_BYTES &&
+            bytes + optionBytes <= MAX_REPLY_ACTION_OPTIONS_BYTES
+        ) {
+            bytes += optionBytes
+            selected += NotificationOption(index, option)
+        }
     }
-    return order.take(cap).map { NotificationOption(it, options[it]) }
+    return selected
 }
+
+fun actionableDecision(decision: Decision?, cap: Int): Decision? {
+    if (decision == null) return null
+    val selected = actionableDecisionOptions(decision, cap)
+    return decision.copy(
+        options = selected.map { it.text },
+        recommended = selected.indexOfFirst { it.index == decision.recommended }.takeIf { it >= 0 },
+    )
+}
+
+fun decisionActionOptions(decision: Decision?, cap: Int): List<NotificationOption> =
+    actionableDecisionOptions(decision, cap)
 
 /** Trim a RemoteInput result into a post body; null when empty (nothing to send). */
 fun replyText(raw: CharSequence?): String? =

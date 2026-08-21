@@ -293,6 +293,27 @@ class ReplyWorkerIdentityTest {
         )
     }
 
+    @Test fun retry_payload_preserves_recommended_first_action_order_and_exact_values() {
+        val decision = Decision(
+            options = listOf("A", "B", "C"),
+            recommended = 2,
+            allowFreeText = true,
+            multi = false,
+        )
+        val bounded = ReplyWorker.boundedDecision(decision)
+
+        assertEquals(listOf("C", "A"), bounded?.options)
+        assertEquals(0, bounded?.recommended)
+    }
+
+    @Test fun oversized_option_is_omitted_without_truncating_the_value() {
+        val bounded = ReplyWorker.boundedDecision(
+            Decision(options = listOf("x".repeat(513), "A"), allowFreeText = true, multi = false),
+        )
+
+        assertEquals(listOf("A"), bounded?.options)
+    }
+
     @Test fun only_definitive_client_rejection_surfaces_a_retry_action() {
         assertEquals(ReplyActionState.READY, replyFailureState(400))
         assertEquals(ReplyActionState.READY, replyFailureState(404))

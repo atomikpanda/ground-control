@@ -26,7 +26,9 @@ import kotlinx.coroutines.sync.withLock
  */
 class AndroidNotifier(private val context: Context) : Notifier {
 
-    override suspend fun notify(event: NeedsYouEvent) = render(event, errorLine = null, retryAttempt = 0)
+    override suspend fun notify(event: NeedsYouEvent) {
+        render(event, errorLine = null, retryAttempt = 0)
+    }
 
     /** Re-notify after a failed reply. Only a definitive rejection gets fresh retry capabilities:
      * transport/5xx outcomes may already have appended on the server. */
@@ -35,12 +37,18 @@ class AndroidNotifier(private val context: Context) : Notifier {
         failedText: String,
         retryAttempt: Int,
         allowActions: Boolean,
-    ) = render(
-        event,
-        errorLine = failedText,
-        retryAttempt = retryAttempt,
-        showActions = allowActions,
-    )
+    ) {
+        render(event, errorLine = failedText, retryAttempt = retryAttempt, showActions = allowActions)
+    }
+
+    /** Publishes a successor only while the delivered action's generation remains active. */
+    suspend fun notifyDeliveredIfCurrent(event: NeedsYouEvent, expectedVersion: String): Boolean =
+        render(
+            event,
+            errorLine = null,
+            retryAttempt = 0,
+            expectedCurrentVersion = expectedVersion,
+        )
 
     override suspend fun activeReplyActionGeneration(connectionId: String, threadId: String): Long? {
         val canonicalConnId = ConnectionsRepository(context).snapshot()
@@ -69,14 +77,19 @@ class AndroidNotifier(private val context: Context) : Notifier {
         errorLine: String?,
         retryAttempt: Int,
         showActions: Boolean = true,
-    ) {
+        expectedCurrentVersion: String? = null,
+    ): Boolean {
         val canonicalConnId = ConnectionsRepository(context).snapshot()
             .findByConnectionId(event.connectionId)?.id ?: event.connectionId
         val renderLock = renderLocks.computeIfAbsent("$canonicalConnId|${event.threadId}") { Mutex() }
-        renderLock.withLock {
+        return renderLock.withLock {
             val versionStore = RoomReplyNotificationVersionStore(
                 NotifiedDatabase.get(context).replyNotificationVersionDao(),
             )
+            if (
+                expectedCurrentVersion != null &&
+                !versionStore.isCurrent(canonicalConnId, event.threadId, expectedCurrentVersion)
+            ) return@withLock false
             val renderedEvent = event.copy(
                 replyActionVersion = event.replyActionVersion.ifBlank {
                     versionStore.activate(
@@ -146,12 +159,12 @@ class AndroidNotifier(private val context: Context) : Notifier {
         // buttons. (Android's standard template renders at most 3 actions; a persistent reply +
         // MAX_OPTION_ACTIONS option buttons must fit — see MAX_OPTION_ACTIONS.)
         if (showActions) {
-            // Reply first so it's always within the standard 3-action budget alongside the option
-            // buttons. (Android's standard template renders at most 3 actions; a persistent reply +
-            // MAX_OPTION_ACTIONS option buttons must fit — see MAX_OPTION_ACTIONS.)
-            builder.addAction(replyAction(renderedEvent, retryAttempt))
-            decisionActionOptions(renderedEvent.decision, MAX_OPTION_ACTIONS).forEach { opt ->
-                builder.addAction(optionAction(renderedEvent, opt.text, retryAttempt))
+            val actionEvent = renderedEvent.copy(
+                decision = actionableDecision(renderedEvent.decision, MAX_OPTION_ACTIONS),
+            )
+            builder.addAction(replyAction(actionEvent, retryAttempt))
+            decisionActionOptions(actionEvent.decision, MAX_OPTION_ACTIONS).forEach { opt ->
+                builder.addAction(optionAction(actionEvent, opt.text, retryAttempt))
             }
         }
 
@@ -159,6 +172,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
                 "Reply notification action version was superseded before publication"
             }
             NotificationManagerCompat.from(context).notify(notifId, builder.build())
+            true
         }
     }
 
