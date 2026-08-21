@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.notify.ReplyStartupGate
+import com.atomikpanda.groundcontrol.notify.ReplyWorker
 import com.atomikpanda.groundcontrol.notify.withReplyStartupGate
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
