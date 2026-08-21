@@ -47,7 +47,8 @@ data class WorkspacesResponse(
  * One entry of the relay host directory (#471, GET enroll.<relay>/hosts).
  *
  * A row may omit `host_id` only while it is in one of the supported pending
- * states and has a `request_id`; every row still publishes `public_url`.
+ * states and has a `request_id`. Pending placeholders may also omit
+ * `public_url`; a routable URL is required for every non-pending row.
  * Semantic validation is deliberately deferred to RelayDirectoryTransformer.
  */
 @Serializable

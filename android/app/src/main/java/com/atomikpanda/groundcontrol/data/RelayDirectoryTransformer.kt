@@ -31,13 +31,18 @@ internal class RelayDirectoryTransformer(
             if (!identities.add(identity)) {
                 throw InvalidRelayDirectoryException("Relay host identity is duplicated")
             }
-            if (info.publicUrl != info.publicUrl.trim()) {
-                throw InvalidRelayDirectoryException("Relay host route contains padding")
-            }
-            val route = canonicalize(info.publicUrl)
-                ?: throw InvalidRelayDirectoryException("Relay host route is unusable")
-            if (!routes.add(route)) {
-                throw InvalidRelayDirectoryException("Relay host route identity is duplicated")
+            val route = if (pending && info.publicUrl.isEmpty()) {
+                ""
+            } else {
+                if (info.publicUrl != info.publicUrl.trim()) {
+                    throw InvalidRelayDirectoryException("Relay host route contains padding")
+                }
+                val canonical = canonicalize(info.publicUrl)
+                    ?: throw InvalidRelayDirectoryException("Relay host route is unusable")
+                if (!routes.add(canonical)) {
+                    throw InvalidRelayDirectoryException("Relay host route identity is duplicated")
+                }
+                canonical
             }
             HostConnection(
                 hostId = identity,
