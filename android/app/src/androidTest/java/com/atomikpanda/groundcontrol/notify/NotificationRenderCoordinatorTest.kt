@@ -49,6 +49,19 @@ class NotificationRenderCoordinatorTest {
         db.close()
     }
 
+    @Test fun restart_replays_cancellation_for_a_retired_capability() = runBlocking {
+        val db = database(); val cancelled = mutableListOf<String>()
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("c", "t", "source#1", 1, false, null),
+        )
+
+        NotificationRenderCoordinator(db, FakeReplyRenderer()) { c, t -> cancelled += "$c|$t" }
+            .reconcilePending()
+
+        assertEquals(listOf("c|t"), cancelled)
+        db.close()
+    }
+
     @Test fun generation_advance_suppresses_stale_render_and_cannot_resurrect_old_actions() = runBlocking {
         val db = database(); val renderer = FakeReplyRenderer()
         db.replyNotificationVersionDao().insert(ReplyNotificationVersionRecord("c", "t", "source#2", 2, true, "new-cap"))

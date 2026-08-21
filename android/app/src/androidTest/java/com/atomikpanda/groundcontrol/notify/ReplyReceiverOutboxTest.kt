@@ -268,7 +268,7 @@ class ReplyReceiverOutboxTest {
         database.close()
     }
 
-    @Test fun alias_waiting_reply_survives_reconciliation_before_capability_adoption() = runBlocking {
+    @Test fun live_adoption_enqueues_waiting_reply_without_backstop_delay() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
         database.replyNotificationVersionDao().insert(
@@ -325,7 +325,7 @@ class ReplyReceiverOutboxTest {
         database.close()
     }
 
-    @Test fun alias_tap_before_capability_adoption_persists_one_canonical_submission() = runBlocking {
+    @Test fun alias_tap_before_capability_adoption_waits_for_canonical_adoption() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
         database.replyNotificationVersionDao().insert(
@@ -343,9 +343,23 @@ class ReplyReceiverOutboxTest {
             .putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A").toReplySubmission()!!
 
         assertTrue(outbox.submit(tap))
-        assertEquals("canonical", database.replyOutboxDao().get("opaque-key")!!.connectionId)
-        assertEquals(listOf("opaque-key"), scheduled)
+        assertEquals("alias", database.replyOutboxDao().get("opaque-key")!!.connectionId)
+        assertEquals(ReplyOutboxState.WAITING_FOR_CONNECTION, database.replyOutboxDao().get("opaque-key")!!.state)
+        assertTrue(scheduled.isEmpty())
         assertEquals(listOf("alias"), cancelled)
+
+        NotificationRenderCoordinator(database, object : ReplyNotificationRenderer {
+            override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?) = true
+        }) { _, _ -> }.adopt(
+            "alias",
+            "canonical",
+            NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source"),
+        )
+        outbox.reconcileEligible()
+
+        assertEquals("canonical", database.replyOutboxDao().get("opaque-key")!!.connectionId)
+        assertEquals(ReplyOutboxState.READY, database.replyOutboxDao().get("opaque-key")!!.state)
+        assertEquals(listOf("opaque-key"), scheduled)
         database.close()
     }
 

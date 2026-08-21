@@ -161,6 +161,9 @@ interface ReplyNotificationVersionDao {
 
     @Query("UPDATE reply_notification_versions SET active = 0, capabilityKey = NULL WHERE connId = :connectionId AND threadId = :threadId AND version = :version")
     suspend fun deactivate(connectionId: String, threadId: String, version: String): Int
+
+    @Query("SELECT * FROM reply_notification_versions WHERE active = 0")
+    suspend fun inactive(): List<ReplyNotificationVersionRecord>
 }
 
 @Dao

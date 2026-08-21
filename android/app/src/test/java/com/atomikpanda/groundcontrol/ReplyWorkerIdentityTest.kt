@@ -8,6 +8,7 @@ import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
 import com.atomikpanda.groundcontrol.notify.notificationThreadUri
 import com.atomikpanda.groundcontrol.notify.retiredReplyConnectionId
 import com.atomikpanda.groundcontrol.notify.ReplyWorker
+import com.atomikpanda.groundcontrol.notify.LegacyReplyInput
 import com.atomikpanda.groundcontrol.notify.MAX_REPLY_CONTEXT_BYTES
 import com.atomikpanda.groundcontrol.notify.ReplyDeliveryOutcome
 import com.atomikpanda.groundcontrol.notify.classifyReplyFailure
@@ -93,6 +94,18 @@ class ReplyWorkerIdentityTest {
         val data = ReplyWorker.workData("opaque-capability")
         assertEquals(setOf(ReplyWorker.K_ACTION_KEY), data.keyValueMap.keys)
         assertEquals("opaque-capability", data.getString(ReplyWorker.K_ACTION_KEY))
+    }
+
+    @Test fun queued_legacy_work_contract_is_detected_instead_of_being_silently_ignored() {
+        val legacy = ReplyWorker.legacyReplyInput(
+            ReplyWorker.legacyWorkData("alias", "thread", "exact reply", "subject", "workspace", "https://example"),
+        )
+
+        assertEquals(
+            LegacyReplyInput("alias", "thread", "exact reply", "subject", "workspace", "https://example"),
+            legacy,
+        )
+        assertEquals(null, ReplyWorker.legacyReplyInput(ReplyWorker.workData("opaque-capability")))
     }
 
     @Test fun bounded_context_uses_bytes_not_characters() {

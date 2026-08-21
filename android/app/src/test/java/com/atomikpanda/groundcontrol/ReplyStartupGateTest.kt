@@ -20,6 +20,18 @@ class ReplyStartupGateTest {
         assertTrue(watcher.await())
     }
 
+    @Test fun reply_worker_waits_for_migration_reset_before_reading_its_input() = runTest {
+        ReplyStartupGate.beginReset()
+        val worker = async {
+            ReplyWorker.awaitStartupGate()
+            true
+        }
+
+        assertFalse(worker.isCompleted)
+        ReplyStartupGate.finishReset()
+        assertTrue(worker.await())
+    }
+
     @Test fun reset_failure_keeps_waiters_closed_until_a_later_successful_reset() = runTest {
         ReplyStartupGate.beginReset()
         val watcher = async {

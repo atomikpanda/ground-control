@@ -61,14 +61,17 @@ internal class ReplyOutbox(
         } catch (_: Throwable) {
             null
         }
-        val persisted = submission.copy(connectionId = canonical?.id ?: submission.connectionId)
         val accepted = database.withTransaction {
-            if (database.replyActionTombstoneDao().get(persisted.actionKey) != null ||
-                database.replyOutboxDao().get(persisted.actionKey) != null
+            if (database.replyActionTombstoneDao().get(submission.actionKey) != null ||
+                database.replyOutboxDao().get(submission.actionKey) != null
             ) return@withTransaction false
             val versions = database.replyNotificationVersionDao()
-            val current = canonical?.let { versions.get(it.id, persisted.threadId) }
-            val source = versions.get(submission.connectionId, persisted.threadId)
+            val current = canonical?.let { versions.get(it.id, submission.threadId) }
+            val source = versions.get(submission.connectionId, submission.threadId)
+            val waitingForAdoption = canonical != null && canonical.id != submission.connectionId && current == null
+            val persisted = submission.copy(
+                connectionId = if (waitingForAdoption) submission.connectionId else canonical?.id ?: submission.connectionId,
+            )
             val capability = if (canonical == null || submission.connectionId == persisted.connectionId || current == null) {
                 source
             } else {
@@ -86,7 +89,11 @@ internal class ReplyOutbox(
                     connectionId = persisted.connectionId,
                     threadId = persisted.threadId,
                     notificationVersion = persisted.notificationVersion,
-                    state = if (canonical == null) ReplyOutboxState.WAITING_FOR_CONNECTION else ReplyOutboxState.READY,
+                    state = if (canonical == null || waitingForAdoption) {
+                        ReplyOutboxState.WAITING_FOR_CONNECTION
+                    } else {
+                        ReplyOutboxState.READY
+                    },
                     executionId = null,
                     claimedAtMillis = null,
                     renderVersion = null,
@@ -103,7 +110,9 @@ internal class ReplyOutbox(
             ) != -1L
         }
         if (accepted || canonical != null && canonical.id != submission.connectionId) notificationActionHandler(submission)
-        if (accepted && canonical != null) scheduler.enqueue(persisted.actionKey)
+        if (accepted && database.replyOutboxDao().get(submission.actionKey)?.state == ReplyOutboxState.READY) {
+            scheduler.enqueue(submission.actionKey)
+        }
         return accepted
     }
 

@@ -68,6 +68,12 @@ internal class NotificationRenderCoordinator(
     }
 
     suspend fun reconcilePending() {
+        database.replyNotificationVersionDao().inactive().forEach { version ->
+            withThreadLock(version.connId, version.threadId) {
+                val current = database.replyNotificationVersionDao().get(version.connId, version.threadId)
+                if (current?.active != true) runCatching { cancel(version.connId, version.threadId) }
+            }
+        }
         database.replyOutboxDao().pendingRender().forEach { renderPending(it.actionKey) }
     }
 
@@ -81,7 +87,7 @@ internal class NotificationRenderCoordinator(
                     true
                 } else false
             }
-            if (retired) cancel(connectionId, threadId)
+            if (retired) runCatching { cancel(connectionId, threadId) }
             retired
         }
 
