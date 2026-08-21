@@ -772,6 +772,96 @@ class HostsRepositoryTest {
         assertEquals(listOf(ambiguous.copy(directToken = null)), replaced.connections)
     }
 
+    @Test fun replacing_a_relay_account_drops_a_stored_workspace_identity_that_conflicts_with_its_url() {
+        val storedOwner = host.copy(
+            hostId = "h-stored",
+            publicUrl = "https://stored.relay.example.com",
+            directUrl = "http://stored.lan:47190",
+        )
+        val urlOwner = host.copy(
+            hostId = "h-url-owner",
+            publicUrl = "https://url-owner.relay.example.com",
+            directUrl = "http://url-owner.lan:47190",
+        )
+        val conflicting = WorkspaceConnection(
+            id = "stored-workspace-url-conflict",
+            baseUrl = "${urlOwner.publicUrl}/workspaces/url-workspace",
+            token = "must-not-transfer",
+            hostId = storedOwner.hostId,
+            workspaceId = "stored-workspace",
+            directToken = "must-not-transfer",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(storedOwner, urlOwner),
+            connections = listOf(conflicting),
+        )
+
+        assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
+    }
+
+    @Test fun replacing_a_relay_account_considers_other_fleet_hosts_when_url_ownership_is_ambiguous() {
+        val sharedUrl = "https://shared.relay.example.com"
+        val previousOwner = host.copy(
+            hostId = "h-previous",
+            publicUrl = "https://previous.relay.example.com",
+            directUrl = "http://previous.lan:47190",
+            legacyPublicUrls = listOf(sharedUrl),
+        )
+        val otherFleetOwner = host.copy(
+            hostId = "h-other-fleet",
+            publicUrl = "https://other.relay.example.com",
+            relayDomain = "other.example.com",
+            legacyPublicUrls = listOf(sharedUrl),
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "cross-fleet-ambiguous",
+            baseUrl = "$sharedUrl/workspaces/ws",
+            token = "must-not-transfer",
+            directToken = "must-not-transfer",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(previousOwner, otherFleetOwner),
+            connections = listOf(ambiguous),
+        )
+
+        assertEquals(
+            listOf(ambiguous.copy(token = null, directToken = null)),
+            replaced.connections,
+        )
+    }
+
+    @Test fun replacing_a_relay_account_counts_duplicate_host_rows_as_one_url_owner() {
+        val sharedUrl = "https://shared.relay.example.com"
+        val owner = host.copy(
+            hostId = "h-owner",
+            publicUrl = "https://owner.relay.example.com",
+            directUrl = "http://owner.lan:47190",
+            legacyPublicUrls = listOf(sharedUrl),
+        )
+        val legacy = WorkspaceConnection(
+            id = "duplicate-owner",
+            baseUrl = "$sharedUrl/workspaces/ws",
+            directToken = "direct-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(owner, owner.copy()),
+            connections = listOf(legacy),
+        )
+
+        assertEquals(1, replaced.hosts.size)
+        assertEquals("${owner.directUrl}/workspaces/ws", replaced.connections.single().baseUrl)
+        assertEquals("direct-token", replaced.connections.single().token)
+    }
+
     @Test fun replacing_a_relay_account_drops_a_stored_host_identity_that_conflicts_with_its_url() {
         val retained = host.copy(
             hostId = "h-stored",

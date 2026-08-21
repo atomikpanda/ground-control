@@ -295,11 +295,21 @@ internal fun legacyWorkspaceId(connection: WorkspaceConnection): String? {
         .takeIf { it.isNotBlank() && '/' !in it }
 }
 
+/** The URL itself establishes its claimed host root. Stored workspace identity
+ * is corroborating data, never allowed to rewrite that routing evidence. */
 private fun legacyHostRoot(connection: WorkspaceConnection): String {
     val base = connection.baseUrl.trimEnd('/')
-    val workspaceId = legacyWorkspaceId(connection) ?: return base
-    val suffix = "/workspaces/$workspaceId"
-    return if (base.endsWith(suffix)) base.removeSuffix(suffix) else base
+    val workspacePath = base.lastIndexOf("/workspaces/")
+    val workspaceIdStart = workspacePath + "/workspaces/".length
+    return if (
+        workspacePath >= 0 &&
+        workspaceIdStart < base.length &&
+        '/' !in base.substring(workspaceIdStart)
+    ) {
+        base.substring(0, workspacePath)
+    } else {
+        base
+    }
 }
 
 /** Match only persisted fleet routing evidence. A workspace's own

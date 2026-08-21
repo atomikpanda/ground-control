@@ -127,7 +127,9 @@ internal fun replaceRelayAccountFleet(
     if (previous == null || previous == replacement) {
         return RelayAccountFleet(hosts, connections)
     }
-    val previousHosts = hosts.filter { it.relayDomain == previous.relayDomain }
+    val previousHosts = hosts
+        .filter { it.relayDomain == previous.relayDomain }
+        .distinctBy { it.hostId }
     val retainedDirectHosts = previousHosts.mapNotNull { host ->
         val directUrl = host.directUrl?.let(::normalizedBaseUrl) ?: return@mapNotNull null
         host.copy(
@@ -148,9 +150,9 @@ internal fun replaceRelayAccountFleet(
     val ownedConnections = connections.map { connection ->
         val legacyUrlOwners = knownHostsForLegacyConnection(
             connection,
-            previousHosts,
+            hosts,
             useStoredHostId = false,
-        )
+        ).distinctBy { it.hostId }
         val storedHostId = connection.hostId?.takeIf {
             it.isNotBlank() &&
                 !it.startsWith("http://", ignoreCase = true) &&
