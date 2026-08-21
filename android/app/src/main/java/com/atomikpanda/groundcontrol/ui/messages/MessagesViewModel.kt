@@ -106,6 +106,7 @@ class MessagesViewModel(
     private var sections: List<ThreadsSection> = emptyList()
     private var selectedConnectionId: String? = null
     private var stateFilter: ThreadStateFilter = ThreadStateFilter.ALL
+    private val livePollRevisions = mutableMapOf<String, Long>()
 
     private val pollJobs = mutableMapOf<String, Pair<WorkspaceConnection, Job>>()
     private val loadJobs = mutableMapOf<String, Pair<WorkspaceConnection, Job>>()
@@ -178,6 +179,7 @@ class MessagesViewModel(
 
     fun refresh(): Job? = scope().launch {
         val connections = this@MessagesViewModel.connections.first()
+        val pollRevisionsAtStart = livePollRevisions.toMap()
         latestConnections = connections
         hasReceivedConnectionSnapshot = true
         if (connections.isEmpty()) {
@@ -194,12 +196,21 @@ class MessagesViewModel(
             threadsDeferred.await() to itemsDeferred.await()
         }
         sections = results.map { ws ->
-            ThreadsSection(
+            val refreshed = ThreadsSection(
                 workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
                 connectionId = ws.connection.id,
                 threads = ws.threads,
                 items = itemsByConn[ws.connection.id] ?: emptyList(),
             )
+            val current = sections.firstOrNull { it.connectionId == refreshed.connectionId }
+            if (livePollRevisions[refreshed.connectionId] != pollRevisionsAtStart[refreshed.connectionId] &&
+                current?.threads?.isSuccess == true && refreshed.threads.isSuccess) {
+                refreshed.copy(
+                    threads = Result.success(
+                        mergeThreadsById(refreshed.threads.getOrThrow(), current.threads.getOrThrow())
+                    )
+                )
+            } else refreshed
         }
         hasCompletedInitialLoad = true
         if (livePollingStarted) {
@@ -245,6 +256,7 @@ class MessagesViewModel(
                     threads = Result.success(mergeThreadsById(section.threads.getOrNull() ?: emptyList(), resp.threads))
                 )
             }
+            livePollRevisions[conn.id] = (livePollRevisions[conn.id] ?: 0) + 1
             render()
         }
         return resp.cursor
@@ -253,21 +265,26 @@ class MessagesViewModel(
     private fun loadConnection(conn: WorkspaceConnection) {
         if (loadJobs[conn.id]?.second?.isActive == true) return
         val job = scope().launch {
-            val (results, itemsByConn) = coroutineScope {
-                val threadsDeferred = async { repo.listAllThreads(listOf(conn)) }
-                val itemsDeferred = async { repo.listAllItems(listOf(conn)) }
-                threadsDeferred.await() to itemsDeferred.await()
+            while (isActive && latestConnections.findByConnectionId(conn.id) == conn) {
+                val (results, itemsByConn) = coroutineScope {
+                    val threadsDeferred = async { repo.listAllThreads(listOf(conn)) }
+                    val itemsDeferred = async { repo.listAllItems(listOf(conn)) }
+                    threadsDeferred.await() to itemsDeferred.await()
+                }
+                if (!isActive || latestConnections.findByConnectionId(conn.id) != conn) break
+                val section = results.single().let { ws ->
+                    ThreadsSection(
+                        workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
+                        connectionId = ws.connection.id,
+                        threads = ws.threads,
+                        items = itemsByConn[ws.connection.id] ?: emptyList(),
+                    )
+                }
+                sections = sections.filterNot { it.connectionId == conn.id } + section
+                reconcileLivePolling(latestConnections)
+                if (section.threads.isSuccess) break
+                delay(LIVE_POLL_RETRY_DELAY_MILLIS)
             }
-            if (!isActive || latestConnections.findByConnectionId(conn.id) != conn) return@launch
-            sections += results.map { ws ->
-                ThreadsSection(
-                    workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
-                    connectionId = ws.connection.id,
-                    threads = ws.threads,
-                    items = itemsByConn[ws.connection.id] ?: emptyList(),
-                )
-            }
-            reconcileLivePolling(latestConnections)
         }
         loadJobs[conn.id] = conn to job
         job.invokeOnCompletion {
@@ -280,16 +297,18 @@ class MessagesViewModel(
         while (jobs.hasNext()) {
             val entry = jobs.next()
             if (currentConnections.findByConnectionId(entry.key) != entry.value.first) {
-                entry.value.second.cancel()
+                val job = entry.value.second
                 jobs.remove()
+                job.cancel()
             }
         }
         val loads = loadJobs.entries.iterator()
         while (loads.hasNext()) {
             val entry = loads.next()
             if (currentConnections.findByConnectionId(entry.key) != entry.value.first) {
-                entry.value.second.cancel()
+                val job = entry.value.second
                 loads.remove()
+                job.cancel()
             }
         }
         val adoptedFailures = canonicalizeLoadedIdentities(currentConnections)
@@ -300,6 +319,7 @@ class MessagesViewModel(
             if (sections.none { it.connectionId == conn.id } || conn.id in adoptedFailures) loadConnection(conn)
         }
         sections.forEach { section ->
+            if (section.threads.isFailure) return@forEach
             if (pollJobs[section.connectionId]?.second?.isActive == true) return@forEach
             val conn = currentConnections.findByConnectionId(section.connectionId) ?: return@forEach
             val seed = section.threads.getOrNull()?.mapNotNull { it.updatedAt }?.maxOrNull()

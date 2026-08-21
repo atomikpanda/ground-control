@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -146,11 +147,11 @@ class MessagesViewModelTest {
     @Test fun live_polling_loads_and_polls_connections_added_after_initial_load() = runTest {
         val connections = MutableStateFlow(listOf(connA))
         val polledHosts = mutableListOf<String>()
-        val secondPollStarted = CompletableDeferred<Unit>()
+        val addedPollStarted = CompletableDeferred<Unit>()
         val vm = MessagesViewModel(repoWith { req ->
             if (req.url.parameters["wait"] == "1") {
                 polledHosts += req.url.host
-                if (polledHosts.size == 2) secondPollStarted.complete(Unit)
+                if (req.url.host == "b") addedPollStarted.complete(Unit)
                 respond("""{"threads":[],"cursor":"","timed_out":true}""", HttpStatusCode.OK, jsonHdr)
             } else {
                 respond("[]", HttpStatusCode.OK, jsonHdr)
@@ -164,7 +165,7 @@ class MessagesViewModelTest {
         connections.value = listOf(connA, connB)
         runCurrent()
         runCurrent()
-        secondPollStarted.await()
+        addedPollStarted.await()
 
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(listOf(connA.id, connB.id), content.sections.map { it.connectionId })
@@ -226,6 +227,155 @@ class MessagesViewModelTest {
         assertEquals(emptyList<String>(), content.filteredThreads.map { it.thread.id })
     }
 
+    @Test fun refresh_does_not_overwrite_a_newer_live_poll_result() = runTest {
+        val pollStarted = CompletableDeferred<Unit>()
+        val releasePoll = CompletableDeferred<Unit>()
+        val refreshStarted = CompletableDeferred<Unit>()
+        val releaseRefresh = CompletableDeferred<Unit>()
+        var threadLoads = 0
+        val connections = MutableStateFlow(listOf(connA))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> {
+                    pollStarted.complete(Unit)
+                    releasePoll.await()
+                    respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/threads") && threadLoads++ == 0 ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads") -> {
+                    refreshStarted.complete(Unit)
+                    releaseRefresh.await()
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        pollStarted.await()
+
+        val refresh = vm.refresh()
+        refreshStarted.await()
+        releasePoll.complete(Unit)
+        withTimeout(1_000) {
+            vm.state.first { state ->
+                state is MessagesUiState.Content &&
+                    state.filteredThreads.firstOrNull()?.thread?.id == "t1"
+            }
+        }
+        releaseRefresh.complete(Unit)
+        refresh?.join()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals("2026-06-22T12:00:00Z", content.filteredThreads.first().thread.updatedAt)
+    }
+
+    @Test fun refresh_applies_server_thread_removals_when_no_live_poll_intervenes() = runTest {
+        val refreshStarted = CompletableDeferred<Unit>()
+        val releaseRefresh = CompletableDeferred<Unit>()
+        var threadLoads = 0
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.encodedPath.endsWith("/threads") && threadLoads++ == 0 ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/threads") -> {
+                    refreshStarted.complete(Unit)
+                    releaseRefresh.await()
+                    respond(
+                        """[{"id":"t1","subject":"a","updated_at":"2026-06-22T09:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, flowOf(listOf(connA)), backgroundScope)
+        vm.refresh()?.join()
+
+        val refresh = vm.refresh()
+        refreshStarted.await()
+        releaseRefresh.complete(Unit)
+        refresh?.join()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf("t1"), content.filteredThreads.map { it.thread.id })
+    }
+
+    @Test fun reconciliation_survives_a_cancelled_poll_that_emits_another_snapshot() = runTest {
+        val replacementPollStarted = CompletableDeferred<Unit>()
+        val retiredPollStarted = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow(listOf(connA))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" && req.url.host == "a" -> {
+                    retiredPollStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        connections.value = listOf(connB)
+                    }
+                }
+                req.url.parameters["wait"] == "1" -> {
+                    replacementPollStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+        retiredPollStarted.await()
+
+        connections.value = listOf(connB)
+        runCurrent()
+        replacementPollStarted.await()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(connB.id), content.sections.map { it.connectionId })
+    }
+
+    @Test fun live_polling_retries_a_transient_new_connection_load_before_polling_it() = runTest {
+        val firstLoadFailed = CompletableDeferred<Unit>()
+        val replacementPollStarted = CompletableDeferred<Unit>()
+        var bThreadLoads = 0
+        val connections = MutableStateFlow(listOf(connA))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" && req.url.host == "b" -> {
+                    replacementPollStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                req.url.parameters["wait"] == "1" -> awaitCancellation()
+                req.url.encodedPath.endsWith("/threads") && req.url.host == "b" && bThreadLoads++ == 0 -> {
+                    firstLoadFailed.complete(Unit)
+                    respondError(HttpStatusCode.InternalServerError)
+                }
+                req.url.encodedPath.endsWith("/threads") && req.url.host == "b" ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = listOf(connA, connB)
+        runCurrent()
+        firstLoadFailed.await()
+        runCurrent()
+        assertTrue(!replacementPollStarted.isCompleted)
+
+        advanceTimeBy(2_000)
+        runCurrent()
+        replacementPollStarted.await()
+
+        val content = vm.state.value as MessagesUiState.Content
+        val replacement = content.sections.single { it.connectionId == connB.id }
+        assertEquals(listOf("t3", "t2", "t1"), replacement.threads.getOrThrow().map { it.id })
+    }
+
     @Test fun live_polling_reloads_a_failed_retired_section_after_adoption() = runTest {
         val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
         val canonical = WorkspaceConnection(
@@ -261,10 +411,15 @@ class MessagesViewModelTest {
 
         connections.value = listOf(canonical)
         runCurrent()
-        withTimeout(1_000) { replacementLoadStarted.await() }
-        withTimeout(1_000) { replacementPollStarted.await() }
+        val content = withTimeout(1_000) {
+            vm.state.first { state ->
+                state is MessagesUiState.Content &&
+                    state.sections.singleOrNull()?.connectionId == canonical.id &&
+                    state.sections.singleOrNull()?.threads?.isSuccess == true
+            }
+        } as MessagesUiState.Content
+        replacementPollStarted.await()
 
-        val content = vm.state.value as MessagesUiState.Content
         assertEquals(listOf(canonical.id), content.sections.map { it.connectionId })
         assertTrue(content.sections.single().threads.isSuccess)
     }
