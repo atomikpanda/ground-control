@@ -94,15 +94,19 @@ internal class MessageConnectionOwner(
     }
     fun refresh(): Job = scope.launch {
         val queued = CompletableDeferred<Unit>()
+        var queuedForHandoff = false
         val request = mutex.withLock {
-            if (pendingHandoffJobs.isNotEmpty()) {
-                queuedRefreshWaiters = queuedRefreshWaiters + queued
-                null
-            } else {
-                launchRequestLocked(MessageRequestToken.Kind.REFRESH)
+            when {
+                cancelled -> null
+                pendingHandoffJobs.isNotEmpty() -> {
+                    queuedRefreshWaiters = queuedRefreshWaiters + queued
+                    queuedForHandoff = true
+                    null
+                }
+                else -> launchRequestLocked(MessageRequestToken.Kind.REFRESH)
             }
         }
-        if (request != null) request.join() else queued.await()
+        if (request != null) request.join() else if (queuedForHandoff) queued.await()
     }
 
     fun startPolling(): Job = scope.launch {
@@ -321,6 +325,14 @@ internal class MessageConnectionOwner(
                 }
             }
         }
+    }
+
+    internal suspend fun holdMutexForTest(
+        entered: CompletableDeferred<Unit>,
+        release: CompletableDeferred<Unit>,
+    ) = mutex.withLock {
+        entered.complete(Unit)
+        release.await()
     }
 
     suspend fun cancel() {

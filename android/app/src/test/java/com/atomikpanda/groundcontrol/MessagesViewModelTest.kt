@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.buildJson
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
+import com.atomikpanda.groundcontrol.ui.messages.MessageConnectionSnapshot
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateFilter
 import com.atomikpanda.groundcontrol.ui.messages.mergeThreadsById
@@ -22,13 +23,16 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -432,6 +436,96 @@ class MessagesViewModelTest {
         runCurrent()
 
         assertEquals(finalReplacement, vm.ownerSnapshot(finalReplacement.id)?.connection)
+    }
+
+    @Test fun same_id_handoff_cancellation_while_resume_waits_for_owner_mutex_removes_replacement_before_next_ready_connection() = runTest {
+        val original = WorkspaceConnection("same", "http://old:47100", null, "ws", state = "ready")
+        val replacement = original.copy(baseUrl = "http://new:47100", state = "reconnecting")
+        val nextReady = replacement.copy(state = "ready")
+        val connections = MutableStateFlow(listOf(original))
+        val oldRefreshStarted = CompletableDeferred<Unit>()
+        val oldRefreshCancelled = CompletableDeferred<Unit>()
+        val releaseOldRefresh = CompletableDeferred<Unit>()
+        val releaseHandoffStartMutex = CompletableDeferred<Unit>()
+        val handoffStartMutexHeld = CompletableDeferred<Unit>()
+        val releaseHandoffCompletionMutex = CompletableDeferred<Unit>()
+        val handoffCompletionMutexHeld = CompletableDeferred<Unit>()
+        val releaseResumeMutex = CompletableDeferred<Unit>()
+        val resumeMutexHeld = CompletableDeferred<Unit>()
+        var oldLoads = 0
+        var newLoads = 0
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.host == "old" && request.url.encodedPath.endsWith("/threads") -> {
+                    oldLoads += 1
+                    if (oldLoads == 2) {
+                        oldRefreshStarted.complete(Unit)
+                        try {
+                            awaitCancellation()
+                        } finally {
+                            oldRefreshCancelled.complete(Unit)
+                            withContext(NonCancellable) { releaseOldRefresh.await() }
+                        }
+                    }
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.host == "new" && request.url.encodedPath.endsWith("/threads") -> {
+                    newLoads += 1
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        vm.state.first { it is MessagesUiState.Content }
+        val owner = checkNotNull(vm.ownerForTest(original.id))
+        val refresh = owner.refresh()
+        oldRefreshStarted.await()
+        val holdHandoffStart = backgroundScope.async {
+            owner.holdMutexForTest(handoffStartMutexHeld, releaseHandoffStartMutex)
+        }
+        handoffStartMutexHeld.await()
+
+        connections.value = listOf(replacement)
+        runCurrent()
+        releaseHandoffStartMutex.complete(Unit)
+        oldRefreshCancelled.await()
+        val holdHandoffCompletion = backgroundScope.async {
+            owner.holdMutexForTest(handoffCompletionMutexHeld, releaseHandoffCompletionMutex)
+        }
+        handoffCompletionMutexHeld.await()
+        releaseOldRefresh.complete(Unit)
+        runCurrent()
+        val holdResume = backgroundScope.async {
+            owner.holdMutexForTest(resumeMutexHeld, releaseResumeMutex)
+        }
+        releaseHandoffCompletionMutex.complete(Unit)
+        resumeMutexHeld.await()
+        connections.value = listOf(nextReady)
+        runCurrent()
+
+        withTimeout(1_000) {
+            while (vm.ownerSnapshot(original.id) != null) delay(1)
+        }
+        assertEquals(null, vm.ownerSnapshot(original.id))
+
+        releaseResumeMutex.complete(Unit)
+        holdHandoffStart.await()
+        holdHandoffCompletion.await()
+        holdResume.await()
+        refresh.join()
+        withTimeout(1_000) {
+            var replacementOwner = vm.ownerForTest(nextReady.id)
+            while (replacementOwner == null) {
+                delay(1)
+                replacementOwner = vm.ownerForTest(nextReady.id)
+            }
+            replacementOwner.snapshot.first { it.phase == MessageConnectionSnapshot.Phase.READY }
+        }
+
+        assertEquals(nextReady, vm.ownerSnapshot(nextReady.id)?.connection)
+        assertEquals(MessageConnectionSnapshot.Phase.READY, vm.ownerSnapshot(nextReady.id)?.phase)
+        assertEquals(1, newLoads)
     }
 
     @Test fun refresh_captured_before_newer_connections_never_restores_or_polls_the_old_snapshot() = runTest {

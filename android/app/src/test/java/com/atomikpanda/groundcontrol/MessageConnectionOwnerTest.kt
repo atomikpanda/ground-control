@@ -330,4 +330,15 @@ class MessageConnectionOwnerTest {
         queued.join()
         assertEquals(1, loads)
     }
+
+    @Test fun refresh_after_owner_cancellation_completes_without_waiting_for_an_unqueued_handoff() = runTest {
+        val owner = owner(backgroundScope)
+        owner.cancel()
+
+        val refresh = owner.refresh()
+        runCurrent()
+
+        assertTrue(refresh.isCompleted)
+        assertFalse(refresh.isCancelled)
+    }
     }

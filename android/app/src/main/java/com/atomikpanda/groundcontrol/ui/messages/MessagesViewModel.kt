@@ -196,7 +196,12 @@ class MessagesViewModel(
                         throw cancelled
                     }
                     if (receipt != null && revision == reconcileRevision) {
-                        owner!!.resumeAfterHandoff(receipt)
+                        try {
+                            owner!!.resumeAfterHandoff(receipt)
+                        } catch (cancelled: CancellationException) {
+                            removeAndCancelOwner(owner!!)
+                            throw cancelled
+                        }
                     } else {
                         removeAndCancelOwner(owner!!)
                         owner = null
@@ -257,6 +262,7 @@ class MessagesViewModel(
     }
 
     internal fun ownerSnapshot(connectionId: String): MessageConnectionSnapshot? = owners[connectionId]?.snapshot?.value
+    internal fun ownerForTest(connectionId: String): MessageConnectionOwner? = owners[connectionId]
 
     private fun allThreads(connectionId: String?): List<ThreadSummary> = sections()
         .filter { connectionId == null || it.connectionId == connectionId }
