@@ -9,6 +9,7 @@ import com.atomikpanda.groundcontrol.notify.NeedsYouEvent
 import com.atomikpanda.groundcontrol.notify.NeedsYouReconciler
 import com.atomikpanda.groundcontrol.notify.Notifier
 import com.atomikpanda.groundcontrol.notify.NotifiedStore
+import com.atomikpanda.groundcontrol.notify.ReplyCapabilityAdoption
 import com.atomikpanda.groundcontrol.notify.threadKey
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -107,6 +108,29 @@ class NeedsYouReconcilerTest {
         assertTrue("other|t1" in store.marks)
     }
 
+    @Test fun active_alias_capability_without_dedupe_mark_is_adopted_before_canonical_publication() = runTest {
+        val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("alias"))
+        val store = FakeStore()
+        val transferred = mutableListOf<String>()
+        var publications = 0
+
+        NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            publish = { publications += 1; true },
+            adopt = { source, target, event ->
+                transferred += "$source|$target|${event.threadId}"
+                ReplyCapabilityAdoption.ADOPTED
+            },
+            hasActiveCapability = { connectionId, threadId -> connectionId == "alias" && threadId == "t1" },
+        ).reconcile(adopted, listOf(summary("t1", true)))
+
+        assertEquals(listOf("alias|canonical|t1"), transferred)
+        assertEquals(0, publications)
+        assertTrue("canonical|t1" in store.marks)
+    }
+
     @Test fun resolved_thread_clears_retired_notification_state_without_creating_canonical_mark() = runTest {
         val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("retired"))
         val store = FakeStore(); val notifier = FakeNotifier()
@@ -120,6 +144,121 @@ class NeedsYouReconcilerTest {
         assertFalse("canonical|t1" in store.marks)
         assertFalse("retired|t1" in store.marks)
         assertTrue("other|t1" in store.marks)
+    }
+
+    @Test fun resolved_alias_is_retired_without_canonical_adoption() = runTest {
+        val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("alias"))
+        val store = FakeStore(); val notifier = FakeNotifier()
+        store.markNotified("alias", "t1")
+        val retired = mutableListOf<String>(); val transfers = mutableListOf<String>()
+        NeedsYouReconciler(
+            store, notifier, routedRepo(),
+            retire = { connectionId, threadId, _ -> retired += "$connectionId|$threadId"; true },
+            adopt = { source, target, event ->
+                transfers += "$source|$target|${event.threadId}"
+                ReplyCapabilityAdoption.ADOPTED
+            },
+        ).reconcile(adopted, listOf(summary("t1", false)))
+        assertEquals(listOf("alias|t1", "canonical|t1"), retired)
+        assertTrue(transfers.isEmpty())
+        assertFalse("alias|t1" in store.marks)
+    }
+
+    @Test fun resolved_thread_retires_active_capability_when_dedupe_mark_is_missing() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        val retired = mutableListOf<String>()
+
+        NeedsYouReconciler(
+            store, notifier, routedRepo(),
+            retire = { connectionId, threadId, _ -> retired += "$connectionId|$threadId"; true },
+        ).reconcile(conn, listOf(summary("t1", false)))
+
+        assertEquals(listOf("${conn.id}|t1"), retired)
+    }
+
+
+    @Test fun failed_publication_is_not_deduped_and_retries_on_next_reconcile() = runTest {
+        val store = FakeStore()
+        var attempts = 0
+        val reconciler = NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            publish = {
+                attempts += 1
+                false
+            },
+        )
+
+        reconciler.reconcile(conn, listOf(summary("t1", true)))
+        reconciler.reconcile(conn, listOf(summary("t1", true)))
+
+        assertEquals(2, attempts)
+        assertFalse("${conn.id}|t1" in store.marks)
+    }
+
+    @Test fun retired_alias_without_replacement_is_republished_under_canonical_identity() = runTest {
+        val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("retired"))
+        val store = FakeStore()
+        store.markNotified("retired", "t1")
+        var publications = 0
+
+        NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            publish = { publications += 1; true },
+            adopt = { _, _, _ -> ReplyCapabilityAdoption.RETIRED_WITHOUT_REPLACEMENT },
+        ).reconcile(adopted, listOf(summary("t1", true)))
+
+        assertEquals(1, publications)
+        assertTrue("canonical|t1" in store.marks)
+        assertFalse("retired|t1" in store.marks)
+    }
+
+    @Test fun stale_resolution_preserves_dedupe_for_the_active_capability() = runTest {
+        val store = FakeStore()
+        store.markNotified(conn.id, "t1")
+
+        NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            retire = { _, _, _ -> false },
+            hasActiveCapability = { _, _ -> true },
+        ).reconcile(conn, listOf(summary("t1", false)))
+
+        assertTrue("${conn.id}|t1" in store.marks)
+    }
+
+    @Test fun resolved_thread_clears_dedupe_after_a_prior_reply_retired_the_capability() = runTest {
+        val store = FakeStore()
+        store.markNotified(conn.id, "t1")
+
+        NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            retire = { _, _, _ -> false },
+            hasActiveCapability = { _, _ -> false },
+        ).reconcile(conn, listOf(summary("t1", false)))
+
+        assertFalse("${conn.id}|t1" in store.marks)
+    }
+
+    @Test fun deduped_thread_with_a_retired_capability_republishes_while_still_needy() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        store.markNotified(conn.id, "t1")
+
+        NeedsYouReconciler(
+            store,
+            notifier,
+            routedRepo(),
+            retire = { _, _, _ -> false },
+            hasActiveCapability = { _, _ -> false },
+        ).reconcile(conn, listOf(summary("t1", true)))
+
+        assertEquals(1, notifier.events.size)
     }
 
     @Test fun plain_note_does_not_notify() = runTest {

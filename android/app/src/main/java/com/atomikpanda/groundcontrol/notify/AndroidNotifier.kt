@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.notify
 
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -11,6 +12,12 @@ import androidx.core.app.Person
 import androidx.core.app.RemoteInput
 import androidx.core.content.LocusIdCompat
 import com.atomikpanda.groundcontrol.MainActivity
+import com.atomikpanda.groundcontrol.data.buildJson
+import kotlinx.serialization.encodeToString
+
+internal fun needsYouChannelAllowsNotifications(sdkInt: Int, channelImportance: Int?): Boolean =
+    sdkInt < Build.VERSION_CODES.O ||
+        channelImportance != null && channelImportance != NotificationManager.IMPORTANCE_NONE
 
 /**
  * Renders a needs-you notification as a `NotificationCompat.MessagingStyle` conversation: a "me"
@@ -19,16 +26,24 @@ import com.atomikpanda.groundcontrol.MainActivity
  * (RemoteInput) and, for a single-select decision, up to [MAX_OPTION_ACTIONS] recommended-first
  * option buttons. Pure render step — enrichment (the thread fetch) happens in the reconciler.
  */
-class AndroidNotifier(private val context: Context) : Notifier {
+internal class AndroidNotifier(private val context: Context) : Notifier, ReplyNotificationRenderer {
 
-    override fun notify(event: NeedsYouEvent) = render(event, errorLine = null)
+    override fun notify(event: NeedsYouEvent) {
+        render(event, capability = null, errorLine = null)
+    }
 
-    /** Re-notify after a failed reply: surface the attempted text (so it isn't lost) + keep the
-     *  reply action for a manual retry. */
-    fun notifyReplyError(event: NeedsYouEvent, failedText: String) =
-        render(event, errorLine = failedText)
+    override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?): Boolean =
+        render(event, capability, errorLine)
 
-    private fun render(event: NeedsYouEvent, errorLine: String?) {
+    private fun render(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?): Boolean {
+        val channelImportance = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.getSystemService(NotificationManager::class.java)
+                ?.getNotificationChannel(NotificationChannels.NEEDS_YOU)
+                ?.importance
+        } else null
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled() ||
+            !needsYouChannelAllowsNotifications(Build.VERSION.SDK_INT, channelImportance)
+        ) return false
         val notifId = needsYouNotificationId(event.connectionId, event.threadId)
         val agentName = event.workspaceName.ifBlank { "Ground Control" }
         val title = event.subject.ifBlank { agentName }
@@ -84,22 +99,22 @@ class AndroidNotifier(private val context: Context) : Notifier {
             builder.setShortcutId(shortcutId).setLocusId(LocusIdCompat(shortcutId))
         }
 
-        // Reply first so it's always within the standard 3-action budget alongside the option
-        // buttons. (Android's standard template renders at most 3 actions; a persistent reply +
-        // MAX_OPTION_ACTIONS option buttons must fit — see MAX_OPTION_ACTIONS.)
-        builder.addAction(replyAction(event))
-        decisionActionOptions(event.decision, MAX_OPTION_ACTIONS).forEach { opt ->
-            builder.addAction(optionAction(event, opt.text))
+        capability?.let { current ->
+            // Reply first so it remains inside Android's standard three-action budget.
+            builder.addAction(replyAction(event, current))
+            decisionActionOptions(event.decision, MAX_OPTION_ACTIONS).forEach { opt ->
+                builder.addAction(optionAction(event, current, opt.text))
+            }
         }
 
-        runCatching { NotificationManagerCompat.from(context).notify(notifId, builder.build()) }
+        return runCatching { NotificationManagerCompat.from(context).notify(notifId, builder.build()) }.isSuccess
     }
 
-    private fun replyAction(event: NeedsYouEvent): NotificationCompat.Action {
+    private fun replyAction(event: NeedsYouEvent, capability: ReplyCapability): NotificationCompat.Action {
         val remoteInput = RemoteInput.Builder(ReplyReceiver.KEY_REPLY_TEXT)
             .setLabel("Reply")
             .build()
-        val pi = replyPendingIntent(event, tag = "reply", optionText = null, mutable = true)
+        val pi = replyPendingIntent(event, capability, tag = "reply", optionText = null, mutable = true)
         return NotificationCompat.Action.Builder(android.R.drawable.ic_menu_send, "Reply", pi)
             .addRemoteInput(remoteInput)
             .setAllowGeneratedReplies(true)
@@ -108,10 +123,8 @@ class AndroidNotifier(private val context: Context) : Notifier {
             .build()
     }
 
-    private fun optionAction(event: NeedsYouEvent, optionText: String): NotificationCompat.Action {
-        // POST the FULL option text (EXTRA_OPTION_TEXT, via replyPendingIntent) so a phone/Watch tap
-        // sends the correct full choice; only the VISIBLE label is shortened (#379).
-        val pi = replyPendingIntent(event, tag = "opt_" + optionText.hashCode(), optionText = optionText, mutable = false)
+    private fun optionAction(event: NeedsYouEvent, capability: ReplyCapability, optionText: String): NotificationCompat.Action {
+        val pi = replyPendingIntent(event, capability, tag = "opt_" + optionText.hashCode(), optionText = optionText, mutable = false)
         return NotificationCompat.Action.Builder(0, optionButtonLabel(optionText), pi)
             .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_NONE)
             .setShowsUserInterface(false)
@@ -120,20 +133,22 @@ class AndroidNotifier(private val context: Context) : Notifier {
 
     private fun replyPendingIntent(
         event: NeedsYouEvent,
+        capability: ReplyCapability,
         tag: String,
         optionText: String?,
         mutable: Boolean,
     ): PendingIntent {
-        val discriminator = event.connectionId + "|" + event.threadId + ":" + tag
+        val discriminator = capability.key + ":" + tag
         val intent = Intent(context, ReplyReceiver::class.java).apply {
-            // Distinct action per (thread, tag) so PendingIntents don't collide (extras are ignored
-            // for PendingIntent equality).
             action = "com.atomikpanda.groundcontrol.REPLY:$discriminator"
             putExtra(ReplyReceiver.EXTRA_CONN_ID, event.connectionId)
             putExtra(ReplyReceiver.EXTRA_THREAD_ID, event.threadId)
+            putExtra(ReplyReceiver.EXTRA_NOTIFICATION_VERSION, capability.version)
+            putExtra(ReplyReceiver.EXTRA_REPLY_CAPABILITY, capability.key)
             putExtra(ReplyReceiver.EXTRA_SUBJECT, event.subject)
             putExtra(ReplyReceiver.EXTRA_WORKSPACE, event.workspaceName)
             putExtra(ReplyReceiver.EXTRA_BASE_URL, event.baseUrl)
+            event.decision?.let { putExtra(ReplyReceiver.EXTRA_DECISION, buildJson().encodeToString(it)) }
             optionText?.let { putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, it) }
         }
         val mutability = when {

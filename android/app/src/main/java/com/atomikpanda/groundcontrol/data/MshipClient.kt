@@ -84,6 +84,7 @@ open class AuthException(message: String) : Exception(message)
 class NotFoundException(message: String) : Exception(message)
 /** 409 — carries the server's verbatim `detail` (approval blockers or invalid transition). */
 class ApiConflictException(val detail: String) : Exception(detail)
+class ApiResponseException(val status: HttpStatusCode, message: String) : Exception(message)
 
 /** Pull FastAPI's `{"detail": "..."}` out of an error body, falling back to the raw text. */
 private fun errorDetail(body: String): String =
@@ -104,7 +105,7 @@ fun HttpClientConfig<*>.mshipDefaults() {
                 HttpStatusCode.Unauthorized -> throw AuthException(detail)
                 HttpStatusCode.NotFound -> throw NotFoundException(detail)
                 HttpStatusCode.Conflict -> throw ApiConflictException(detail)
-                else -> throw Exception("HTTP ${resp.status.value}: $detail")
+                else -> throw ApiResponseException(resp.status, detail)
             }
         }
     }

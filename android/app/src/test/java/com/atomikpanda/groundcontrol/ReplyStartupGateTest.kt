@@ -1,0 +1,76 @@
+package com.atomikpanda.groundcontrol
+
+import com.atomikpanda.groundcontrol.notify.ReplyStartupGate
+import com.atomikpanda.groundcontrol.notify.ReplyWorker
+import com.atomikpanda.groundcontrol.notify.withReplyStartupGate
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ReplyStartupGateTest {
+    @Test fun watcher_started_before_reset_coroutine_cannot_pass_closed_generation() = runTest {
+        ReplyStartupGate.beginReset()
+        val watcher = async {
+            ReplyStartupGate.awaitReset()
+            true
+        }
+        assertFalse(watcher.isCompleted)
+        ReplyStartupGate.finishReset()
+        assertTrue(watcher.await())
+    }
+
+    @Test fun reply_worker_waits_for_migration_reset_before_reading_its_input() = runTest {
+        ReplyStartupGate.beginReset()
+        val worker = async {
+            ReplyWorker.awaitStartupGate()
+            true
+        }
+
+        assertFalse(worker.isCompleted)
+        ReplyStartupGate.finishReset()
+        assertTrue(worker.await())
+    }
+
+    @Test fun reset_failure_keeps_waiters_closed_until_a_later_successful_reset() = runTest {
+        ReplyStartupGate.beginReset()
+        val watcher = async {
+            ReplyStartupGate.awaitReset()
+            true
+        }
+
+        runCatching {
+            withReplyStartupGate<Nothing> { error("database open failed") }
+        }
+
+        assertFalse(watcher.isCompleted)
+        withReplyStartupGate { Unit }
+        assertTrue(watcher.await())
+    }
+
+    @Test fun reset_retries_stop_and_release_waiters_with_the_final_failure() = runTest {
+        ReplyStartupGate.beginReset()
+        val watcher = async {
+            runCatching { ReplyStartupGate.awaitReset() }.exceptionOrNull()
+        }
+        var attempts = 0
+        var delays = 0
+
+        val failure = runCatching {
+            retryReplyReset(
+                maxAttempts = 3,
+                retryDelay = { delays += 1 },
+            ) {
+                attempts += 1
+                error("database open failed $attempts")
+            }
+        }.exceptionOrNull()!!
+        ReplyStartupGate.failReset(failure)
+
+        assertEquals(3, attempts)
+        assertEquals(2, delays)
+        assertEquals("database open failed 3", watcher.await()!!.message)
+    }
+}

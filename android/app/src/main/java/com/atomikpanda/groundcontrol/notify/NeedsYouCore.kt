@@ -30,63 +30,111 @@ interface Notifier {
     fun notify(event: NeedsYouEvent)
 }
 
+enum class ReplyCapabilityAdoption {
+    ADOPTED,
+    RETIRED_WITHOUT_REPLACEMENT,
+    RETRY,
+}
+
 class NeedsYouReconciler(
     private val store: NotifiedStore,
     private val notifier: Notifier,
     private val repo: ThreadsRepository,
+    /** Production supplies generation-safe Room publication; existing non-Android consumers retain
+     * the plain notifier seam. */
+    private val publish: suspend (NeedsYouEvent) -> Boolean = { notifier.notify(it); true },
+    private val retire: suspend (String, String, String) -> Boolean = { _, _, _ -> true },
+    private val adopt: suspend (String, String, NeedsYouEvent) -> ReplyCapabilityAdoption = { _, _, _ -> ReplyCapabilityAdoption.ADOPTED },
     /** The thread currently open+foregrounded (see [OpenThreadRegistry]), or null. Suppresses a
      *  duplicate notification for the thread the user is already viewing (#378). Defaults to
      *  "nothing open" so non-UI callers/tests keep the original always-notify behavior. */
     private val foregroundThreadKey: () -> String? = { null },
+    /** Reply capabilities are authoritative when publication completed before the dedupe mark.
+     *  Defaults to active so consumers without capability tracking keep pure mark-based dedupe;
+     *  a false answer republishes a still-needy deduped thread whose notification was retired. */
+    private val hasActiveCapability: suspend (String, String) -> Boolean = { _, _ -> true },
 ) {
     suspend fun reconcile(conn: WorkspaceConnection, threads: List<ThreadSummary>) {
         for (t in threads) {
             val needsAttention = t.needsYou || t.needsDecision
             val currentNotified = store.isNotified(conn.id, t.id)
+            suspend fun hasRetiredCapability(retiredId: String): Boolean =
+                store.isNotified(retiredId, t.id) || hasActiveCapability(retiredId, t.id)
+
             var retiredNotified = false
             for (retiredId in conn.legacyConnectionIds) {
-                if (store.isNotified(retiredId, t.id)) {
+                if (hasRetiredCapability(retiredId)) {
                     retiredNotified = true
                     break
                 }
             }
+            suspend fun eventForThread(): NeedsYouEvent {
+                val messages = runCatching { repo.getThread(conn, t.id).messages }
+                    .getOrDefault(emptyList())
+                return NeedsYouEvent(
+                    connectionId = conn.id,
+                    baseUrl = conn.baseUrl,
+                    workspaceName = conn.workspaceName,
+                    threadId = t.id,
+                    subject = t.subject,
+                    preview = t.lastMessage,
+                    updatedAt = t.updatedAt ?: "",
+                    messages = messages,
+                    decision = activeDecision(messages),
+                )
+            }
             if (retiredNotified) {
-                // Persist the current identity before retiring aliases so an interrupted migration
-                // cannot turn an existing notification into a future duplicate.
-                if (needsAttention && !currentNotified) {
-                    store.markNotified(conn.id, t.id)
-                }
-                for (retiredId in conn.legacyConnectionIds) {
-                    store.clear(retiredId, t.id)
+                if (needsAttention) {
+                    var adopted = true
+                    var requiresReplacement = false
+                    for (retiredId in conn.legacyConnectionIds) {
+                        if (hasRetiredCapability(retiredId)) {
+                            when (adopt(retiredId, conn.id, eventForThread())) {
+                                ReplyCapabilityAdoption.ADOPTED -> store.clear(retiredId, t.id)
+                                ReplyCapabilityAdoption.RETIRED_WITHOUT_REPLACEMENT -> {
+                                    store.clear(retiredId, t.id)
+                                    requiresReplacement = true
+                                }
+                                ReplyCapabilityAdoption.RETRY -> adopted = false
+                            }
+                        }
+                    }
+                    when {
+                        !adopted -> Unit
+                        requiresReplacement && publish(eventForThread()) -> store.markNotified(conn.id, t.id)
+                        !requiresReplacement -> store.markNotified(conn.id, t.id)
+                    }
+                } else {
+                    // A resolved alias must be retired, not adopted: otherwise its capability
+                    // remains actionable under the canonical identity after dedupe is cleared.
+                    for (retiredId in conn.legacyConnectionIds) {
+                        if (
+                            retire(retiredId, t.id, t.updatedAt.orEmpty()) ||
+                            !hasActiveCapability(retiredId, t.id)
+                        ) {
+                            store.clear(retiredId, t.id)
+                        }
+                    }
                 }
             }
-            if (needsAttention && !currentNotified && !retiredNotified) {
+            if (needsAttention && !retiredNotified && (!currentNotified || !hasActiveCapability(conn.id, t.id))) {
                 if (shouldSuppressNotification(foregroundThreadKey(), conn.id, t.id)) {
                     // The user is looking at this exact thread right now. Skip the notification and
                     // deliberately do NOT markNotified: if they leave it still-unanswered, a later
                     // reconcile should surface it.
                     continue
                 }
-                // Fetch the full thread once (gated by the dedupe store, so one GET per new
-                // notification) to build MessagingStyle context + resolve the active decision.
-                // Degrades to the summary preview if the fetch fails — a notification always fires.
-                val messages = runCatching { repo.getThread(conn, t.id).messages }.getOrDefault(emptyList())
-                notifier.notify(
-                    NeedsYouEvent(
-                        connectionId = conn.id,
-                        baseUrl = conn.baseUrl,
-                        workspaceName = conn.workspaceName,
-                        threadId = t.id,
-                        subject = t.subject,
-                        preview = t.lastMessage,
-                        updatedAt = t.updatedAt ?: "",
-                        messages = messages,
-                        decision = activeDecision(messages),
-                    )
-                )
-                store.markNotified(conn.id, t.id)
-            } else if (!needsAttention && currentNotified) {
-                store.clear(conn.id, t.id)
+                val published = publish(eventForThread())
+                if (published) store.markNotified(conn.id, t.id)
+            } else if (!needsAttention) {
+                // Publication can succeed immediately before a process death prevents the dedupe
+                // write; capability retirement, not the dedupe bit, is authoritative on resolve.
+                if (
+                    retire(conn.id, t.id, t.updatedAt.orEmpty()) ||
+                    !hasActiveCapability(conn.id, t.id)
+                ) {
+                    store.clear(conn.id, t.id)
+                }
             }
         }
     }

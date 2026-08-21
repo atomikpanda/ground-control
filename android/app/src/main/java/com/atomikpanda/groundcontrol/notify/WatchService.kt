@@ -30,6 +30,8 @@ class WatchService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var watchJob: Job? = null
     private lateinit var reconciler: NeedsYouReconciler
+    private lateinit var replyOutbox: ReplyOutbox
+    private lateinit var notificationCoordinator: NotificationRenderCoordinator
     private lateinit var repo: ThreadsRepository
     private lateinit var connections: ConnectionsRepository
 
@@ -37,11 +39,29 @@ class WatchService : Service() {
         super.onCreate()
         repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         connections = ConnectionsRepository(applicationContext)
+        val database = NotifiedDatabase.get(applicationContext)
+        notificationCoordinator = NotificationRenderCoordinator(
+            database,
+            AndroidNotifier(applicationContext),
+            AndroidNeedsYouCanceller(applicationContext)::cancel,
+        )
         reconciler = NeedsYouReconciler(
-            RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),
+            RoomNotifiedStore(database.notifiedDao()),
             AndroidNotifier(applicationContext),
             repo,
+            publish = notificationCoordinator::publish,
+            retire = notificationCoordinator::retire,
+            adopt = notificationCoordinator::adopt,
             foregroundThreadKey = { OpenThreadRegistry.snapshot() },
+            hasActiveCapability = { connectionId, threadId ->
+                database.replyNotificationVersionDao().get(connectionId, threadId)?.active == true
+            },
+        )
+        replyOutbox = ReplyOutbox(
+            database,
+            WorkManagerReplyScheduler(applicationContext),
+            { connections.snapshot() },
+            { submission -> AndroidNeedsYouCanceller(applicationContext).cancel(submission.connectionId, submission.threadId) },
         )
     }
 
@@ -64,6 +84,8 @@ class WatchService : Service() {
             watchJob = scope.launch {
                 // Re-spread watchers whenever the connection set changes.
                 connections.connections.collectLatest { conns ->
+                    ReplyStartupGate.awaitReset()
+                    notificationCoordinator.reconcilePending()
                     coroutineScope {
                         conns.forEach { conn -> launch { watchOne(conn) } }
                     }
@@ -76,8 +98,11 @@ class WatchService : Service() {
     private suspend fun CoroutineScope.watchOne(conn: WorkspaceConnection) {
         // Reconcile once up front so a thread that already needs you when the watcher starts
         // notifies immediately instead of waiting for the 15-min WatchBackstopWorker backstop.
-        runCatching { reconciler.fetchAndReconcile(conn) }
-            .onFailure { android.util.Log.w("WatchService", "initial reconcile failed for ${conn.id}", it) }
+        runCatching {
+            reconciler.fetchAndReconcile(conn)
+            replyOutbox.reconcileEligible()
+            notificationCoordinator.reconcilePending()
+        }.onFailure { android.util.Log.w("WatchService", "initial reconcile failed for ${conn.id}", it) }
         var cursor = Instant.now().toString()
         var backoffMs = 1000L
         while (isActive) {
@@ -88,7 +113,13 @@ class WatchService : Service() {
                 continue
             }
             backoffMs = 1000L
-            reconciler.reconcile(conn, resp.threads)
+            runCatching {
+                reconciler.reconcile(conn, resp.threads)
+                // Adoption can make an alias-held reply eligible; complete the durable handoff
+                // through terminal rendering before waiting on another connection snapshot.
+                replyOutbox.reconcileEligible()
+                notificationCoordinator.reconcilePending()
+            }.onFailure { android.util.Log.w("WatchService", "reply reconcile failed for ${conn.id}", it) }
             if (resp.cursor.isNotEmpty()) cursor = resp.cursor
         }
     }

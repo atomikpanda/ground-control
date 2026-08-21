@@ -7,6 +7,16 @@ import com.atomikpanda.groundcontrol.notify.buildReplyNotificationEvent
 import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
 import com.atomikpanda.groundcontrol.notify.notificationThreadUri
 import com.atomikpanda.groundcontrol.notify.retiredReplyConnectionId
+import com.atomikpanda.groundcontrol.notify.ReplyWorker
+import com.atomikpanda.groundcontrol.notify.ReplyInputKind
+import com.atomikpanda.groundcontrol.notify.ReplyIntakeWorker
+import com.atomikpanda.groundcontrol.notify.ReplySubmission
+import com.atomikpanda.groundcontrol.notify.LegacyReplyInput
+import com.atomikpanda.groundcontrol.notify.MAX_REPLY_CONTEXT_BYTES
+import com.atomikpanda.groundcontrol.notify.ReplyDeliveryOutcome
+import com.atomikpanda.groundcontrol.notify.classifyReplyFailure
+import com.atomikpanda.groundcontrol.notify.validReplyContext
+import java.nio.channels.UnresolvedAddressException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -77,5 +87,53 @@ class ReplyWorkerIdentityTest {
     @Test fun resolved_completion_cancels_only_the_retired_notification_identity() {
         assertEquals("retired", retiredReplyConnectionId("retired", canonical))
         assertEquals(null, retiredReplyConnectionId(canonical.id, canonical))
+    }
+
+    @Test fun safe_pre_transmission_address_failure_is_not_uncertain() {
+        assertEquals(ReplyDeliveryOutcome.SafePreTransmissionFailure, classifyReplyFailure(UnresolvedAddressException()))
+    }
+
+    @Test fun work_request_contains_only_opaque_action_key() {
+        val data = ReplyWorker.workData("opaque-capability")
+        assertEquals(setOf(ReplyWorker.K_ACTION_KEY), data.keyValueMap.keys)
+        assertEquals("opaque-capability", data.getString(ReplyWorker.K_ACTION_KEY))
+    }
+
+    @Test fun queued_legacy_work_contract_is_detected_instead_of_being_silently_ignored() {
+        val legacy = ReplyWorker.legacyReplyInput(
+            ReplyWorker.legacyWorkData("alias", "thread", "exact reply", "subject", "workspace", "https://example"),
+        )
+
+        assertEquals(
+            LegacyReplyInput("alias", "thread", "exact reply", "subject", "workspace", "https://example"),
+            legacy,
+        )
+        assertEquals(null, ReplyWorker.legacyReplyInput(ReplyWorker.workData("opaque-capability")))
+    }
+
+    @Test fun durable_intake_work_round_trips_the_validated_reply_submission() {
+        val submission = ReplySubmission(
+            actionKey = "opaque-capability",
+            connectionId = "canonical",
+            threadId = "thread",
+            notificationVersion = "source#1",
+            replyText = "exact reply",
+            inputKind = ReplyInputKind.FREE_TEXT,
+            subject = "subject",
+            workspace = "workspace",
+            baseUrl = "https://example",
+            decision = null,
+            retryAttempt = 2,
+        )
+
+        assertEquals(
+            submission,
+            ReplyIntakeWorker.replySubmission(ReplyIntakeWorker.workData(submission)),
+        )
+    }
+
+    @Test fun bounded_context_uses_bytes_not_characters() {
+        assertTrue(validReplyContext("Δ".repeat(MAX_REPLY_CONTEXT_BYTES / 2)))
+        assertTrue(!validReplyContext("x".repeat(MAX_REPLY_CONTEXT_BYTES + 1)))
     }
 }
