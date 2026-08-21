@@ -109,6 +109,83 @@ class MessagesViewModelTest {
         assertEquals("2026-06-22T12:00:00Z", next)                           // cursor advanced
     }
 
+    @Test fun live_polling_drops_sections_for_removed_connections() = runTest {
+        val connections = MutableStateFlow(listOf(connA, connB))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> awaitCancellation()
+                req.url.encodedPath.endsWith("/threads") ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = listOf(connB)
+        runCurrent()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(connB.id), content.sections.map { it.connectionId })
+        assertEquals(listOf(connB.id), content.filteredThreads.map { it.connectionId }.distinct())
+    }
+
+    @Test fun live_polling_restarts_when_a_stable_connection_id_gets_new_routing_fields() = runTest {
+        val original = WorkspaceConnection(
+            id = "stable",
+            baseUrl = "http://old:47100",
+            token = "old-token",
+            workspaceName = "ws",
+            hostId = "old-host",
+            workspaceId = "old-workspace",
+        )
+        val replacement = original.copy(
+            baseUrl = "http://new:47100",
+            token = "new-token",
+            hostId = "new-host",
+            workspaceId = "new-workspace",
+        )
+        val connections = MutableStateFlow(listOf(original))
+        val polledRoutes = mutableListOf<Pair<String, String?>>()
+        var oldPollCancelled = false
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> {
+                    polledRoutes += req.url.host to req.headers[HttpHeaders.Authorization]
+                    if (req.url.host == "old") {
+                        try {
+                            awaitCancellation()
+                        } finally {
+                            oldPollCancelled = true
+                        }
+                    } else {
+                        awaitCancellation()
+                    }
+                }
+                req.url.encodedPath.endsWith("/threads") ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+
+        vm.startLivePolling()
+        runCurrent()
+        assertEquals(listOf("old" to "Bearer old-token"), polledRoutes)
+
+        connections.value = listOf(replacement)
+        runCurrent()
+
+        assertTrue(oldPollCancelled)
+        assertEquals(
+            listOf("old" to "Bearer old-token", "new" to "Bearer new-token"),
+            polledRoutes,
+        )
+    }
+
     @Test fun live_polling_adopts_a_retired_section_id_and_publishes_the_canonical_identity() = runTest {
         val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
         val canonical = WorkspaceConnection(

@@ -106,18 +106,18 @@ class MessagesViewModel(
     private var selectedConnectionId: String? = null
     private var stateFilter: ThreadStateFilter = ThreadStateFilter.ALL
 
-    private val pollJobs = mutableMapOf<String, Job>()
+    private val pollJobs = mutableMapOf<String, Pair<WorkspaceConnection, Job>>()
     private var latestConnections: List<WorkspaceConnection> = emptyList()
     private var livePollingStarted = false
 
     private fun canonicalizeLoadedIdentities(currentConnections: List<WorkspaceConnection>) {
-        val canonicalSections = sections.map { section ->
+        val canonicalSections = sections.mapNotNull { section ->
             currentConnections.findByConnectionId(section.connectionId)?.let { conn ->
                 section.copy(
                     workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
                     connectionId = conn.id,
                 )
-            } ?: section
+            }
         }
         sections = canonicalSections
             .groupBy { it.connectionId }
@@ -155,7 +155,7 @@ class MessagesViewModel(
                 )
             }
         selectedConnectionId = selectedConnectionId?.let { selected ->
-            currentConnections.findByConnectionId(selected)?.id ?: selected
+            currentConnections.findByConnectionId(selected)?.id
         }
     }
 
@@ -242,8 +242,8 @@ class MessagesViewModel(
         val jobs = pollJobs.entries.iterator()
         while (jobs.hasNext()) {
             val entry = jobs.next()
-            if (currentConnections.findByConnectionId(entry.key)?.id != entry.key) {
-                entry.value.cancel()
+            if (currentConnections.findByConnectionId(entry.key) != entry.value.first) {
+                entry.value.second.cancel()
                 jobs.remove()
             }
         }
@@ -251,11 +251,11 @@ class MessagesViewModel(
         render()
 
         sections.forEach { section ->
-            if (pollJobs[section.connectionId]?.isActive == true) return@forEach
+            if (pollJobs[section.connectionId]?.second?.isActive == true) return@forEach
             val conn = currentConnections.findByConnectionId(section.connectionId) ?: return@forEach
             val seed = section.threads.getOrNull()?.mapNotNull { it.updatedAt }?.maxOrNull()
                 ?: java.time.Instant.now().toString()
-            pollJobs[conn.id] = scope().launch {
+            pollJobs[conn.id] = conn to scope().launch {
                 var cursor = seed
                 while (isActive) {
                     val next = pollOnce(conn, cursor)
