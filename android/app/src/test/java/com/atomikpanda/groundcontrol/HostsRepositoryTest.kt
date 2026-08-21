@@ -768,6 +768,39 @@ class HostsRepositoryTest {
         assertEquals(listOf(ambiguous), replaced.connections)
     }
 
+    @Test fun replacing_a_relay_account_drops_stable_identity_with_ambiguous_legacy_ownership() {
+        val sharedOldUrl = "https://shared.relay.example.com"
+        val retained = host.copy(
+            hostId = "h-retained",
+            publicUrl = "https://retained.relay.example.com",
+            directUrl = "http://retained.lan:47190",
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val removed = host.copy(
+            hostId = "h-removed",
+            publicUrl = "https://removed.relay.example.com",
+            directUrl = null,
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "ambiguous-stable",
+            baseUrl = "$sharedOldUrl/workspaces/ws",
+            token = "must-not-leak",
+            hostId = retained.hostId,
+            workspaceId = "ws",
+            directToken = "must-not-leak",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(retained, removed),
+            connections = listOf(ambiguous),
+        )
+
+        assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
+    }
+
     @Test fun old_relay_host_removed_from_directory_cannot_survive_account_replacement_but_direct_and_manual_rows_do() {
         val directHost = HostConnection(
             hostId = "direct-host",

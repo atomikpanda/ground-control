@@ -307,12 +307,15 @@ private fun legacyHostRoot(connection: WorkspaceConnection): String {
 internal fun knownHostsForLegacyConnection(
     connection: WorkspaceConnection,
     hosts: List<HostConnection>,
+    useStoredHostId: Boolean = true,
 ): List<HostConnection> {
     val storedHostId = connection.hostId?.takeIf {
-        it.isNotBlank() &&
+        useStoredHostId &&
+            it.isNotBlank() &&
             !it.startsWith("http://", ignoreCase = true) &&
             !it.startsWith("https://", ignoreCase = true)
     }
+
     if (storedHostId != null) {
         return hosts.filter { it.hostId == storedHostId }
     }

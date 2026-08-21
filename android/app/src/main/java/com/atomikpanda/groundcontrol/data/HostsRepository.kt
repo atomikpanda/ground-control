@@ -162,6 +162,14 @@ internal fun replaceRelayAccountFleet(
     return RelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
         connections = ownedConnections.mapNotNull { (connection, knownHost) ->
+            if (knownHostsForLegacyConnection(
+                    connection,
+                    previousHosts,
+                    useStoredHostId = false,
+                ).size > 1
+            ) {
+                return@mapNotNull null
+            }
             if (knownHost == null) {
                 val retainedHost = connection.hostId
                     ?.takeIf { connection.hasStableIdentityTuple() }
