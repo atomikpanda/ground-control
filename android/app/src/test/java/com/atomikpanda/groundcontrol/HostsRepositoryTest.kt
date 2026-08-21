@@ -47,6 +47,37 @@ class HostsRepositoryTest {
     private val hostsKey = stringPreferencesKey("hosts")
     private val connectionsKey = stringPreferencesKey("connections")
     private val generationKey = longPreferencesKey("route_ownership_generation")
+    private val relayDomainKey = stringPreferencesKey("relay_domain")
+    private val relayFleetTokenKey = stringPreferencesKey("relay_fleet_token")
+
+    private data class RawRouteOwnershipState(
+        val hosts: String?,
+        val connections: String?,
+        val relayDomain: String?,
+        val relayFleetToken: String?,
+        val generation: Long?,
+    )
+
+    private suspend fun rawRouteOwnershipState(dataStore: DataStore<Preferences>) =
+        dataStore.data.first().let {
+            RawRouteOwnershipState(
+                it[hostsKey],
+                it[connectionsKey],
+                it[relayDomainKey],
+                it[relayFleetTokenKey],
+                it[generationKey],
+            )
+        }
+
+    private suspend fun assertIllegalArgument(block: suspend () -> Unit) {
+        val error = try {
+            block()
+            null
+        } catch (caught: Throwable) {
+            caught
+        }
+        assertTrue(error is IllegalArgumentException)
+    }
 
     private fun newDataStore(name: String, scope: CoroutineScope): DataStore<Preferences> =
         PreferenceDataStoreFactory.create(scope = scope) {
@@ -511,14 +542,22 @@ class HostsRepositoryTest {
     }
 
     @Test fun replacing_a_relay_account_clears_only_the_previous_fleet() {
-        val otherHost = host.copy(hostId = "h-2", relayDomain = "other.example.com")
+        val otherHost = host.copy(
+            hostId = "h-2",
+            publicUrl = "https://other.relay.example.com",
+            relayDomain = "other.example.com",
+        )
         val oldWorkspace = WorkspaceConnection(
             id = "old",
-            baseUrl = "https://old/workspaces/ws",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
             hostId = host.hostId,
             workspaceId = "ws",
         )
-        val otherWorkspace = oldWorkspace.copy(id = "other", hostId = otherHost.hostId)
+        val otherWorkspace = oldWorkspace.copy(
+            id = "other",
+            baseUrl = "${otherHost.publicUrl}/workspaces/ws",
+            hostId = otherHost.hostId,
+        )
         val manualWorkspace = WorkspaceConnection(id = "manual", baseUrl = "http://lan")
 
         val replaced = replaceRelayAccountFleet(
@@ -595,6 +634,53 @@ class HostsRepositoryTest {
         assertEquals("standing-token", restored.directToken)
     }
 
+    @Test fun replacing_a_relay_account_never_promotes_a_relay_bearer_to_direct() {
+        val directBase = "http://lan:47190"
+        val relayOwned = WorkspaceConnection(
+            id = "relay-owned",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            token = "relay-bearer",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = directBase)),
+            connections = listOf(relayOwned),
+        )
+
+        assertTrue(replaced.connections.isEmpty())
+    }
+
+    @Test fun replacing_a_relay_account_preserves_same_host_rows_when_credentials_disagree() {
+        val directBase = "http://lan:47190"
+        val first = WorkspaceConnection(
+            id = "first",
+            baseUrl = "${host.publicUrl}/workspaces/first",
+            hostId = host.hostId,
+            workspaceId = "first",
+            directToken = "first-token",
+        )
+        val second = WorkspaceConnection(
+            id = "second",
+            baseUrl = "${host.publicUrl}/workspaces/second",
+            hostId = host.hostId,
+            workspaceId = "second",
+            directToken = "second-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = directBase)),
+            connections = listOf(first, second),
+        )
+
+        assertEquals(listOf(first, second), replaced.connections)
+    }
+
     @Test fun replacing_a_relay_account_removes_an_owned_route_without_a_direct_credential() {
         val unrestorable = WorkspaceConnection(
             id = "unrestorable",
@@ -660,7 +746,7 @@ class HostsRepositoryTest {
             id = "null-host",
             baseUrl = "${host.publicUrl}/workspaces/ws-null",
             hostId = null,
-            directToken = "null-token",
+            directToken = "url-token",
         )
 
         val replaced = replaceRelayAccountFleet(
@@ -680,8 +766,8 @@ class HostsRepositoryTest {
         assertEquals(host.hostId, restoredById.getValue("null-host").hostId)
         assertEquals("ws-null", restoredById.getValue("null-host").workspaceId)
         assertEquals("$directBase/workspaces/ws-null", restoredById.getValue("null-host").baseUrl)
-        assertEquals("null-token", restoredById.getValue("null-host").token)
-        assertEquals("null-token", restoredById.getValue("null-host").directToken)
+        assertEquals("url-token", restoredById.getValue("null-host").token)
+        assertEquals("url-token", restoredById.getValue("null-host").directToken)
         assertEquals(listOf(nullHost.baseUrl), restoredById.getValue("null-host").legacyBaseUrls)
     }
 
@@ -768,7 +854,37 @@ class HostsRepositoryTest {
         assertEquals(listOf(ambiguous), replaced.connections)
     }
 
-    @Test fun old_relay_host_removed_from_directory_cannot_survive_account_replacement_but_direct_and_manual_rows_do() {
+    @Test fun replacing_a_relay_account_preserves_cross_relay_base_collision() {
+        val sharedBase = "https://shared.relay.example.com"
+        val previousHost = host.copy(
+            hostId = "previous-host",
+            publicUrl = "https://previous.relay.example.com",
+            directUrl = "http://previous.lan:47190",
+            legacyPublicUrls = listOf(sharedBase),
+        )
+        val otherRelayHost = host.copy(
+            hostId = "other-host",
+            publicUrl = "https://other.relay.example.com",
+            relayDomain = "other.example.com",
+            legacyPublicUrls = listOf(sharedBase),
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "ambiguous",
+            baseUrl = "$sharedBase/workspaces/ws",
+            directToken = "standing-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(previousHost, otherRelayHost),
+            connections = listOf(ambiguous),
+        )
+
+        assertEquals(listOf(ambiguous), replaced.connections)
+    }
+
+    @Test fun absent_host_evidence_survives_account_replacement_with_direct_and_manual_rows() {
         val directHost = HostConnection(
             hostId = "direct-host",
             directUrl = "http://direct.lan:47190",
@@ -800,14 +916,14 @@ class HostsRepositoryTest {
             connections = listOf(orphan, viableDirect, manual),
         )
 
-        assertEquals(listOf("direct", "manual"), replaced.connections.map { it.id })
+        assertEquals(listOf("orphan", "direct", "manual"), replaced.connections.map { it.id })
         assertEquals(listOf(directHost), replaced.hosts)
     }
 
     @Test fun replacing_a_same_domain_relay_token_clears_the_previous_fleet() {
         val oldWorkspace = WorkspaceConnection(
             id = "old",
-            baseUrl = "https://old/workspaces/ws",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
             hostId = host.hostId,
             workspaceId = "ws",
         )
@@ -826,7 +942,10 @@ class HostsRepositoryTest {
 
 
     @Test fun authoritative_directory_removal_also_removes_the_hosts_workspaces() {
-        val removedHost = host.copy(hostId = "h-removed")
+        val removedHost = host.copy(
+            hostId = "h-removed",
+            publicUrl = "https://removed.relay.example.com",
+        )
         val otherHost = host.copy(hostId = "h-other", relayDomain = "other.example.com")
         val retainedWorkspace = WorkspaceConnection(
             id = "retained",
@@ -834,8 +953,16 @@ class HostsRepositoryTest {
             hostId = host.hostId,
             workspaceId = "ws",
         )
-        val removedWorkspace = retainedWorkspace.copy(id = "removed", hostId = removedHost.hostId)
-        val otherWorkspace = retainedWorkspace.copy(id = "other", hostId = otherHost.hostId)
+        val removedWorkspace = retainedWorkspace.copy(
+            id = "removed",
+            baseUrl = "${removedHost.publicUrl}/workspaces/ws",
+            hostId = removedHost.hostId,
+        )
+        val otherWorkspace = retainedWorkspace.copy(
+            id = "other",
+            baseUrl = "${otherHost.publicUrl}/workspaces/ws",
+            hostId = otherHost.hostId,
+        )
         val manualWorkspace = WorkspaceConnection(id = "manual", baseUrl = "http://lan")
 
         val replaced = replaceRelayDirectoryFleet(
@@ -930,5 +1057,278 @@ class HostsRepositoryTest {
         assertNull(decoded[0].refresh)
         assertNull(decoded[0].directUrl)
         assertTrue(decoded[0].label.isEmpty())
+    }
+    @Test fun duplicate_host_ingress_rejects_before_any_pure_replacement() = runTest {
+        val first = HostConnection(hostId = "duplicate", publicUrl = "https://one.test")
+        val last = HostConnection(hostId = "duplicate", publicUrl = "https://two.test")
+        assertIllegalArgument {
+            replaceRelayDirectoryFleet(
+                "relay.example",
+                listOf(first, last),
+                listOf(host),
+                emptyList(),
+            )
+        }
+        assertIllegalArgument {
+            replaceRelayDirectoryFleet(
+                "relay.example",
+                listOf(host),
+                listOf(first, last),
+                emptyList(),
+            )
+        }
+        assertIllegalArgument {
+            replaceRelayDirectoryFleet(
+                "relay.example",
+                listOf(host),
+                listOf(
+                    HostConnection("pending:request-1", publicUrl = "https://one.test"),
+                    HostConnection("pending:request-1", publicUrl = "https://two.test"),
+                ),
+                emptyList(),
+            )
+        }
+        assertIllegalArgument {
+            replaceRelayAccountFleet(
+                RelayAccount("old.example", "old-token"),
+                RelayAccount("new.example", "new-token"),
+                listOf(first.copy(relayDomain = "old.example"), last.copy(relayDomain = "old.example")),
+                emptyList(),
+            )
+        }
+        assertEquals(
+            listOf("first", "second"),
+            replaceRelayDirectoryFleet(
+                "relay.example",
+                listOf(host.copy(relayDomain = "relay.example")),
+                listOf(
+                    HostConnection("first", publicUrl = "https://one.test"),
+                    HostConnection("second", publicUrl = "https://two.test"),
+                ),
+                emptyList(),
+            ).hosts.map { it.hostId },
+        )
+    }
+
+    @Test fun replacement_directory_rejects_a_host_id_owned_by_a_different_relay() = runTest {
+        assertIllegalArgument {
+            replaceRelayDirectoryFleet(
+                relayDomain = "replacement.example",
+                existingHosts = listOf(
+                    HostConnection(
+                        hostId = "shared-host",
+                        publicUrl = "https://other.example/host",
+                        relayDomain = "other.example",
+                    ),
+                ),
+                replacementHosts = listOf(
+                    HostConnection(
+                        hostId = "shared-host",
+                        publicUrl = "https://replacement.example/host",
+                        relayDomain = "replacement.example",
+                    ),
+                ),
+                connections = emptyList(),
+            )
+        }
+    }
+
+    @Test fun replacement_directory_adopts_a_direct_host_with_matching_identity() = runTest {
+        val direct = HostConnection(
+            hostId = "shared-host",
+            directUrl = "http://shared-host.lan",
+        )
+        val directoryEntry = HostConnection(
+            hostId = direct.hostId,
+            publicUrl = "https://shared-host.relay.example",
+            relayDomain = "relay.example",
+        )
+
+        val replaced = replaceRelayDirectoryFleet(
+            relayDomain = "relay.example",
+            existingHosts = listOf(direct),
+            replacementHosts = listOf(directoryEntry),
+            connections = emptyList(),
+        ).hosts.single()
+
+        assertEquals("relay.example", replaced.relayDomain)
+        assertEquals("https://shared-host.relay.example", replaced.publicUrl)
+        assertEquals("http://shared-host.lan", replaced.directUrl)
+    }
+
+    @Test fun duplicate_host_ingress_keeps_persisted_bytes_unchanged() = runTest {
+        val dataStore = newDataStore("duplicate-hosts.preferences_pb", backgroundScope)
+        val oldAccount = RelayAccount("old.example", "old-token")
+        val originalConnection = WorkspaceConnection(
+            "ws",
+            "https://old.test/workspaces/ws",
+            token = "secret",
+        )
+        dataStore.edit {
+            it[hostsKey] = HostsCodec.encode(
+                listOf(
+                    HostConnection("duplicate", publicUrl = "https://one.test", relayDomain = oldAccount.relayDomain),
+                    HostConnection("duplicate", publicUrl = "https://two.test", relayDomain = oldAccount.relayDomain),
+                ),
+            )
+            it[connectionsKey] = ConnectionsCodec.encode(listOf(originalConnection))
+            it[relayDomainKey] = oldAccount.relayDomain
+            it[relayFleetTokenKey] = oldAccount.fleetToken
+            it[generationKey] = 23L
+        }
+        val repository = HostsRepository(dataStore)
+        val before = rawRouteOwnershipState(dataStore)
+        assertIllegalArgument {
+            repository.setRelayAccount(RelayAccount("new.example", "new-token"))
+        }
+        assertEquals(before, rawRouteOwnershipState(dataStore))
+        val directoryStore = newDataStore("duplicate-directory.preferences_pb", backgroundScope)
+        val directoryAccount = RelayAccount("relay.example", "fleet-token")
+        directoryStore.edit {
+            it[hostsKey] = HostsCodec.encode(
+                listOf(HostConnection("stable", publicUrl = "https://stable.test", relayDomain = directoryAccount.relayDomain)),
+            )
+            it[connectionsKey] = ConnectionsCodec.encode(listOf(originalConnection))
+            it[relayDomainKey] = directoryAccount.relayDomain
+            it[relayFleetTokenKey] = directoryAccount.fleetToken
+            it[generationKey] = 17L
+        }
+        val directoryRepository = HostsRepository(directoryStore)
+        val directoryBefore = rawRouteOwnershipState(directoryStore)
+        assertIllegalArgument {
+            directoryRepository.replaceFromRelay(
+                directoryAccount,
+                17L,
+                listOf(
+                    HostConnection("duplicate", publicUrl = "https://one.test"),
+                    HostConnection("duplicate", publicUrl = "https://two.test"),
+                ),
+            )
+        }
+        assertEquals(directoryBefore, rawRouteOwnershipState(directoryStore))
+    }
+    @Test fun ownership_mismatch_or_absent_candidate_preserves_connections() {
+        val account = RelayAccount("relay.example", "fleet-token")
+        val owner = HostConnection(
+            hostId = "host-1",
+            publicUrl = "https://host.example/root",
+            relayDomain = account.relayDomain,
+            directUrl = "https://direct.example/root",
+        )
+        val conflicts = listOf(
+            WorkspaceConnection(
+                "wrong-host",
+                "https://host.example/root/workspaces/ws-1",
+                token = "standing-secret",
+                directToken = "direct-secret",
+                hostId = "other-host",
+                workspaceId = "ws-1",
+            ),
+            WorkspaceConnection(
+                "wrong-workspace",
+                "https://host.example/root/workspaces/ws-1",
+                token = "standing-secret",
+                directToken = "direct-secret",
+                hostId = owner.hostId,
+                workspaceId = "other-workspace",
+            ),
+        )
+        assertEquals(
+            conflicts,
+            replaceRelayDirectoryFleet(
+                account.relayDomain,
+                listOf(owner),
+                emptyList(),
+                conflicts,
+            ).connections,
+        )
+        assertEquals(
+            conflicts,
+            replaceRelayAccountFleet(
+                account,
+                RelayAccount("new.example", "new-token"),
+                listOf(owner),
+                conflicts,
+            ).connections,
+        )
+        val unrelated = HostConnection(
+            hostId = "other",
+            publicUrl = "https://other.example/root",
+            relayDomain = account.relayDomain,
+        )
+        assertEquals(
+            conflicts,
+            replaceRelayDirectoryFleet(
+                account.relayDomain,
+                listOf(unrelated),
+                emptyList(),
+                conflicts,
+            ).connections,
+        )
+    }
+    @Test fun encoded_dot_route_cannot_authorize_directory_removal_or_account_migration() {
+        val previous = RelayAccount("relay.example", "old-token")
+        val owner = HostConnection(
+            hostId = "host-1",
+            publicUrl = "https://host.example/root",
+            directUrl = "https://direct.example/root",
+            relayDomain = previous.relayDomain,
+        )
+        val encodedDot = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "https://host.example/root/workspaces/%2e%2e",
+            token = "standing-secret",
+            directToken = "direct-secret",
+        )
+
+        assertEquals(
+            listOf(encodedDot),
+            replaceRelayDirectoryFleet(
+                previous.relayDomain,
+                listOf(owner),
+                emptyList(),
+                listOf(encodedDot),
+            ).connections,
+        )
+        assertEquals(
+            listOf(encodedDot),
+            replaceRelayAccountFleet(
+                previous,
+                RelayAccount("new.example", "new-token"),
+                listOf(owner),
+                listOf(encodedDot),
+            ).connections,
+        )
+    }
+    @Test fun URL_valued_host_id_for_a_different_candidate_blocks_account_migration() {
+        val previous = RelayAccount("relay.example", "old-token")
+        val owner = HostConnection(
+            hostId = "host-a",
+            publicUrl = "https://host-a.test/root",
+            directUrl = "https://direct-a.test/root",
+            relayDomain = previous.relayDomain,
+        )
+        val conflictingHost = HostConnection(
+            hostId = "host-b",
+            publicUrl = "https://host-b.test/root",
+            relayDomain = previous.relayDomain,
+        )
+        val connection = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "https://host-a.test/root/workspaces/ws-1",
+            token = "standing-secret",
+            directToken = "direct-secret",
+            hostId = conflictingHost.publicUrl,
+        )
+
+        assertEquals(
+            listOf(connection),
+            replaceRelayAccountFleet(
+                previous,
+                RelayAccount("new.example", "new-token"),
+                listOf(owner, conflictingHost),
+                listOf(connection),
+            ).connections,
+        )
     }
 }

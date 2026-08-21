@@ -8,6 +8,9 @@ import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import com.atomikpanda.groundcontrol.data.replaceHostConnections
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
+import com.atomikpanda.groundcontrol.data.LegacyRouteOwnership
+import com.atomikpanda.groundcontrol.data.legacyRouteOwnership
+import com.atomikpanda.groundcontrol.data.agreesWith
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -165,6 +168,7 @@ class ConnectionsCodecTest {
             hostId = "host-a",
             discovered = discovered,
             identities = emptyList(),
+            hosts = listOf(HostConnection(hostId = "host-a", publicUrl = "https://old")),
         )
 
         assertEquals(listOf("other-host", "manual", "kept"), replaced.map { it.id })
@@ -191,6 +195,7 @@ class ConnectionsCodecTest {
             hostId = "host-a",
             discovered = listOf(discovered),
             identities = emptyList(),
+            hosts = listOf(HostConnection(hostId = "host-a", publicUrl = "https://old")),
         )
 
         assertEquals(listOf("live"), replaced.map { it.workspaceId })
@@ -433,5 +438,187 @@ class ConnectionsCodecTest {
         assertEquals("#FF1976D2", set.first { it.id == "a" }.colorOverride)   // untouched
         val cleared = applyIdentityOverride(set, "a", null, null)             // reset to auto
         assertNull(cleared.first { it.id == "a" }.colorOverride)
+    }
+    @Test fun legacy_route_ownership_preserves_pathful_host_root() {
+        val host = HostConnection(hostId = "h1", publicUrl = "https://relay.test/gc")
+        val connection = WorkspaceConnection("legacy", "https://relay.test/gc/workspaces/ws-1")
+        assertEquals(
+            LegacyRouteOwnership.Owned("h1", "https://relay.test/gc", "ws-1"),
+            legacyRouteOwnership(connection, listOf(host)),
+        )
+    }
+
+    @Test fun legacy_route_ownership_rejects_partial_unknown_suffix_and_encoded_dot_routes() {
+        val host = HostConnection(hostId = "h1", publicUrl = "https://relay.test/gc")
+        listOf(
+            "https://relay.test/gc-admin/workspaces/ws-1",
+            "https://relay.test/gc/workspaces/ws-1/admin",
+            "https://relay.test/gc/workspaces/a%2Fb",
+            "https://relay.test/gc/workspaces/%2e",
+            "https://relay.test/gc/workspaces/%2E",
+            "https://relay.test/gc/workspaces/%2e%2e",
+            "https://relay.test/gc/workspaces/.%2e",
+        ).forEach { base ->
+            assertEquals(
+                LegacyRouteOwnership.Unknown,
+                legacyRouteOwnership(WorkspaceConnection("legacy", base), listOf(host)),
+            )
+        }
+    }
+
+    @Test fun legacy_route_ownership_reports_multiple_valid_claims() {
+        val hosts = listOf(
+            HostConnection(hostId = "h1", publicUrl = "https://relay.test/gc"),
+            HostConnection(hostId = "h2", publicUrl = "https://relay.test/gc"),
+        )
+        assertEquals(
+            LegacyRouteOwnership.Ambiguous,
+            legacyRouteOwnership(
+                WorkspaceConnection("legacy", "https://relay.test/gc/workspaces/ws-1"),
+                hosts,
+            ),
+        )
+    }
+
+    @Test fun legacy_route_ownership_treats_blank_host_records_as_ambiguous() {
+        val sharedBase = "https://relay.test/gc"
+        val validHost = HostConnection(hostId = "h1", publicUrl = sharedBase)
+        val blankHost = HostConnection(hostId = "", publicUrl = sharedBase)
+
+        assertEquals(
+            LegacyRouteOwnership.Ambiguous,
+            legacyRouteOwnership(
+                WorkspaceConnection("legacy", "$sharedBase/workspaces/ws-1"),
+                listOf(validHost, blankHost),
+            ),
+        )
+    }
+
+    @Test fun legacy_route_ownership_accepts_historical_and_direct_identities() {
+        val relayHost = HostConnection(
+            hostId = "h1",
+            directUrl = "https://direct.test/root",
+            publicUrl = "https://current.test/root",
+            relayDomain = "current.test",
+            legacyPublicUrls = listOf("https://old.test/root"),
+        )
+        assertEquals(
+            LegacyRouteOwnership.Owned("h1", "https://old.test/root", "ws-1"),
+            legacyRouteOwnership(
+                WorkspaceConnection("legacy", "https://old.test/root/workspaces/ws-1"),
+                listOf(relayHost),
+            ),
+        )
+        assertEquals(
+            LegacyRouteOwnership.Owned("h1", "https://direct.test/root", "ws-1"),
+            legacyRouteOwnership(
+                WorkspaceConnection("legacy", "https://direct.test/root/workspaces/ws-1"),
+                listOf(relayHost),
+            ),
+        )
+    }
+
+    @Test fun legacy_route_ownership_preserves_empty_path_segments() {
+        val host = HostConnection(hostId = "h1", publicUrl = "https://relay.test/root")
+
+        assertEquals(
+            LegacyRouteOwnership.Unknown,
+            legacyRouteOwnership(
+                WorkspaceConnection("legacy", "https://relay.test/root//workspaces/ws-1"),
+                listOf(host),
+            ),
+        )
+    }
+
+    @Test fun parser_ignores_stored_ids_without_candidate_evidence() {
+        val connection = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "https://known.test/root/workspaces/ws-1",
+            hostId = "h1",
+            workspaceId = "ws-1",
+        )
+        assertEquals(LegacyRouteOwnership.Unknown, legacyRouteOwnership(connection, emptyList()))
+    }
+    @Test fun pre_ownership_json_remains_readable_and_has_current_route_evidence() {
+        val raw = """[{"id":"legacy","baseUrl":"https://host1.test/root/workspaces/ws-1","token":"standing-secret"}]"""
+        val connection = ConnectionsCodec.decode(raw).single()
+        val host = HostConnection(hostId = "host1", publicUrl = "https://host1.test/root")
+
+        assertEquals(
+            WorkspaceConnection(
+                id = "legacy",
+                baseUrl = "https://host1.test/root/workspaces/ws-1",
+                token = "standing-secret",
+            ),
+            connection,
+        )
+        assertEquals(
+            LegacyRouteOwnership.Owned("host1", "https://host1.test/root", "ws-1"),
+            legacyRouteOwnership(connection, listOf(host)),
+        )
+    }
+
+    @Test fun URL_valued_stored_host_id_must_not_resolve_to_a_different_candidate() {
+        val hostA = HostConnection(hostId = "host-a", publicUrl = "https://host-a.test/root")
+        val hostB = HostConnection(hostId = "host-b", publicUrl = "https://host-b.test/root")
+        val conflicting = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "https://host-a.test/root/workspaces/ws-1",
+            hostId = hostB.publicUrl,
+        )
+        val evidence = legacyRouteOwnership(conflicting, listOf(hostA, hostB))
+            as LegacyRouteOwnership.Owned
+
+        assertNull(evidence.takeIf { conflicting.agreesWith(it, listOf(hostA, hostB)) })
+        assertEquals(
+            evidence,
+            evidence.takeIf {
+                conflicting.copy(hostId = hostA.publicUrl).agreesWith(it, listOf(hostA, hostB))
+            },
+        )
+    }
+
+    @Test fun workspace_route_valued_stored_host_id_must_not_disagree_with_route_owner() {
+        val hostA = HostConnection(hostId = "host-a", publicUrl = "https://host-a.test/root")
+        val hostB = HostConnection(hostId = "host-b", publicUrl = "https://host-b.test/root")
+        val conflicting = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "https://host-a.test/root/workspaces/ws-1",
+            hostId = "${hostB.publicUrl}/workspaces/ws-2",
+        )
+        val evidence = legacyRouteOwnership(conflicting, listOf(hostA, hostB))
+            as LegacyRouteOwnership.Owned
+
+        assertNull(evidence.takeIf { conflicting.agreesWith(it, listOf(hostA, hostB)) })
+    }
+
+    @Test fun workspace_route_valued_host_id_must_agree_with_the_owned_workspace() {
+        val host = HostConnection(hostId = "host-a", publicUrl = "https://host-a.test/root")
+        val conflicting = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "${host.publicUrl}/workspaces/ws-1",
+            hostId = "${host.publicUrl}/workspaces/ws-2",
+        )
+        val evidence = legacyRouteOwnership(conflicting, listOf(host))
+            as LegacyRouteOwnership.Owned
+
+        assertNull(evidence.takeIf { conflicting.agreesWith(it, listOf(host)) })
+    }
+    @Test fun duplicate_candidate_host_records_make_ownership_ambiguous() {
+        val first = HostConnection(hostId = "host-1", publicUrl = "https://host.test/root")
+        val second = HostConnection(hostId = "host-1", publicUrl = "https://host.test/root")
+        val connection = WorkspaceConnection(
+            "legacy",
+            "https://host.test/root/workspaces/ws-1",
+        )
+
+        assertEquals(
+            LegacyRouteOwnership.Ambiguous,
+            legacyRouteOwnership(connection, listOf(first, second)),
+        )
+        assertEquals(
+            LegacyRouteOwnership.Owned("host-1", "https://host.test/root", "ws-1"),
+            legacyRouteOwnership(connection, listOf(first)),
+        )
     }
 }

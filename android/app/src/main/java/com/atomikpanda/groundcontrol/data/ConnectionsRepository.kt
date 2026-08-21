@@ -41,13 +41,6 @@ class ConnectionsRepository(private val context: Context) {
 
     suspend fun remove(id: String) = mutate { list -> list.filterNot { it.id == id } }
 
-    /** Replace one host's authoritative workspace set, adopting verified manual
-     * rows inside the same serialized transform. */
-    suspend fun replaceHost(
-        hostId: String,
-        discovered: List<WorkspaceConnection>,
-        identities: List<VerifiedIdentity>,
-    ) = mutate { replaceHostConnections(it, hostId, discovered, identities) }
 
     suspend fun setIdentity(id: String, colorOverride: String?, glyphOverride: String?) =
         mutate { applyIdentityOverride(it, id, colorOverride, glyphOverride) }
