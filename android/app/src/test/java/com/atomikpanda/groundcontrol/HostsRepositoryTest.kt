@@ -836,34 +836,56 @@ class HostsRepositoryTest {
         )
     }
 
-    @Test fun replacing_a_relay_account_counts_duplicate_host_rows_as_one_url_owner() {
-        val sharedUrl = "https://shared.relay.example.com"
+    @Test fun replacing_a_relay_account_rejects_duplicate_host_identities_before_migration() {
         val owner = host.copy(
             hostId = "h-owner",
             publicUrl = "https://owner.relay.example.com",
             directUrl = "http://owner.lan:47190",
-            legacyPublicUrls = listOf(sharedUrl),
+        )
+        val failure = runCatching {
+            replaceRelayAccountFleet(
+                previous = RelayAccount("relay.example.com", "old-token"),
+                replacement = RelayAccount("new.example.com", "new-token"),
+                hosts = listOf(owner.copy(directUrl = null), owner),
+                connections = listOf(
+                    WorkspaceConnection(
+                        id = "duplicate-owner",
+                        baseUrl = "${owner.publicUrl}/workspaces/ws",
+                        directToken = "direct-token",
+                    ),
+                ),
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+    }
+
+    @Test fun replacing_a_relay_account_recognizes_a_pathful_host_base_without_inventing_a_workspace() {
+        val owner = host.copy(
+            hostId = "h-pathful",
+            publicUrl = "https://owner.relay.example.com/workspaces/host-root",
+            directUrl = "http://owner.lan:47190",
         )
         val legacy = WorkspaceConnection(
-            id = "duplicate-owner",
-            baseUrl = "$sharedUrl/workspaces/ws",
+            id = "pathful-root",
+            baseUrl = owner.publicUrl,
             directToken = "direct-token",
         )
 
         val replaced = replaceRelayAccountFleet(
             previous = RelayAccount("relay.example.com", "old-token"),
             replacement = RelayAccount("new.example.com", "new-token"),
-            hosts = listOf(owner, owner.copy()),
+            hosts = listOf(owner),
             connections = listOf(legacy),
         )
 
-        assertEquals(1, replaced.hosts.size)
-        assertEquals("${owner.directUrl}/workspaces/ws", replaced.connections.single().baseUrl)
-        assertEquals("direct-token", replaced.connections.single().token)
+        assertEquals(owner.directUrl, replaced.connections.single().baseUrl)
+        assertNull(replaced.connections.single().workspaceId)
     }
 
     @Test fun replacing_a_relay_account_drops_a_stored_host_identity_that_conflicts_with_its_url() {
         val retained = host.copy(
+
             hostId = "h-stored",
             publicUrl = "https://stored.relay.example.com",
             directUrl = "http://stored.lan:47190",

@@ -1275,6 +1275,50 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer relay-bearer"), authorizations)
     }
 
+    @Test fun a_legacy_direct_workspace_suffix_routes_through_a_relay_owned_host() = runTest {
+        val directBase = "http://lan.example"
+        val publicBase = "https://public.relay.example"
+        val current = host.copy(
+            hostId = "host-stable",
+            publicUrl = publicBase,
+            directUrl = directBase,
+            refresh = "refresh-current",
+            relayDomain = "relay.example",
+        )
+        val urls = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                when (request.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"relay-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/workspaces/ws/threads/thread-1/seen" ->
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+        )
+        val legacy = WorkspaceConnection(
+            id = "legacy-direct",
+            baseUrl = "$directBase/workspaces/ws",
+            hostId = directBase,
+        )
+
+        SpecApi(client.client).markThreadSeen(legacy, "thread-1", null)
+
+        assertEquals(
+            listOf(
+                "$publicBase/host/token",
+                "$publicBase/workspaces/ws/threads/thread-1/seen",
+            ),
+            urls,
+        )
+    }
+
     @Test fun a_current_root_does_not_capture_a_longer_legacy_workspace_base() = runTest {
         val currentBase = "https://relay.example"
         val legacyBase = "$currentBase/old"

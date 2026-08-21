@@ -172,12 +172,17 @@ class ConnectionsCodecTest {
         assertEquals("#FF1976D2", replaced.last().colorOverride)
     }
 
-    @Test fun host_refresh_removes_a_missing_legacy_workspace_suffix() {
+    @Test fun host_refresh_removes_a_missing_legacy_workspace_suffix_relative_to_a_known_base() {
         val stale = WorkspaceConnection(
             id = "legacy-stale",
             baseUrl = "https://old/workspaces/deleted",
             hostId = "host-a",
             workspaceId = null,
+        )
+        val host = HostConnection(
+            hostId = "host-a",
+            publicUrl = "https://current",
+            legacyPublicUrls = listOf("https://old"),
         )
         val discovered = WorkspaceConnection(
             id = "live",
@@ -191,6 +196,7 @@ class ConnectionsCodecTest {
             hostId = "host-a",
             discovered = listOf(discovered),
             identities = emptyList(),
+            hosts = listOf(host),
         )
 
         assertEquals(listOf("live"), replaced.map { it.workspaceId })

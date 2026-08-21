@@ -285,32 +285,34 @@ internal fun legacyConnectionsForDiscovery(
 }
 
 
-/** Workspace id encoded in a legacy row without trusting its unauthenticated
- * `/health` response. Root rows remain identifiable only when the authenticated
- * host route exposes exactly one workspace. */
-internal fun legacyWorkspaceId(connection: WorkspaceConnection): String? {
+/** Workspace ids from a legacy route are trusted only when the route is
+ * relative to a currently known host base; a host base can legitimately end
+ * in `/workspaces/<segment>`. */
+internal fun legacyWorkspaceId(
+    connection: WorkspaceConnection,
+    hosts: List<HostConnection> = emptyList(),
+): String? {
     connection.workspaceId?.takeIf { it.isNotBlank() }?.let { return it }
-    val base = connection.baseUrl.trimEnd('/')
-    return base.substringAfterLast("/workspaces/", "")
-        .takeIf { it.isNotBlank() && '/' !in it }
+    return hosts.mapNotNull { host ->
+        workspaceIdRelativeToHostBase(normalizedBaseUrl(connection.baseUrl), host)
+    }.distinct().singleOrNull()
 }
 
-/** The URL itself establishes its claimed host root. Stored workspace identity
- * is corroborating data, never allowed to rewrite that routing evidence. */
-private fun legacyHostRoot(connection: WorkspaceConnection): String {
-    val base = connection.baseUrl.trimEnd('/')
-    val workspacePath = base.lastIndexOf("/workspaces/")
-    val workspaceIdStart = workspacePath + "/workspaces/".length
-    return if (
-        workspacePath >= 0 &&
-        workspaceIdStart < base.length &&
-        '/' !in base.substring(workspaceIdStart)
-    ) {
-        base.substring(0, workspacePath)
-    } else {
-        base
-    }
-}
+private fun HostConnection.knownBaseIdentities(): List<String> =
+    (listOfNotNull(directUrl, publicUrl.takeIf { it.isNotBlank() }) + legacyPublicUrls)
+        .mapNotNull(::normalizedBaseUrl)
+        .distinct()
+
+private fun workspaceIdRelativeToHostBase(
+    connectionBase: String?,
+    host: HostConnection,
+): String? = host.knownBaseIdentities().mapNotNull { hostBase ->
+    val prefix = "$hostBase/workspaces/"
+    connectionBase
+        ?.takeIf { it.startsWith(prefix) }
+        ?.removePrefix(prefix)
+        ?.takeIf { it.isNotBlank() && '/' !in it }
+}.distinct().singleOrNull()
 
 /** Match only persisted fleet routing evidence. A workspace's own
  * unauthenticated health payload cannot nominate an arbitrary fleet host. */
@@ -330,19 +332,17 @@ internal fun knownHostsForLegacyConnection(
         return hosts.filter { it.hostId == storedHostId }
     }
 
-    val claimedBases = listOfNotNull(
-        legacyHostRoot(connection),
-        connection.hostId?.takeIf {
-            it.startsWith("http://", ignoreCase = true) ||
-                it.startsWith("https://", ignoreCase = true)
-        },
-    ).mapNotNull(::normalizedBaseUrl).toSet()
+    val connectionBase = normalizedBaseUrl(connection.baseUrl)
+    val urlValuedHostId = connection.hostId?.takeIf {
+        it.startsWith("http://", ignoreCase = true) ||
+            it.startsWith("https://", ignoreCase = true)
+    }?.let(::normalizedBaseUrl)
     return hosts.filter { host ->
-        val knownBases = (
-            listOfNotNull(host.directUrl, host.publicUrl.takeIf { it.isNotBlank() }) +
-                host.legacyPublicUrls
-            ).mapNotNull(::normalizedBaseUrl)
-        knownBases.any(claimedBases::contains)
+        host.knownBaseIdentities().any { hostBase ->
+            connectionBase == hostBase ||
+                workspaceIdRelativeToHostBase(connectionBase, host) != null ||
+                urlValuedHostId == hostBase
+        }
     }
 }
 
@@ -367,7 +367,7 @@ suspend fun verifyLegacyIdentity(
             .takeIf { host.acceptsDirectCredential() },
         recordContact = false,
     ) ?: return null
-    val knownWorkspaceId = legacyWorkspaceId(connection)
+    val knownWorkspaceId = legacyWorkspaceId(connection, listOf(host))
     val workspaceId = if (knownWorkspaceId != null) {
         knownWorkspaceId.takeIf { id -> workspaces.any { it.id == id } }
     } else {
@@ -476,7 +476,7 @@ fun replaceHostConnections(
         identities,
         activatePriorDirectToken,
     ).filterNot { connection ->
-        val workspaceId = legacyWorkspaceId(connection)
+        val workspaceId = legacyWorkspaceId(connection, hosts.filter { it.hostId == hostId })
         val ownedByHost = connection.hostId == hostId ||
             knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
         ownedByHost &&

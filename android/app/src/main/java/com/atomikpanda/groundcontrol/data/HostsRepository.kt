@@ -127,9 +127,10 @@ internal fun replaceRelayAccountFleet(
     if (previous == null || previous == replacement) {
         return RelayAccountFleet(hosts, connections)
     }
-    val previousHosts = hosts
-        .filter { it.relayDomain == previous.relayDomain }
-        .distinctBy { it.hostId }
+    check(hosts.map { it.hostId }.distinct().size == hosts.size) {
+        "Duplicate host identities cannot establish route ownership"
+    }
+    val previousHosts = hosts.filter { it.relayDomain == previous.relayDomain }
     val retainedDirectHosts = previousHosts.mapNotNull { host ->
         val directUrl = host.directUrl?.let(::normalizedBaseUrl) ?: return@mapNotNull null
         host.copy(
@@ -152,7 +153,7 @@ internal fun replaceRelayAccountFleet(
             connection,
             hosts,
             useStoredHostId = false,
-        ).distinctBy { it.hostId }
+        )
         val storedHostId = connection.hostId?.takeIf {
             it.isNotBlank() &&
                 !it.startsWith("http://", ignoreCase = true) &&
@@ -205,7 +206,7 @@ internal fun replaceRelayAccountFleet(
                 ?: connection.token?.takeIf { it.isNotBlank() }
                 ?: directCredentialByHostId[directHost.hostId]
                 ?: return@mapNotNull null
-            val workspaceId = legacyWorkspaceId(connection)
+            val workspaceId = legacyWorkspaceId(connection, listOf(knownHost))
             // An authenticated root remains probeable: singleton verification
             // can supply its workspace id after the account replacement.
             val directBase = workspaceId?.let {

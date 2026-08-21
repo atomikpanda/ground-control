@@ -314,7 +314,16 @@ fun hostAwareClient(
             val originalPath = originalUrl.substringBefore('?').substringBefore('#')
             val originalUrlIdentity = normalizedBaseUrl(originalPath)
                 ?: return@on proceed(request)
-            val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
+            val persistedWorkspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
+            val legacyMatchingHosts = persistedWorkspaceRoute?.let {
+                knownHostsForLegacyConnection(it.connection, knownHosts)
+            }.orEmpty()
+            val workspaceRoute = persistedWorkspaceRoute?.copy(
+                workspaceId = legacyWorkspaceId(
+                    persistedWorkspaceRoute.connection,
+                    legacyMatchingHosts,
+                ),
+            )
             val connectionHostId = workspaceRoute?.connection?.hostId
             val explicitHostRouteId = request.attributes.getOrNull(HOST_ROUTE_ID)
             val routedHostId = connectionHostId ?: explicitHostRouteId
@@ -328,9 +337,6 @@ fun hostAwareClient(
                         normalizedBaseUrl(it) == baseIdentity
                     }
                 }
-            }.orEmpty()
-            val legacyMatchingHosts = workspaceRoute?.let {
-                knownHostsForLegacyConnection(it.connection, knownHosts)
             }.orEmpty()
             if (cache == null) return@on proceed(request)
             val host = when {
