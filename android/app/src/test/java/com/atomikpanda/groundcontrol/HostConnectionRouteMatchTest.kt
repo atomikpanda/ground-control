@@ -1,6 +1,8 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.knownHostsForLegacyConnection
 import com.atomikpanda.groundcontrol.data.hasKnownBaseIdentity
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -32,5 +34,27 @@ class HostConnectionRouteMatchTest {
         )
 
         assertEquals(listOf(host), listOf(host).filter { it.hasKnownBaseIdentity(legacy) })
+    }
+
+    @Test fun legacy_workspace_route_prefers_a_current_direct_host_over_a_relay_alias() {
+        val retiredDirect = "http://shared.lan:47190"
+        val relayHost = HostConnection(
+            hostId = "relay",
+            publicUrl = "https://relay.example",
+            refresh = "relay-refresh",
+            directUrl = "http://current.lan:47190",
+            legacyPublicUrls = listOf(retiredDirect),
+        )
+        val directOnlyHost = HostConnection(hostId = "direct", directUrl = retiredDirect)
+        val legacyWorkspace = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "$retiredDirect/workspaces/workspace",
+            hostId = retiredDirect,
+        )
+
+        assertEquals(
+            listOf(directOnlyHost),
+            knownHostsForLegacyConnection(legacyWorkspace, listOf(relayHost, directOnlyHost)),
+        )
     }
 }

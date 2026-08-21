@@ -1405,6 +1405,37 @@ class HostWorkspacesTest {
         )
     }
 
+    @Test fun a_direct_current_route_wins_over_a_relay_legacy_alias_for_a_legacy_workspace() = runTest {
+        val directBase = "http://shared.lan:47190"
+        val relayHost = host.copy(
+            hostId = "relay-host",
+            publicUrl = "https://relay.example",
+            refresh = "relay-refresh",
+            directUrl = "http://replacement.lan:47190",
+            legacyPublicUrls = listOf(directBase),
+        )
+        val directHost = HostConnection(hostId = "direct-host", directUrl = directBase)
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(relayHost, directHost) },
+        )
+        val legacy = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "$directBase/workspaces/ws-1",
+            token = "direct-token",
+            hostId = directBase,
+            workspaceId = "ws-1",
+        )
+
+        SpecApi(client.client).markThreadSeen(legacy, "thread-1", null)
+
+        assertEquals(listOf("Bearer direct-token"), authorizations)
+    }
+
     @Test fun a_legacy_workspace_suffix_routes_before_identity_migration() = runTest {
         val oldBase = "https://old.relay.example.com"
         val currentBase = "https://new.relay.example.com"

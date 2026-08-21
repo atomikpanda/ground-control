@@ -106,7 +106,22 @@ internal class MessageConnectionOwner(
                 else -> launchRequestLocked(MessageRequestToken.Kind.REFRESH)
             }
         }
-        if (request != null) request.join() else if (queuedForHandoff) queued.await()
+        if (request != null) waitForAuthoritativeRefresh(request) else if (queuedForHandoff) queued.await()
+    }
+
+    /** A cancelled refresh is only complete after the refresh that superseded it
+     * has finished. Polls deliberately do not extend this wait. */
+    private suspend fun waitForAuthoritativeRefresh(request: Job) {
+        var awaited = request
+        while (true) {
+            awaited.join()
+            awaited = mutex.withLock {
+                activeRequest?.takeIf {
+                    it !== awaited && activeToken?.kind == MessageRequestToken.Kind.REFRESH
+                }
+            } ?: return
+        }
+
     }
 
     fun startPolling(): Job = scope.launch {

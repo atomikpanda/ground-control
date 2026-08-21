@@ -243,6 +243,35 @@ class MessageConnectionOwnerTest {
         assertTrue(handoff.isCompleted)
     }
 
+    @Test fun superseded_refresh_waits_for_the_authoritative_replacement_load() = runTest {
+        val replacementLoad = CompletableDeferred<Unit>()
+        var loads = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                loads += 1
+                if (loads == 1) awaitCancellation() else {
+                    replacementLoad.await()
+                    MessageFullLoad(listOf(thread("replacement")), emptyList())
+                }
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+
+        val superseded = owner.refresh()
+        runCurrent()
+        val authoritative = owner.refresh()
+        runCurrent()
+
+        assertFalse(superseded.isCompleted)
+        replacementLoad.complete(Unit)
+        runCurrent()
+        superseded.join()
+        authoritative.join()
+        assertEquals(listOf("replacement"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+    }
+
     @Test fun refresh_queued_during_handoff_runs_as_the_replacement_full_load() = runTest {
         val release = CompletableDeferred<Unit>()
         var loads = 0
