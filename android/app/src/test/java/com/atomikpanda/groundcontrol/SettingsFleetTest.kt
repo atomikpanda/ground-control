@@ -8,6 +8,7 @@ import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.settings.canAdoptDirectHostIdentity
 import com.atomikpanda.groundcontrol.ui.settings.classifyFleetRefreshFailure
+import com.atomikpanda.groundcontrol.ui.settings.classifyMalformedFleetDirectoryFailure
 import com.atomikpanda.groundcontrol.ui.settings.directUrlForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.observeRelayAccountChanges
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
@@ -344,13 +345,24 @@ class SettingsFleetTest {
         assertEquals(listOf(preservedDirect), target.expectedSourceGeneration.sources)
     }
 
-    @Test fun fleet_auth_failure_requires_repair_but_transport_failure_is_an_outage() {
+    @Test fun malformed_fleet_directory_preserves_cached_observations() {
+        val malformed = classifyMalformedFleetDirectoryFailure(
+            IllegalStateException("Relay directory contained an unusable host identity"),
+        )
         val rejected = classifyFleetRefreshFailure(AuthException("unauthorized"))
         val unreachable = classifyFleetRefreshFailure(IOException("offline"))
 
+        assertFalse(malformed.requiresRePair)
+        assertFalse(malformed.markRelayUnreachable)
+        assertEquals(
+            "Relay returned malformed host data — showing last known hosts",
+            malformed.message,
+        )
         assertTrue(rejected.requiresRePair)
+        assertFalse(rejected.markRelayUnreachable)
         assertEquals("Re-pair needed — scan the relay account again", rejected.message)
         assertFalse(unreachable.requiresRePair)
+        assertTrue(unreachable.markRelayUnreachable)
         assertEquals("Couldn't reach the relay — showing last known hosts", unreachable.message)
     }
 

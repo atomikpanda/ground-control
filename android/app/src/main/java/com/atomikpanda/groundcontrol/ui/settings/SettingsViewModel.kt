@@ -64,6 +64,7 @@ internal fun hostRowsFlow(
 
 internal data class FleetRefreshFailure(
     val requiresRePair: Boolean,
+    val markRelayUnreachable: Boolean,
     val message: String,
 )
 
@@ -72,14 +73,25 @@ internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure 
     return if (error is AuthException) {
         FleetRefreshFailure(
             requiresRePair = true,
+            markRelayUnreachable = false,
             message = "Re-pair needed — scan the relay account again",
         )
     } else {
         FleetRefreshFailure(
             requiresRePair = false,
+            markRelayUnreachable = true,
             message = "Couldn't reach the relay — showing last known hosts",
         )
     }
+}
+
+internal fun classifyMalformedFleetDirectoryFailure(error: Throwable): FleetRefreshFailure {
+    if (error is CancellationException) throw error
+    return FleetRefreshFailure(
+        requiresRePair = false,
+        markRelayUnreachable = false,
+        message = "Relay returned malformed host data — showing last known hosts",
+    )
 }
 
 internal suspend fun observeRelayAccountChanges(
@@ -426,18 +438,26 @@ class SettingsViewModel(
             return
         }
         var entryCount = 0
-        val incoming = try {
-            val entries = api.listHosts(account.relayDomain, account.fleetToken)
-            entryCount = entries.size
-            hostsFrom(entries, account.relayDomain)
+        val entries = try {
+            api.listHosts(account.relayDomain, account.fleetToken)
         } catch (error: Exception) {
             val failure = classifyFleetRefreshFailure(error)
-            val current = if (failure.requiresRePair) {
-                hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation
-            } else {
+            val current = if (failure.markRelayUnreachable) {
                 hosts.markRelayUnreachable(account, expectedSnapshot.generation)
+            } else {
+                hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation
             }
             if (current) setTestResult(failure.message, account)
+            return
+        }
+        entryCount = entries.size
+        val incoming = try {
+            hostsFrom(entries, account.relayDomain)
+        } catch (error: Exception) {
+            val failure = classifyMalformedFleetDirectoryFailure(error)
+            if (hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation) {
+                setTestResult(failure.message, account)
+            }
             return
         }
         if (
