@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -177,6 +178,37 @@ class CanonicalConnectionRoutesTest {
         routeEntryStore.clear()
 
         assertTrue(current.cleared)
+    }
+
+    @Test fun route_waits_for_the_first_reactive_connection_snapshot_before_declaring_removal() {
+        assertEquals(
+            ConnectionRouteResolution.Loading,
+            connectionRouteResolution(null, adopted.id, "thread-thread-1"),
+        )
+        assertEquals(
+            ConnectionRouteResolution.Removed,
+            connectionRouteResolution(emptyList(), adopted.id, "thread-thread-1"),
+        )
+        assertTrue(
+            connectionRouteResolution(listOf(adopted), adopted.id, "thread-thread-1")
+                is ConnectionRouteResolution.Bound,
+        )
+    }
+
+    @Test fun app_connection_boundary_waits_for_loading_but_admits_saved_and_empty_snapshots() {
+        assertFalse(hasConnectionSnapshot(null))
+        assertTrue(hasConnectionSnapshot(listOf(adopted)))
+        assertTrue(hasConnectionSnapshot(emptyList()))
+    }
+
+    @Test fun connection_snapshot_provider_reads_the_latest_collected_value() {
+        val collectedConnections = mutableStateOf(listOf(adopted))
+        val provider = connectionSnapshotProvider(collectedConnections)
+        val replacement = adopted.copy(token = "replacement")
+
+        collectedConnections.value = listOf(replacement)
+
+        assertEquals(listOf(replacement), provider())
     }
 
     @Test fun route_binding_is_stable_for_the_same_connection_and_disappears_when_removed() {

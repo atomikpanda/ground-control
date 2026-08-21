@@ -13,10 +13,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
@@ -86,7 +88,6 @@ import com.atomikpanda.groundcontrol.ui.tasks.TasksViewModel
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceScreen
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.runBlocking
 
 internal fun newThreadRoute(connectionId: String?): String =
     if (connectionId != null) "newThread?connectionId=$connectionId" else "newThread"
@@ -139,6 +140,32 @@ internal fun connectionRouteBinding(
 ): ConnectionRouteBinding? = connections.findByConnectionId(connectionId)?.let { connection ->
     ConnectionRouteBinding(connection, connectionRouteViewModelKey(connection, destinationKey))
 }
+
+internal sealed interface ConnectionRouteResolution {
+    data object Loading : ConnectionRouteResolution
+    data object Removed : ConnectionRouteResolution
+    data class Bound(val binding: ConnectionRouteBinding) : ConnectionRouteResolution
+}
+
+internal fun connectionRouteResolution(
+    connections: List<WorkspaceConnection>?,
+    connectionId: String,
+    destinationKey: String,
+): ConnectionRouteResolution = when (connections) {
+    null -> ConnectionRouteResolution.Loading
+    else -> connectionRouteBinding(connections, connectionId, destinationKey)
+        ?.let(ConnectionRouteResolution::Bound)
+        ?: ConnectionRouteResolution.Removed
+}
+
+/** First emission distinguishes an actual empty configuration from DataStore still loading. */
+internal fun hasConnectionSnapshot(connections: List<WorkspaceConnection>?): Boolean =
+    connections != null
+
+/** Supplies the latest asynchronous connection snapshot to ViewModels with sync refresh APIs. */
+internal fun connectionSnapshotProvider(
+    connections: State<List<WorkspaceConnection>>,
+): () -> List<WorkspaceConnection> = { connections.value }
 
 internal fun <T> Result<T>.getOrNullOrRethrowCancellation(): T? =
     onFailure { if (it is CancellationException) throw it }.getOrNull()
@@ -224,8 +251,19 @@ fun GroundControlApp(
     val settingsVm = viewModel {
         SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo)
     }
-    val initialConnections = remember { runBlockingSnapshot(connRepo) }
-    val connsForBadges by connRepo.connections.collectAsStateWithLifecycle(initialValue = initialConnections)
+    // Null means DataStore has not emitted its first snapshot yet; routes must wait rather than
+    // mistake startup for a removed connection.
+    val connsForBadges: List<WorkspaceConnection>? by connRepo.connections
+        .collectAsStateWithLifecycle(initialValue = null)
+    if (!hasConnectionSnapshot(connsForBadges)) {
+        Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+        return
+    }
+    val badgeConnections = connsForBadges.orEmpty()
+    val currentConnections = rememberUpdatedState(badgeConnections)
+    val connectionsProvider = remember(currentConnections) {
+        connectionSnapshotProvider(currentConnections)
+    }
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
         NavigationBar {
@@ -242,8 +280,8 @@ fun GroundControlApp(
         // remember keyed on the connections so the resolver identity is stable across recompositions;
         // staticCompositionLocalOf invalidates every badge reader on a by-reference change, so a fresh
         // lambda each recomposition would needlessly re-render all badge sites (Greptile P2).
-        val identityResolver: (String, String) -> WorkspaceIdentity = remember(connsForBadges) {
-            { id, name -> resolveIdentity(connsForBadges, id, name) }
+        val identityResolver: (String, String) -> WorkspaceIdentity = remember(badgeConnections) {
+            { id, name -> resolveIdentity(badgeConnections, id, name) }
         }
         CompositionLocalProvider(LocalWorkspaceIdentityResolver provides identityResolver) {
         NavHost(nav, startDestination = Section.HOME.route, modifier = Modifier.padding(padding)) {
@@ -251,7 +289,7 @@ fun GroundControlApp(
                 val vm = viewModel {
                     HomeViewModel(
                         homeRepo,
-                        connectionsProvider = { runBlockingSnapshot(connRepo) },
+                        connectionsProvider = connectionsProvider,
                         hosts = hostsRepo.hosts,
                     )
                 }
@@ -272,7 +310,7 @@ fun GroundControlApp(
                 val vm = viewModel {
                     QueueViewModel(
                         queueRepo,
-                        connectionsProvider = { runBlockingSnapshot(connRepo) },
+                        connectionsProvider = connectionsProvider,
                         hosts = hostsRepo.hosts,
                     )
                 }
@@ -299,7 +337,7 @@ fun GroundControlApp(
             }
             composable(Section.TASKS.route) {
                 val vm = viewModel {
-                    TasksViewModel(tasksRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    TasksViewModel(tasksRepo, connectionsProvider = connectionsProvider)
                 }
                 TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
             }
@@ -319,12 +357,15 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val specId = entry.arguments?.getString("specId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "detail-$specId",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -345,12 +386,15 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val slug = entry.arguments?.getString("slug").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "taskDetail-$slug",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -366,12 +410,15 @@ fun GroundControlApp(
                 arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "workspace",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -396,12 +443,15 @@ fun GroundControlApp(
                 arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "farm",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -426,12 +476,15 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "console-$itemId",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -456,12 +509,15 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "review-$itemId",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -485,12 +541,15 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "done-$itemId",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -514,12 +573,15 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "item-$itemId",
                 )
-                LaunchedEffect(binding?.viewModelKey, itemId) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                LaunchedEffect(routeResolution, itemId) {
+                    // A cold DataStore flow has not said whether this connection exists yet.
+                    if (routeResolution is ConnectionRouteResolution.Loading) return@LaunchedEffect
                     // This route is a pure redirect with no fallback UI of its own, so every
                     // dead-end pops back to where the user came from instead of stranding them on
                     // the transient spinner (reachable from the related-item card and from OS-level
@@ -542,7 +604,7 @@ fun GroundControlApp(
             }
             composable("capture") {
                 val vm = viewModel {
-                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    NewThreadViewModel(threadsRepo, connectionsProvider = connectionsProvider)
                 }
                 NewThreadScreen(
                     vm,
@@ -567,7 +629,7 @@ fun GroundControlApp(
             ) { entry ->
                 val preselect = entry.arguments?.getString("connectionId")
                 val vm = viewModel {
-                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    NewThreadViewModel(threadsRepo, connectionsProvider = connectionsProvider)
                 }
                 NewThreadScreen(
                     vm,
@@ -589,12 +651,15 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val threadId = entry.arguments?.getString("threadId").orEmpty()
-                val binding = connectionRouteBinding(
+                val routeResolution = connectionRouteResolution(
                     connections = connsForBadges,
                     connectionId = connectionId,
                     destinationKey = "thread-$threadId",
                 )
-                if (binding == null) {
+                val binding = (routeResolution as? ConnectionRouteResolution.Bound)?.binding
+                if (routeResolution is ConnectionRouteResolution.Loading) {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                } else if (binding == null) {
                     clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
                 } else ConnectionRouteViewModelScope(binding) {
@@ -636,7 +701,3 @@ fun GroundControlApp(
         }
     }
 }
-
-/** Bridge the suspend snapshot to the VM's sync provider on first refresh. */
-private fun runBlockingSnapshot(repo: ConnectionsRepository): List<WorkspaceConnection> =
-    runBlocking { repo.snapshot() }
