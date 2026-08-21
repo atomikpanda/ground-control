@@ -283,6 +283,33 @@ class MessagesViewModelTest {
         assertEquals("new item", section.items.single { it.id == "item-1" }.title)
     }
 
+    @Test fun canonical_alias_owner_is_unique_when_canonical_precedes_retired_row() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        val connections = MutableStateFlow(listOf(retired))
+        val vm = MessagesViewModel(repoWith { req ->
+            respond(
+                """[{"id":"t1","subject":"thread","updated_at":"2026-06-22T10:00:00Z"}]""",
+                HttpStatusCode.OK,
+                jsonHdr,
+            )
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+
+        connections.value = listOf(canonical, retired)
+        runCurrent()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId })
+        assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
+    }
+
     private val mixedThreadsWsAJson = """
         [{"id":"a1","subject":"x","updated_at":"2026-06-22T09:00:00Z","unseen":true,"needs_you":false},
          {"id":"a2","subject":"y","updated_at":"2026-06-22T10:00:00Z","unseen":false,"needs_you":true},

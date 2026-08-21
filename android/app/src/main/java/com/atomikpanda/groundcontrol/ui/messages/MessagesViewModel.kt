@@ -161,7 +161,16 @@ class MessagesViewModel(
                 return
             }
 
-            current.forEach { connection ->
+            // A canonical row owns every retained alias in the same snapshot.
+            // Reconcile only the canonical view so a later alias cannot recreate
+            // an owner that an earlier handoff just retired.
+            val activeConnections = current.filter { candidate ->
+                current.none { canonical ->
+                    canonical.id != candidate.id &&
+                        candidate.id in canonical.legacyConnectionIds
+                }
+            }
+            activeConnections.forEach { connection ->
                 var owner = owners[connection.id]
                 if (owner == null) {
                     val legacyId = connection.legacyConnectionIds.firstOrNull { owners.containsKey(it) }
@@ -222,13 +231,15 @@ class MessagesViewModel(
             }
 
             for (owner in owners.entries
-                .filter { (id, _) -> current.none { it.id == id } }
+                .filter { (id, _) -> activeConnections.none { it.id == id } }
                 .map { it.value }
                 .toSet()
             ) {
                 removeAndCancelOwner(owner)
             }
-            selectedConnectionId = selectedConnectionId?.let { current.findByConnectionId(it)?.id ?: it }
+            selectedConnectionId = selectedConnectionId?.let {
+                activeConnections.findByConnectionId(it)?.id ?: it
+            }
             renderOwners()
         }
     }
