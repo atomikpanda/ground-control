@@ -7,12 +7,12 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-
+import kotlin.coroutines.coroutineContext
 data class ThreadsSection(
     val workspaceName: String,
     val connectionId: String,
@@ -90,10 +90,14 @@ class MessagesViewModel(
     init {
         scope().launch {
             connections.distinctUntilChanged().collectLatest { current ->
-                reconcileRevision += 1
-                reconcileConnections(current, reconcileRevision)
+                reconcileConnections(current, publishConnections(current))
             }
         }
+    }
+
+    private suspend fun publishConnections(current: List<WorkspaceConnection>): Long = reconcileMutex.withLock {
+        latestConnections = current
+        ++reconcileRevision
     }
 
     private fun createOwner(connection: WorkspaceConnection): MessageConnectionOwner = MessageConnectionOwner(
@@ -145,8 +149,9 @@ class MessagesViewModel(
      * before it can resume obsolete work; its owner is cancelled in that path, so detached jobs
      * cannot outlive the reconciliation that abandoned them. */
     private suspend fun reconcileConnections(current: List<WorkspaceConnection>, revision: Long) {
+        coroutineContext.ensureActive()
         reconcileMutex.withLock {
-            latestConnections = current
+            if (revision != reconcileRevision || latestConnections != current) return
             if (current.isEmpty()) {
                 for (owner in owners.values.toSet()) {
                     removeAndCancelOwner(owner)
@@ -169,6 +174,7 @@ class MessagesViewModel(
                             owners.remove(legacyId)
                             val receipt = owner!!.handoffTo(connection)
                             if (receipt != null && revision == reconcileRevision) {
+                                coroutineContext.ensureActive()
                                 owners[connection.id] = owner!!
                                 observe(owner!!)
                                 owner!!.resumeAfterHandoff(receipt)
@@ -186,8 +192,12 @@ class MessagesViewModel(
                     owner = createOwner(connection)
                     owners[connection.id] = owner!!
                     observe(owner!!)
+                    coroutineContext.ensureActive()
                     owner!!.initialLoad()
-                    if (pollingRequested) owner!!.startPolling()
+                    if (pollingRequested) {
+                        coroutineContext.ensureActive()
+                        owner!!.startPolling()
+                    }
                 } else if (owners[connection.id] === owner && owner!!.snapshot.value.connection != connection) {
                     val receipt = try {
                         owner!!.handoffTo(connection)
@@ -197,6 +207,7 @@ class MessagesViewModel(
                     }
                     if (receipt != null && revision == reconcileRevision) {
                         try {
+                            coroutineContext.ensureActive()
                             owner!!.resumeAfterHandoff(receipt)
                         } catch (cancelled: CancellationException) {
                             removeAndCancelOwner(owner!!)
@@ -225,8 +236,9 @@ class MessagesViewModel(
         val startRevision = reconcileMutex.withLock { reconcileRevision }
         val captured = connections.first()
         val (target, refreshRevision) = reconcileMutex.withLock {
-            val target = if (reconcileRevision == startRevision) captured else latestConnections
-            target to ++reconcileRevision
+            if (reconcileRevision != startRevision) return@launch
+            latestConnections = captured
+            captured to ++reconcileRevision
         }
         reconcileConnections(target, refreshRevision)
         if (target.isEmpty() || latestConnections != target || reconcileRevision != refreshRevision) return@launch
@@ -263,6 +275,13 @@ class MessagesViewModel(
 
     internal fun ownerSnapshot(connectionId: String): MessageConnectionSnapshot? = owners[connectionId]?.snapshot?.value
     internal fun ownerForTest(connectionId: String): MessageConnectionOwner? = owners[connectionId]
+    internal suspend fun holdReconcileMutexForTest(
+        entered: CompletableDeferred<Unit>,
+        release: CompletableDeferred<Unit>,
+    ) = reconcileMutex.withLock {
+        entered.complete(Unit)
+        release.await()
+    }
 
     private fun allThreads(connectionId: String?): List<ThreadSummary> = sections()
         .filter { connectionId == null || it.connectionId == connectionId }
