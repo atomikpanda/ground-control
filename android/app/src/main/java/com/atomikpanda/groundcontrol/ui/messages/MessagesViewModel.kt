@@ -114,9 +114,11 @@ class MessagesViewModel(
     private var hasCompletedInitialLoad = false
     private var livePollingStarted = false
 
-    private fun canonicalizeLoadedIdentities(currentConnections: List<WorkspaceConnection>) {
+    private fun canonicalizeLoadedIdentities(currentConnections: List<WorkspaceConnection>): Set<String> {
+        val adoptedFailures = mutableSetOf<String>()
         val canonicalSections = sections.mapNotNull { section ->
             currentConnections.findByConnectionId(section.connectionId)?.let { conn ->
+                if (section.threads.isFailure && section.connectionId != conn.id) adoptedFailures += conn.id
                 section.copy(
                     workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
                     connectionId = conn.id,
@@ -161,6 +163,7 @@ class MessagesViewModel(
         selectedConnectionId = selectedConnectionId?.let { selected ->
             currentConnections.findByConnectionId(selected)?.id
         }
+        return adoptedFailures
     }
 
     init {
@@ -289,12 +292,12 @@ class MessagesViewModel(
                 loads.remove()
             }
         }
-        canonicalizeLoadedIdentities(currentConnections)
+        val adoptedFailures = canonicalizeLoadedIdentities(currentConnections)
         if (sections.isEmpty() && currentConnections.isNotEmpty() && !hasCompletedInitialLoad) return
         render()
 
         currentConnections.forEach { conn ->
-            if (sections.none { it.connectionId == conn.id }) loadConnection(conn)
+            if (sections.none { it.connectionId == conn.id } || conn.id in adoptedFailures) loadConnection(conn)
         }
         sections.forEach { section ->
             if (pollJobs[section.connectionId]?.second?.isActive == true) return@forEach

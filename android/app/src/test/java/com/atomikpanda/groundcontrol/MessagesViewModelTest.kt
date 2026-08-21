@@ -225,6 +225,50 @@ class MessagesViewModelTest {
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(emptyList<String>(), content.filteredThreads.map { it.thread.id })
     }
+
+    @Test fun live_polling_reloads_a_failed_retired_section_after_adoption() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        val replacementLoadStarted = CompletableDeferred<Unit>()
+        val replacementPollStarted = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow(listOf(retired))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" && req.url.host == "new" -> {
+                    replacementPollStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                req.url.parameters["wait"] == "1" -> awaitCancellation()
+                req.url.encodedPath.endsWith("/threads") && req.url.host == "old" ->
+                    respondError(HttpStatusCode.InternalServerError)
+                req.url.encodedPath.endsWith("/threads") -> {
+                    replacementLoadStarted.complete(Unit)
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        runCurrent()
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = listOf(canonical)
+        runCurrent()
+        withTimeout(1_000) { replacementLoadStarted.await() }
+        withTimeout(1_000) { replacementPollStarted.await() }
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId })
+        assertTrue(content.sections.single().threads.isSuccess)
+    }
+
     @Test fun live_polling_renders_empty_config_and_recovers_after_last_connection_is_readded() = runTest {
         val connections = MutableStateFlow(listOf(connA))
         val loadedHosts = mutableListOf<String>()
