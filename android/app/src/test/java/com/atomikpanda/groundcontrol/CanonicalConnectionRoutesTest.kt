@@ -92,6 +92,47 @@ class CanonicalConnectionRoutesTest {
         assertNotEquals(originalBinding.viewModelKey, replacementBinding.viewModelKey)
     }
 
+    @Test fun metadata_only_connection_changes_keep_the_route_view_model_key() {
+        val original = adopted.copy(
+            token = "credential",
+            hostId = "host-1",
+            workspaceId = "ws-1",
+        )
+        val metadataOnly = original.copy(
+            workspaceName = "Renamed workspace",
+            colorOverride = "#FF00FF00",
+            glyphOverride = "W",
+            state = "offline",
+            legacyBaseUrls = listOf("https://old.example/workspaces/ws-1"),
+            legacyConnectionIds = listOf("old-id"),
+            directToken = "retained-direct-credential",
+        )
+
+        val originalKey = connectionRouteBinding(listOf(original), original.id, "detail-spec-1")!!.viewModelKey
+        val metadataKey = connectionRouteBinding(listOf(metadataOnly), metadataOnly.id, "detail-spec-1")!!.viewModelKey
+
+        assertEquals(originalKey, metadataKey)
+    }
+
+    @Test fun endpoint_auth_and_host_route_changes_rekey_the_route_view_model() {
+        val original = adopted.copy(
+            token = "credential",
+            hostId = "host-1",
+            workspaceId = "ws-1",
+        )
+        val originalKey = connectionRouteBinding(listOf(original), original.id, "detail-spec-1")!!.viewModelKey
+
+        listOf(
+            original.copy(baseUrl = "https://relay.example/hosts/host-2/workspaces/ws-1"),
+            original.copy(token = "replacement-credential"),
+            original.copy(hostId = "host-2"),
+            original.copy(workspaceId = "ws-2"),
+        ).forEach { replacement ->
+            val replacementKey = connectionRouteBinding(listOf(replacement), replacement.id, "detail-spec-1")!!.viewModelKey
+            assertNotEquals(originalKey, replacementKey)
+        }
+    }
+
     @Test fun unchanged_connection_snapshot_keeps_its_route_view_model_store() {
         val holder = ConnectionRouteViewModelStore()
         val first = holder.ownerFor("detail-spec-1-original")
@@ -114,6 +155,16 @@ class CanonicalConnectionRoutesTest {
 
         assertTrue(stale.cleared)
         assertTrue(replacement !== original)
+    }
+
+    @Test fun removed_connection_clears_the_current_route_view_model_store() {
+        val holder = ConnectionRouteViewModelStore()
+        val current = ClearingViewModel()
+        holder.ownerFor("detail-spec-1").viewModelStore.put("detail", current)
+
+        holder.clearCurrent()
+
+        assertTrue(current.cleared)
     }
 
     @Test fun route_entry_clear_clears_the_current_snapshot_view_model_store() {

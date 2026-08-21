@@ -114,13 +114,30 @@ internal data class ConnectionRouteBinding(
     val viewModelKey: String,
 )
 
+/** Collision-free key for the connection fields request routing and auth consume. */
+internal fun connectionRouteViewModelKey(
+    connection: WorkspaceConnection,
+    destinationKey: String,
+): String {
+    val routeDependencies = connection.copy(
+        workspaceName = "",
+        colorOverride = null,
+        glyphOverride = null,
+        state = null,
+        legacyBaseUrls = emptyList(),
+        legacyConnectionIds = emptyList(),
+        directToken = null,
+    )
+    return "$destinationKey-${ConnectionsCodec.encode(listOf(routeDependencies))}"
+}
+
 /** Binds a route to the current canonical connection snapshot. */
 internal fun connectionRouteBinding(
     connections: List<WorkspaceConnection>,
     connectionId: String,
     destinationKey: String,
 ): ConnectionRouteBinding? = connections.findByConnectionId(connectionId)?.let { connection ->
-    ConnectionRouteBinding(connection, "$destinationKey-${ConnectionsCodec.encode(listOf(connection))}")
+    ConnectionRouteBinding(connection, connectionRouteViewModelKey(connection, destinationKey))
 }
 
 internal fun <T> Result<T>.getOrNullOrRethrowCancellation(): T? =
@@ -138,6 +155,11 @@ internal class ConnectionRouteViewModelStore : ViewModel() {
             snapshotKey = key
         }
         return owner
+    }
+
+    fun clearCurrent() {
+        owner.clear()
+        snapshotKey = null
     }
 
     override fun onCleared() {
@@ -161,6 +183,12 @@ private fun ConnectionRouteViewModelScope(
     CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
         key(binding.viewModelKey) { content() }
     }
+}
+
+@Composable
+private fun clearMissingConnectionRouteViewModelStore() {
+    val routeStore: ConnectionRouteViewModelStore = viewModel()
+    routeStore.clearCurrent()
 }
 
 @Composable
@@ -297,6 +325,7 @@ fun GroundControlApp(
                     destinationKey = "detail-$specId",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
@@ -322,6 +351,7 @@ fun GroundControlApp(
                     destinationKey = "taskDetail-$slug",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
@@ -342,6 +372,7 @@ fun GroundControlApp(
                     destinationKey = "workspace",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
@@ -371,6 +402,7 @@ fun GroundControlApp(
                     destinationKey = "farm",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
@@ -400,6 +432,7 @@ fun GroundControlApp(
                     destinationKey = "console-$itemId",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
@@ -429,6 +462,7 @@ fun GroundControlApp(
                     destinationKey = "review-$itemId",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
@@ -457,6 +491,7 @@ fun GroundControlApp(
                     destinationKey = "done-$itemId",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
@@ -560,6 +595,7 @@ fun GroundControlApp(
                     destinationKey = "thread-$threadId",
                 )
                 if (binding == null) {
+                    clearMissingConnectionRouteViewModelStore()
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
                 } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
