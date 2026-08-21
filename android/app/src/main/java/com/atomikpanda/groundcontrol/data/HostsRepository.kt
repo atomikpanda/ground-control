@@ -158,7 +158,7 @@ internal fun replaceRelayAccountFleet(
             val directHost = retainedDirectById[evidence.hostId] ?: return@mapNotNull null
             val credential = connection.directToken?.takeIf { it.isNotBlank() }
                 ?: connection.token?.takeIf {
-                    normalizedBaseUrl(evidence.hostBase) == normalizedBaseUrl(directHost.directUrl)
+                    normalizedBaseUrl(evidence.hostBase) == directHost.directUrl?.let(::normalizedBaseUrl)
                 }
             evidence.takeIf { connection.agreesWith(it, hosts) }?.hostId?.let { it to credential }
         }
