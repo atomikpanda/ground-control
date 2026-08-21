@@ -176,6 +176,26 @@ class MessageConnectionOwnerTest {
         assertEquals(0, retryStarts)
     }
 
+    @Test fun one_shot_refresh_failure_does_not_start_a_retry_loop() = runTest {
+        var retryStarts = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = { awaitCancellation() },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+            retryDelay = {
+                retryStarts += 1
+                awaitCancellation()
+            },
+        )
+        val refresh = owner.beginForTest(MessageRequestToken.Kind.REFRESH)
+
+        owner.completeForTest(refresh, Result.failure(IOException("offline")))
+        runCurrent()
+
+        assertEquals(0, retryStarts)
+    }
+
     @Test fun initial_empty_snapshot_uses_the_injected_clock_cursor() = runTest {
         val owner = owner(backgroundScope)
         val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)

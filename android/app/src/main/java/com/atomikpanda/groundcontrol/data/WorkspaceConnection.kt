@@ -108,7 +108,9 @@ object ConnectionsCodec {
 
     fun decode(raw: String): List<WorkspaceConnection> =
         if (raw.isBlank()) emptyList()
-        else runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
+        else runCatching {
+            json.decodeFromString(serializer, raw).asReversed().distinctBy { it.id }.asReversed()
+        }.getOrDefault(emptyList())
 }
 
 /** A verified host/workspace tuple, excluding #472's URL-valued legacy handle. */

@@ -234,7 +234,7 @@ internal class MessageConnectionOwner(
         } else {
             current.copy(lastError = failure)
         }
-        if (token.kind != MessageRequestToken.Kind.POLL || pollingEnabled) scheduleRetryLocked(token.kind)
+        if (token.kind == MessageRequestToken.Kind.INITIAL || pollingEnabled) scheduleRetryLocked(token.kind)
     }
 
     private fun scheduleRetryLocked(kind: MessageRequestToken.Kind) {
