@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -39,8 +40,13 @@ import org.junit.Test
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class MessagesViewModelTest {
+    private val mockClients = mutableListOf<HttpClient>()
+
     @Before fun setUp() = Dispatchers.setMain(StandardTestDispatcher())
-    @After fun tearDown() = Dispatchers.resetMain()
+    @After fun tearDown() {
+        mockClients.forEach { it.close() }
+        Dispatchers.resetMain()
+    }
 
     private val jsonHdr = headersOf(HttpHeaders.ContentType, "application/json")
     private fun repo() = ThreadsRepository(SpecApi(HttpClient(MockEngine {
@@ -79,8 +85,11 @@ class MessagesViewModelTest {
     private val connA = WorkspaceConnection("A", "http://a:47100", null, "ws-a")
     private val connB = WorkspaceConnection("B", "http://b:47100", null, "ws-b")
 
-    private fun repoWith(handler: MockRequestHandler) =
-        ThreadsRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }))
+    private fun repoWith(handler: MockRequestHandler): ThreadsRepository {
+        val client = HttpClient(MockEngine(handler)) { mshipDefaults() }
+        mockClients += client
+        return ThreadsRepository(SpecApi(client))
+    }
 
     private val threeThreadsJson = """
         [{"id":"t3","subject":"c","updated_at":"2026-06-22T11:00:00Z"},
@@ -131,6 +140,123 @@ class MessagesViewModelTest {
         assertEquals(listOf(connB.id), content.filteredThreads.map { it.connectionId }.distinct())
     }
 
+    @Test fun live_polling_loads_and_polls_connections_added_after_initial_load() = runTest {
+        val connections = MutableStateFlow(listOf(connA))
+        val polledHosts = mutableListOf<String>()
+        val secondPollStarted = CompletableDeferred<Unit>()
+        val vm = MessagesViewModel(repoWith { req ->
+            if (req.url.parameters["wait"] == "1") {
+                polledHosts += req.url.host
+                if (polledHosts.size == 2) secondPollStarted.complete(Unit)
+                respond("""{"threads":[],"cursor":"","timed_out":true}""", HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        runCurrent()
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = listOf(connA, connB)
+        runCurrent()
+        runCurrent()
+        secondPollStarted.await()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(connA.id, connB.id), content.sections.map { it.connectionId })
+        assertTrue(polledHosts.containsAll(listOf("a", "b")))
+    }
+
+    @Test fun live_polling_renders_empty_config_and_recovers_after_last_connection_is_readded() = runTest {
+        val connections = MutableStateFlow(listOf(connA))
+        val loadedHosts = mutableListOf<String>()
+        val polledHosts = mutableListOf<String>()
+        val reloadCompleted = CompletableDeferred<Unit>()
+        val secondPollStarted = CompletableDeferred<Unit>()
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> {
+                    polledHosts += req.url.host
+                    if (polledHosts.size == 2) secondPollStarted.complete(Unit)
+                    respond("""{"threads":[],"cursor":"","timed_out":true}""", HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/threads") -> {
+                    loadedHosts += req.url.host
+                    if (loadedHosts.size == 2) reloadCompleted.complete(Unit)
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        runCurrent()
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = emptyList()
+        runCurrent()
+        assertEquals(MessagesUiState.EmptyConfig, vm.state.value)
+
+        connections.value = listOf(connA)
+        runCurrent()
+        runCurrent()
+        runCurrent()
+        reloadCompleted.await()
+        secondPollStarted.await()
+
+        runCurrent()
+        runCurrent()
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(connA.id), content.sections.map { it.connectionId })
+        assertEquals(listOf("a", "a"), loadedHosts)
+        assertEquals(2, polledHosts.size)
+        assertTrue(polledHosts.all { it == "a" })
+    }
+
+    @Test fun live_polling_waits_for_the_first_connection_snapshot_before_loading() = runTest {
+        val releaseFirstSnapshot = CompletableDeferred<Unit>()
+        val loadedHosts = mutableListOf<String>()
+        val polledHosts = mutableListOf<String>()
+        val pollStarted = CompletableDeferred<Unit>()
+        val connections = flow {
+            releaseFirstSnapshot.await()
+            emit(listOf(connA))
+        }
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> {
+                    polledHosts += req.url.host
+                    pollStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                req.url.encodedPath.endsWith("/threads") -> {
+                    loadedHosts += req.url.host
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        vm.startLivePolling()
+        assertEquals(MessagesUiState.Loading, vm.state.value)
+        releaseFirstSnapshot.complete(Unit)
+        runCurrent()
+
+        assertEquals(MessagesUiState.Loading, vm.state.value)
+        assertEquals(emptyList<String>(), loadedHosts)
+        assertEquals(emptyList<String>(), polledHosts)
+
+        vm.refresh()?.join()
+        pollStarted.await()
+        runCurrent()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(connA.id), content.sections.map { it.connectionId })
+        assertEquals(listOf("a"), loadedHosts)
+        assertEquals(listOf("a"), polledHosts)
+    }
+
     @Test fun live_polling_restarts_when_a_stable_connection_id_gets_new_routing_fields() = runTest {
         val original = WorkspaceConnection(
             id = "stable",
@@ -148,18 +274,22 @@ class MessagesViewModelTest {
         )
         val connections = MutableStateFlow(listOf(original))
         val polledRoutes = mutableListOf<Pair<String, String?>>()
+        val oldPollStarted = CompletableDeferred<Unit>()
+        val newPollStarted = CompletableDeferred<Unit>()
         var oldPollCancelled = false
         val vm = MessagesViewModel(repoWith { req ->
             when {
                 req.url.parameters["wait"] == "1" -> {
                     polledRoutes += req.url.host to req.headers[HttpHeaders.Authorization]
                     if (req.url.host == "old") {
+                        oldPollStarted.complete(Unit)
                         try {
                             awaitCancellation()
                         } finally {
                             oldPollCancelled = true
                         }
                     } else {
+                        newPollStarted.complete(Unit)
                         awaitCancellation()
                     }
                 }
@@ -174,11 +304,13 @@ class MessagesViewModelTest {
 
         vm.startLivePolling()
         runCurrent()
+        oldPollStarted.await()
         assertEquals(listOf("old" to "Bearer old-token"), polledRoutes)
 
         connections.value = listOf(replacement)
         runCurrent()
 
+        newPollStarted.await()
         assertTrue(oldPollCancelled)
         assertEquals(
             listOf("old" to "Bearer old-token", "new" to "Bearer new-token"),
@@ -199,12 +331,17 @@ class MessagesViewModelTest {
         var canonicalWaitCalls = 0
         var polledHost: String? = null
         var retiredPollCancelled = false
+        val retiredPollStarted = CompletableDeferred<Unit>()
+        val retiredPollCancelledSignal = CompletableDeferred<Unit>()
+        val canonicalPollStarted = CompletableDeferred<Unit>()
         val vm = MessagesViewModel(repoWith { req ->
             when {
                 req.url.parameters["wait"] == "1" && req.url.host == "old" -> {
+                    retiredPollStarted.complete(Unit)
                     try {
                         awaitCancellation()
                     } finally {
+                        retiredPollCancelledSignal.complete(Unit)
                         retiredPollCancelled = true
                     }
                 }
@@ -212,6 +349,7 @@ class MessagesViewModelTest {
                     canonicalWaitCalls += 1
                     if (canonicalWaitCalls > 1) awaitCancellation()
                     polledHost = req.url.host
+                    canonicalPollStarted.complete(Unit)
                     respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
                 }
                 req.url.encodedPath.endsWith("/threads") ->
@@ -224,8 +362,11 @@ class MessagesViewModelTest {
         vm.selectWorkspace(retired.id)
         vm.startLivePolling()
         runCurrent()
+        retiredPollStarted.await()
         connections.value = listOf(canonical)
         runCurrent()
+        retiredPollCancelledSignal.await()
+        canonicalPollStarted.await()
         vm.selectWorkspace(retired.id)
 
         val content = vm.state.value as MessagesUiState.Content

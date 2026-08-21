@@ -107,7 +107,9 @@ class MessagesViewModel(
     private var stateFilter: ThreadStateFilter = ThreadStateFilter.ALL
 
     private val pollJobs = mutableMapOf<String, Pair<WorkspaceConnection, Job>>()
+    private val loadJobs = mutableMapOf<String, Pair<WorkspaceConnection, Job>>()
     private var latestConnections: List<WorkspaceConnection> = emptyList()
+    private var hasReceivedConnectionSnapshot = false
     private var livePollingStarted = false
 
     private fun canonicalizeLoadedIdentities(currentConnections: List<WorkspaceConnection>) {
@@ -163,6 +165,7 @@ class MessagesViewModel(
         scope().launch {
             connections.distinctUntilChanged().collect { currentConnections ->
                 latestConnections = currentConnections
+                hasReceivedConnectionSnapshot = true
                 if (livePollingStarted) reconcileLivePolling(currentConnections)
             }
         }
@@ -171,6 +174,7 @@ class MessagesViewModel(
     fun refresh(): Job? = scope().launch {
         val connections = this@MessagesViewModel.connections.first()
         latestConnections = connections
+        hasReceivedConnectionSnapshot = true
         if (connections.isEmpty()) {
             _state.value = MessagesUiState.EmptyConfig
             return@launch
@@ -237,8 +241,32 @@ class MessagesViewModel(
         return resp.cursor
     }
 
+    private fun loadConnection(conn: WorkspaceConnection) {
+        if (loadJobs[conn.id]?.second?.isActive == true) return
+        val job = scope().launch {
+            val (results, itemsByConn) = coroutineScope {
+                val threadsDeferred = async { repo.listAllThreads(listOf(conn)) }
+                val itemsDeferred = async { repo.listAllItems(listOf(conn)) }
+                threadsDeferred.await() to itemsDeferred.await()
+            }
+            if (!isActive || latestConnections.findByConnectionId(conn.id) != conn) return@launch
+            sections += results.map { ws ->
+                ThreadsSection(
+                    workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
+                    connectionId = ws.connection.id,
+                    threads = ws.threads,
+                    items = itemsByConn[ws.connection.id] ?: emptyList(),
+                )
+            }
+            reconcileLivePolling(latestConnections)
+        }
+        loadJobs[conn.id] = conn to job
+        job.invokeOnCompletion {
+            if (loadJobs[conn.id]?.second === job) loadJobs.remove(conn.id)
+        }
+    }
+
     private fun reconcileLivePolling(currentConnections: List<WorkspaceConnection>) {
-        if (sections.isEmpty()) return
         val jobs = pollJobs.entries.iterator()
         while (jobs.hasNext()) {
             val entry = jobs.next()
@@ -247,9 +275,21 @@ class MessagesViewModel(
                 jobs.remove()
             }
         }
+        val loads = loadJobs.entries.iterator()
+        while (loads.hasNext()) {
+            val entry = loads.next()
+            if (currentConnections.findByConnectionId(entry.key) != entry.value.first) {
+                entry.value.second.cancel()
+                loads.remove()
+            }
+        }
         canonicalizeLoadedIdentities(currentConnections)
+        if (sections.isEmpty() && currentConnections.isNotEmpty() && _state.value !is MessagesUiState.EmptyConfig) return
         render()
 
+        currentConnections.forEach { conn ->
+            if (sections.none { it.connectionId == conn.id }) loadConnection(conn)
+        }
         sections.forEach { section ->
             if (pollJobs[section.connectionId]?.second?.isActive == true) return@forEach
             val conn = currentConnections.findByConnectionId(section.connectionId) ?: return@forEach
@@ -272,7 +312,7 @@ class MessagesViewModel(
      * canonical route without blocking or polling the main dispatcher. */
     fun startLivePolling() {
         livePollingStarted = true
-        reconcileLivePolling(latestConnections)
+        if (hasReceivedConnectionSnapshot) reconcileLivePolling(latestConnections)
     }
 
     private fun allThreads(connectionId: String?): List<ThreadSummary> =
@@ -282,6 +322,10 @@ class MessagesViewModel(
             .sortedByDescending { it.updatedAt ?: "" }
 
     private fun render() {
+        if (latestConnections.isEmpty()) {
+            _state.value = MessagesUiState.EmptyConfig
+            return
+        }
         val visibleSections = sections
             .filter { selectedConnectionId == null || it.connectionId == selectedConnectionId }
         val filtered = visibleSections
