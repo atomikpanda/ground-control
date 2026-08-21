@@ -331,8 +331,13 @@ fun hostAwareClient(
                 request.attributes.getOrNull(SUPPRESS_HOST_CONTACT) == null
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
             val matchingHosts = base?.let { baseIdentity ->
-                knownHosts.filter { candidate ->
-                    candidate.hasKnownBaseIdentity(baseIdentity)
+                val current = knownHosts.filter { candidate ->
+                    candidate.hostBases().any { normalizedBaseUrl(it) == baseIdentity }
+                }
+                if (current.isNotEmpty()) current else {
+                    knownHosts.filter { candidate ->
+                        candidate.legacyPublicUrls.any { normalizedBaseUrl(it) == baseIdentity }
+                    }
                 }
             }.orEmpty()
             val stripWorkspaceAuthorization = when (workspaceOwnership) {

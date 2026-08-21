@@ -522,63 +522,6 @@ class HostsRepositoryTest {
         }
     }
 
-    @Test fun direct_discovery_rejects_duplicate_persisted_identity_sources_atomically() = runTest {
-        val generation = 41L
-        val directHost = host.copy(
-            publicUrl = "",
-            refresh = null,
-            relayDomain = null,
-            directUrl = "http://direct.example",
-        )
-        val firstSource = WorkspaceConnection(
-            id = "duplicate-source",
-            baseUrl = "${directHost.directUrl}/workspaces/ws",
-            token = "first-token",
-            directToken = "first-direct-token",
-        )
-        val secondSource = firstSource.copy(
-            baseUrl = "http://legacy-direct.example/workspaces/ws",
-            token = "second-token",
-            directToken = "second-direct-token",
-        )
-        val existingConnections = listOf(firstSource, secondSource)
-        val dataStore = newDataStore("direct-duplicate.preferences_pb", backgroundScope)
-        dataStore.edit {
-            it[hostsKey] = HostsCodec.encode(listOf(directHost))
-            it[connectionsKey] = ConnectionsCodec.encode(existingConnections)
-            it[generationKey] = generation
-        }
-
-        val applied = HostsRepository(dataStore).applyDiscoveredWorkspace(
-            expectedGeneration = generation,
-            directHostId = directHost.hostId,
-            discovered = WorkspaceConnection(
-                id = "discovered",
-                baseUrl = "http://moved-direct.example/workspaces/ws",
-                token = "discovered-token",
-                hostId = directHost.hostId,
-                workspaceId = "ws",
-            ),
-            identities = listOf(VerifiedIdentity(firstSource.id, directHost.hostId, "ws")),
-            activatePriorDirectToken = true,
-            directUrl = "http://moved-direct.example",
-            runnerState = "busy",
-            contactedAtMillis = 99L,
-        )
-
-        val persisted = dataStore.data.first()
-        val persistedConnections = ConnectionsCodec.decode(persisted[connectionsKey] ?: "")
-        assertFalse(applied)
-        assertEquals(generation, persisted[generationKey])
-        assertEquals(listOf(directHost), HostsCodec.decode(persisted[hostsKey] ?: ""))
-        assertEquals(existingConnections, persistedConnections)
-        assertEquals(listOf("first-token", "second-token"), persistedConnections.map { it.token })
-        assertEquals(
-            listOf("first-direct-token", "second-direct-token"),
-            persistedConnections.map { it.directToken },
-        )
-    }
-
     @Test fun fleet_apply_rejects_duplicate_verified_identity_sources_atomically() = runTest {
         val generation = 42L
         val source = WorkspaceConnection(

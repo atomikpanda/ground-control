@@ -25,6 +25,15 @@ class ConnectionsCodecTest {
         assertEquals(list, restored)
     }
 
+    @Test fun decode_keeps_only_the_latest_row_for_each_connection_id() {
+        val stale = WorkspaceConnection("one", "http://old", workspaceName = "old")
+        val current = stale.copy(baseUrl = "http://current", workspaceName = "current")
+
+        val restored = ConnectionsCodec.decode(ConnectionsCodec.encode(listOf(stale, current)))
+
+        assertEquals(listOf(current), restored)
+    }
+
     @Test fun round_trips_and_resolves_retired_connection_ids() {
         val current = WorkspaceConnection(
             id = "current",
