@@ -155,7 +155,7 @@ internal fun replaceRelayAccountFleet(
             val evidence = ownershipByConnection[connection]
             val credential = connection.directToken?.takeIf { it.isNotBlank() }
                 ?: connection.token?.takeIf { it.isNotBlank() }
-            evidence?.takeIf { connection.agreesWith(it) }?.hostId?.let { it to credential }
+            evidence?.takeIf { connection.agreesWith(it, previousHosts) }?.hostId?.let { it to credential }
         }
         .filter { (_, credential) -> credential != null }
         .groupBy({ it.first }, { it.second!! })
@@ -164,7 +164,7 @@ internal fun replaceRelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
         connections = connections.mapNotNull { connection ->
             val evidence = ownershipByConnection[connection]
-            if (evidence == null || !connection.agreesWith(evidence)) return@mapNotNull connection
+            if (evidence == null || !connection.agreesWith(evidence, previousHosts)) return@mapNotNull connection
             val directHost = retainedDirectById[evidence.hostId] ?: return@mapNotNull null
             val directCredential = connection.directToken?.takeIf { it.isNotBlank() }
                 ?: connection.token?.takeIf { it.isNotBlank() }
@@ -207,7 +207,7 @@ internal fun replaceRelayDirectoryFleet(
             val evidence = legacyRouteOwnership(connection, existingHosts) as? LegacyRouteOwnership.Owned
             evidence != null &&
                 evidence.hostId in removedHostIds &&
-                connection.agreesWith(evidence)
+                connection.agreesWith(evidence, existingHosts)
         },
     )
 }
