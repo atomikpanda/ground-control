@@ -316,28 +316,6 @@ class SettingsFleetTest {
         )
     }
 
-    @Test fun verified_credentialless_legacy_source_does_not_refresh_a_direct_host() {
-        val account = RelayAccount("new.example", "new-token")
-        val directHost = HostConnection(
-            hostId = "retained-host",
-            directUrl = "http://direct.example",
-        )
-        val source = WorkspaceConnection(
-            id = "ambiguous-legacy",
-            baseUrl = "${directHost.directUrl}/workspaces/ws",
-        )
-
-        val selected = fleetWorkspaceRefreshTargets(
-            hosts = listOf(directHost),
-            connections = listOf(source),
-            account = account,
-            identities = listOf(VerifiedIdentity(source.id, directHost.hostId, "ws")),
-            routeOwnershipGeneration = 44L,
-        )
-
-        assertTrue(selected.isEmpty())
-    }
-
     @Test fun a_relay_owned_host_without_refresh_is_not_treated_as_retained_direct() {
         val account = RelayAccount("relay.example", "fleet-token")
         val relayHost = HostConnection(
@@ -525,5 +503,45 @@ class SettingsFleetTest {
 
         assertEquals("Fleet: 2 host(s)", visibleSettingsResult("Fleet: 2 host(s)", old, old))
         assertNull(visibleSettingsResult("Fleet: 2 host(s)", old, replacement))
+    }
+    @Test fun refresh_credential_sources_require_matching_route_evidence() {
+        val account = RelayAccount("relay.example", "fleet-token")
+        val host = HostConnection(
+            hostId = "host-1",
+            publicUrl = "https://host.example/root",
+            relayDomain = account.relayDomain,
+        )
+        val conflictingRows = listOf(
+            WorkspaceConnection(
+                "wrong-host",
+                "https://host.example/root/workspaces/ws-1",
+                hostId = "other-host",
+                workspaceId = "ws-1",
+                directToken = "secret",
+            ),
+            WorkspaceConnection(
+                "wrong-workspace",
+                "https://host.example/root/workspaces/ws-1",
+                hostId = host.hostId,
+                workspaceId = "other-workspace",
+                directToken = "secret",
+            ),
+            WorkspaceConnection(
+                "unknown",
+                "https://unknown.example/root/workspaces/ws-1",
+                directToken = "secret",
+            ),
+        )
+
+        val target = fleetWorkspaceRefreshTarget(
+            host = host,
+            hosts = listOf(host),
+            connections = conflictingRows,
+            account = account,
+            identities = emptyList(),
+            routeOwnershipGeneration = 4L,
+        )!!
+
+        assertTrue(target.expectedSourceGeneration.sources.isEmpty())
     }
 }

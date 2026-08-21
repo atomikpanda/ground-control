@@ -254,11 +254,11 @@ internal fun workspaceRefreshGeneration(
         .filter { it.hostId == hostId && !it.workspaceId.isNullOrBlank() }
         .mapTo(mutableSetOf()) { it.connectionId }
     val sources = connections.filter { connection ->
-        val exactOwner = connection.hostId == hostId
+        val evidence = legacyRouteOwnership(connection, hosts) as? LegacyRouteOwnership.Owned
+        val agrees = evidence != null && connection.agreesWith(evidence)
         val verifiedLegacyOwner =
-            connection.id in verifiedSourceIds &&
-                knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
-        exactOwner || verifiedLegacyOwner
+            connection.id in verifiedSourceIds && evidence?.hostId == hostId && agrees
+        (evidence?.hostId == hostId && agrees) || verifiedLegacyOwner
     }.sortedBy { it.id }
     if (sources.map { it.id }.distinct().size != sources.size) return null
     return WorkspaceRefreshGeneration(routeOwnershipGeneration, sources)
@@ -285,81 +285,99 @@ internal fun legacyConnectionsForDiscovery(
 }
 
 
-/** Workspace ids from a legacy route are trusted only when the route is
- * relative to a currently known host base; a host base can legitimately end
- * in `/workspaces/<segment>`. */
-internal fun legacyWorkspaceId(
-    connection: WorkspaceConnection,
-    hosts: List<HostConnection> = emptyList(),
-): String? {
-    connection.workspaceId?.takeIf { it.isNotBlank() }?.let { return it }
-    return hosts.mapNotNull { host ->
-        workspaceIdRelativeToHostBase(normalizedBaseUrl(connection.baseUrl), host)
-    }.distinct().singleOrNull()
+/** Canonical result of matching a persisted legacy route against the complete
+ * host snapshot. URL evidence alone establishes ownership; stored IDs are a
+ * separate agreement check before any side effect. */
+internal sealed interface LegacyRouteOwnership {
+    data object Unknown : LegacyRouteOwnership
+    data object Ambiguous : LegacyRouteOwnership
+    data class Owned(
+        val hostId: String,
+        val hostBase: String,
+        val workspaceId: String?,
+    ) : LegacyRouteOwnership
 }
 
-private fun HostConnection.knownBaseIdentities(): List<String> =
-    (listOfNotNull(directUrl, publicUrl.takeIf { it.isNotBlank() }) + legacyPublicUrls)
-        .mapNotNull(::normalizedBaseUrl)
-        .distinct()
-
-private fun workspaceIdRelativeToHostBase(
-    connectionBase: String?,
-    host: HostConnection,
-): String? = host.knownBaseIdentities().mapNotNull { hostBase ->
-    val prefix = "$hostBase/workspaces/"
-    connectionBase
-        ?.takeIf { it.startsWith(prefix) }
-        ?.removePrefix(prefix)
-        ?.takeIf { it.isNotBlank() && '/' !in it }
-}.distinct().singleOrNull()
-
-/** Match only persisted fleet routing evidence. A workspace's own
- * unauthenticated health payload cannot nominate an arbitrary fleet host. */
-internal fun knownHostsForLegacyConnection(
+internal fun legacyRouteOwnership(
     connection: WorkspaceConnection,
-    hosts: List<HostConnection>,
-    useStoredHostId: Boolean = true,
-): List<HostConnection> {
-    val storedHostId = connection.hostId?.takeIf {
-        useStoredHostId &&
-            it.isNotBlank() &&
-            !it.startsWith("http://", ignoreCase = true) &&
-            !it.startsWith("https://", ignoreCase = true)
-    }
-
-    if (storedHostId != null) {
-        return hosts.filter { it.hostId == storedHostId }
-    }
-
+    candidateHosts: List<HostConnection>,
+): LegacyRouteOwnership {
     val connectionBase = normalizedBaseUrl(connection.baseUrl)
-    val urlValuedHostId = connection.hostId?.takeIf {
-        it.startsWith("http://", ignoreCase = true) ||
-            it.startsWith("https://", ignoreCase = true)
-    }?.let(::normalizedBaseUrl)
-    return hosts.filter { host ->
-        host.knownBaseIdentities().any { hostBase ->
-            connectionBase == hostBase ||
-                workspaceIdRelativeToHostBase(connectionBase, host) != null ||
-                urlValuedHostId == hostBase
-        }
+        ?: return LegacyRouteOwnership.Unknown
+    val claims = candidateHosts.flatMap { host ->
+        if (host.hostId.isBlank()) return@flatMap emptyList()
+        (listOfNotNull(host.directUrl, host.publicUrl) + host.legacyPublicUrls)
+            .mapNotNull(::normalizedBaseUrl)
+            .distinct()
+            .mapNotNull { base -> ownershipClaim(connectionBase, host.hostId, base) }
+    }.distinct()
+    return when (claims.size) {
+        0 -> LegacyRouteOwnership.Unknown
+        1 -> claims.single()
+        else -> LegacyRouteOwnership.Ambiguous
     }
 }
 
-internal fun knownHostForLegacyConnection(
-    connection: WorkspaceConnection,
-    hosts: List<HostConnection>,
-): HostConnection? =
-    knownHostsForLegacyConnection(connection, hosts).singleOrNull()
+/** A stored identity is corroboration, never a substitute for route evidence. */
+internal fun WorkspaceConnection.agreesWith(evidence: LegacyRouteOwnership.Owned): Boolean =
+    (
+        hostId.isNullOrBlank() ||
+            hostId.startsWith("http://", ignoreCase = true) ||
+            hostId.startsWith("https://", ignoreCase = true) ||
+            hostId == evidence.hostId
+    ) && (workspaceId.isNullOrBlank() || workspaceId == evidence.workspaceId)
 
-/** Verify a legacy row through the matched host's current authenticated route.
- * Stale direct or relay URLs are identity aliases only and are never probed. */
+private fun ownershipClaim(
+    connectionBase: String,
+    hostId: String,
+    candidateBase: String,
+): LegacyRouteOwnership.Owned? {
+    val connection = runCatching { URI(connectionBase) }.getOrNull() ?: return null
+    val candidate = runCatching { URI(candidateBase) }.getOrNull() ?: return null
+    if (connection.scheme != candidate.scheme || connection.rawAuthority != candidate.rawAuthority) return null
+    val connectionSegments = safeRawPathSegments(connection.rawPath) ?: return null
+    val candidateSegments = safeRawPathSegments(candidate.rawPath) ?: return null
+    if (connectionSegments == candidateSegments) {
+        return LegacyRouteOwnership.Owned(hostId, candidateBase, null)
+    }
+    val suffix = connectionSegments.drop(candidateSegments.size)
+    if (
+        connectionSegments.size > candidateSegments.size &&
+        connectionSegments.take(candidateSegments.size) == candidateSegments &&
+        suffix.size == 2 &&
+        suffix[0] == "workspaces" &&
+        suffix[1].isNotBlank()
+    ) {
+        return LegacyRouteOwnership.Owned(hostId, candidateBase, suffix[1])
+    }
+    return null
+}
+
+private val ENCODED_PATH_SEPARATOR = Regex("%2f|%5c", RegexOption.IGNORE_CASE)
+private val ENCODED_DOT = Regex("%2e", RegexOption.IGNORE_CASE)
+
+private fun safeRawPathSegments(path: String): List<String>? {
+    val segments = path.split('/').filter(String::isNotEmpty)
+    return segments.takeUnless { segments.any { segment ->
+        val dotDecoded = segment.replace(ENCODED_DOT, ".")
+        dotDecoded == "." ||
+            dotDecoded == ".." ||
+            ENCODED_PATH_SEPARATOR.containsMatchIn(segment)
+    } }
+}
+
+
+/** Verify a legacy row through the uniquely evidenced host's current
+ * authenticated route. Stale direct or relay URLs are identity aliases only. */
 suspend fun verifyLegacyIdentity(
     api: SpecApi,
     connection: WorkspaceConnection,
     hosts: List<HostConnection>,
 ): VerifiedIdentity? {
-    val host = knownHostForLegacyConnection(connection, hosts) ?: return null
+    val evidence = legacyRouteOwnership(connection, hosts) as? LegacyRouteOwnership.Owned
+        ?: return null
+    if (!connection.agreesWith(evidence)) return null
+    val host = hosts.singleOrNull { it.hostId == evidence.hostId } ?: return null
     val (_, workspaces) = reachableHostWorkspaces(
         api = api,
         host = host,
@@ -367,12 +385,9 @@ suspend fun verifyLegacyIdentity(
             .takeIf { host.acceptsDirectCredential() },
         recordContact = false,
     ) ?: return null
-    val knownWorkspaceId = legacyWorkspaceId(connection, listOf(host))
-    val workspaceId = if (knownWorkspaceId != null) {
-        knownWorkspaceId.takeIf { id -> workspaces.any { it.id == id } }
-    } else {
-        workspaces.singleOrNull()?.id
-    } ?: return null
+    val workspaceId = evidence.workspaceId?.takeIf { id -> workspaces.any { it.id == id } }
+        ?: workspaces.singleOrNull()?.id
+        ?: return null
     return VerifiedIdentity(connection.id, host.hostId, workspaceId)
 }
 
@@ -455,18 +470,15 @@ fun adoptManualConnections(
 }
 
 
-/** Reconcile one host from an authoritative `GET /workspaces` response.
- * Existing rows with a stable or URL-derived workspace id that are uniquely
- * owned by this host and missing from [discovered] are gone. Ownership of
- * legacy URL-valued/null-host rows is resolved from normalized host evidence;
- * unmatched or ambiguous rows and true roots survive. Other hosts are
- * untouched. */
+/** Reconcile one host from an authoritative `GET /workspaces` response. A row
+ * is removed only when the complete pre-refresh host snapshot uniquely proves
+ * ownership and agrees with every stored identity field. */
 fun replaceHostConnections(
     existing: List<WorkspaceConnection>,
     hostId: String,
     discovered: List<WorkspaceConnection>,
     identities: List<VerifiedIdentity>,
-    hosts: List<HostConnection> = emptyList(),
+    hosts: List<HostConnection>,
     activatePriorDirectToken: Boolean = false,
 ): List<WorkspaceConnection> {
     val liveWorkspaceIds = discovered.mapNotNullTo(mutableSetOf()) { it.workspaceId }
@@ -476,12 +488,11 @@ fun replaceHostConnections(
         identities,
         activatePriorDirectToken,
     ).filterNot { connection ->
-        val workspaceId = legacyWorkspaceId(connection, hosts.filter { it.hostId == hostId })
-        val ownedByHost = connection.hostId == hostId ||
-            knownHostForLegacyConnection(connection, hosts)?.hostId == hostId
-        ownedByHost &&
-            workspaceId != null &&
-            workspaceId !in liveWorkspaceIds
+        val evidence = legacyRouteOwnership(connection, hosts) as? LegacyRouteOwnership.Owned
+        evidence?.hostId == hostId &&
+            connection.agreesWith(evidence) &&
+            evidence.workspaceId != null &&
+            evidence.workspaceId !in liveWorkspaceIds
     }
 }
 

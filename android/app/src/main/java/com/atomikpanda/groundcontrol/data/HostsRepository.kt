@@ -124,13 +124,12 @@ internal fun replaceRelayAccountFleet(
     hosts: List<HostConnection>,
     connections: List<WorkspaceConnection>,
 ): RelayAccountFleet {
+    validateUniqueHostIds(hosts)
     if (previous == null || previous == replacement) {
         return RelayAccountFleet(hosts, connections)
     }
-    check(hosts.map { it.hostId }.distinct().size == hosts.size) {
-        "Duplicate host identities cannot establish route ownership"
-    }
     val previousHosts = hosts.filter { it.relayDomain == previous.relayDomain }
+    validateUniqueHostIds(previousHosts)
     val retainedDirectHosts = previousHosts.mapNotNull { host ->
         val directUrl = host.directUrl?.let(::normalizedBaseUrl) ?: return@mapNotNull null
         host.copy(
@@ -148,73 +147,35 @@ internal fun replaceRelayAccountFleet(
         )
     }
     val retainedDirectById = retainedDirectHosts.associateBy { it.hostId }
-    val ownedConnections = connections.map { connection ->
-        val legacyUrlOwners = knownHostsForLegacyConnection(
-            connection,
-            hosts,
-            useStoredHostId = false,
-        )
-        val storedHostId = connection.hostId?.takeIf {
-            it.isNotBlank() &&
-                !it.startsWith("http://", ignoreCase = true) &&
-                !it.startsWith("https://", ignoreCase = true)
+    val ownershipByConnection = connections.associateWith { connection ->
+        legacyRouteOwnership(connection, previousHosts) as? LegacyRouteOwnership.Owned
+    }
+    val directCredentialByHostId = connections
+        .mapNotNull { connection ->
+            val evidence = ownershipByConnection[connection]
+            val credential = connection.directToken?.takeIf { it.isNotBlank() }
+                ?: connection.token?.takeIf { it.isNotBlank() }
+            evidence?.takeIf { connection.agreesWith(it) }?.hostId?.let { it to credential }
         }
-        val legacyUrlOwner = legacyUrlOwners.singleOrNull()
-        val legacyOwnershipUnsafe =
-            legacyUrlOwners.size > 1 ||
-                (storedHostId != null && legacyUrlOwner != null && legacyUrlOwner.hostId != storedHostId)
-        Triple(
-            connection,
-            knownHostForLegacyConnection(connection, previousHosts),
-            legacyOwnershipUnsafe,
-        )
-    }
-    val credentialCandidatesByHostId = mutableMapOf<String, MutableSet<String>>()
-    for ((connection, knownHost, legacyOwnershipUnsafe) in ownedConnections) {
-        val credential = connection.directToken?.takeIf { it.isNotBlank() }
-            ?: connection.token?.takeIf { it.isNotBlank() }
-        if (!legacyOwnershipUnsafe && knownHost != null && credential != null) {
-            credentialCandidatesByHostId.getOrPut(knownHost.hostId, ::mutableSetOf).add(credential)
-        }
-    }
-    val directCredentialByHostId = credentialCandidatesByHostId.mapValues { (_, credentials) ->
-        credentials.singleOrNull()
-    }
+        .filter { (_, credential) -> credential != null }
+        .groupBy({ it.first }, { it.second!! })
+        .mapValues { (_, credentials) -> credentials.distinct().singleOrNull() }
     return RelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
-        connections = ownedConnections.mapNotNull { (connection, knownHost, legacyOwnershipUnsafe) ->
-            if (legacyOwnershipUnsafe) {
-                return@mapNotNull if (connection.hasStableIdentityTuple()) {
-                    null
-                } else {
-                    connection.copy(token = null, directToken = null)
-                }
-            }
-            if (knownHost == null) {
-                val retainedHost = connection.hostId
-                    ?.takeIf { connection.hasStableIdentityTuple() }
-                    ?.let { hostId -> hosts.singleOrNull { it.hostId == hostId } }
-                return@mapNotNull when {
-                    !connection.hasStableIdentityTuple() -> connection
-                    retainedHost?.hostBases()?.isNotEmpty() == true -> connection
-                    else -> null
-                }
-            }
-            val directHost = retainedDirectById[knownHost.hostId]
-                ?: return@mapNotNull null
+        connections = connections.mapNotNull { connection ->
+            val evidence = ownershipByConnection[connection]
+            if (evidence == null || !connection.agreesWith(evidence)) return@mapNotNull connection
+            val directHost = retainedDirectById[evidence.hostId] ?: return@mapNotNull null
             val directCredential = connection.directToken?.takeIf { it.isNotBlank() }
                 ?: connection.token?.takeIf { it.isNotBlank() }
                 ?: directCredentialByHostId[directHost.hostId]
                 ?: return@mapNotNull null
-            val workspaceId = legacyWorkspaceId(connection, listOf(knownHost))
-            // An authenticated root remains probeable: singleton verification
-            // can supply its workspace id after the account replacement.
-            val directBase = workspaceId?.let {
+            val directBase = evidence.workspaceId?.let {
                 workspaceBaseUrl(directHost.directUrl!!, it)
             } ?: directHost.directUrl!!
             connection.copy(
-                hostId = directHost.hostId,
-                workspaceId = workspaceId,
+                hostId = evidence.hostId,
+                workspaceId = evidence.workspaceId,
                 baseUrl = directBase,
                 token = directCredential,
                 state = null,
@@ -234,13 +195,20 @@ internal fun replaceRelayDirectoryFleet(
     replacementHosts: List<HostConnection>,
     connections: List<WorkspaceConnection>,
 ): RelayAccountFleet {
+    validateUniqueHostIds(existingHosts)
+    validateUniqueHostIds(replacementHosts)
     val replacementIds = replacementHosts.mapTo(mutableSetOf()) { it.hostId }
     val removedHostIds = existingHosts
         .filter { it.relayDomain == relayDomain && it.hostId !in replacementIds }
         .mapTo(mutableSetOf()) { it.hostId }
     return RelayAccountFleet(
         hosts = replaceRelayHosts(existingHosts, relayDomain, replacementHosts),
-        connections = connections.filterNot { it.hostId in removedHostIds },
+        connections = connections.filterNot { connection ->
+            val evidence = legacyRouteOwnership(connection, existingHosts) as? LegacyRouteOwnership.Owned
+            evidence != null &&
+                evidence.hostId in removedHostIds &&
+                connection.agreesWith(evidence)
+        },
     )
 }
 
@@ -296,6 +264,7 @@ class HostsRepository internal constructor(private val dataStore: DataStore<Pref
         dataStore.edit {
             val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
             val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
+            validateUniqueHostIds(currentHosts)
             val fleet = replaceRelayAccountFleet(
                 previous = it.relayAccount(),
                 replacement = account,
@@ -339,11 +308,14 @@ class HostsRepository internal constructor(private val dataStore: DataStore<Pref
         expectedGeneration: Long,
         hosts: List<HostConnection>,
     ): Boolean {
+        validateUniqueHostIds(hosts)
         var applied = false
         dataStore.edit {
             if ((it[ROUTE_OWNERSHIP_GENERATION] ?: 0L) != expectedGeneration) return@edit
             val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
             val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
+            validateUniqueHostIds(currentHosts)
+            validateUniqueHostIds(hosts)
             val fleet = replaceRelayDirectoryFleet(
                 relayDomain = expectedAccount.relayDomain,
                 existingHosts = currentHosts,

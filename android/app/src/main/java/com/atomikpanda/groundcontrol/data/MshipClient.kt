@@ -134,10 +134,7 @@ private data class PendingHostContact(
     val hostBase: String,
 )
 private val PENDING_HOST_CONTACT = AttributeKey<PendingHostContact>("PendingHostContact")
-private data class WorkspaceRoute(
-    val connection: WorkspaceConnection,
-    val workspaceId: String?,
-)
+private data class WorkspaceRoute(val connection: WorkspaceConnection)
 private val WORKSPACE_ROUTE = AttributeKey<WorkspaceRoute>("WorkspaceRoute")
 private val HOST_ROUTE_ID = AttributeKey<String>("HostRouteId")
 
@@ -314,38 +311,26 @@ fun hostAwareClient(
             val originalPath = originalUrl.substringBefore('?').substringBefore('#')
             val originalUrlIdentity = normalizedBaseUrl(originalPath)
                 ?: return@on proceed(request)
-            val persistedWorkspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
-            val legacyMatchingHosts = persistedWorkspaceRoute?.let {
-                knownHostsForLegacyConnection(it.connection, knownHosts)
-            }.orEmpty()
-            val workspaceRoute = persistedWorkspaceRoute?.copy(
-                workspaceId = legacyWorkspaceId(
-                    persistedWorkspaceRoute.connection,
-                    legacyMatchingHosts,
-                ),
-            )
-            val connectionHostId = workspaceRoute?.connection?.hostId
+            val workspaceRoute = request.attributes.getOrNull(WORKSPACE_ROUTE)
+            val workspaceEvidence = workspaceRoute
+                ?.let { legacyRouteOwnership(it.connection, knownHosts) as? LegacyRouteOwnership.Owned }
+                ?.takeIf { workspaceRoute.connection.agreesWith(it) }
+            val workspaceHost = workspaceEvidence
+                ?.let { evidence -> knownHosts.singleOrNull { it.hostId == evidence.hostId } }
             val explicitHostRouteId = request.attributes.getOrNull(HOST_ROUTE_ID)
-            val routedHostId = connectionHostId ?: explicitHostRouteId
+            val routedHostId = explicitHostRouteId
             val normalizedRoutedHostId = routedHostId?.let(::normalizedBaseUrl)
             val reportContact =
                 request.attributes.getOrNull(SUPPRESS_HOST_CONTACT) == null
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
             val matchingHosts = base?.let { baseIdentity ->
                 knownHosts.filter { candidate ->
-                    candidate.hostBases().any {
-                        normalizedBaseUrl(it) == baseIdentity
-                    }
+                    candidate.hasKnownBaseIdentity(baseIdentity)
                 }
             }.orEmpty()
             if (cache == null) return@on proceed(request)
             val host = when {
-                workspaceRoute != null &&
-                    connectionHostId != null &&
-                    normalizedRoutedHostId == null ->
-                    knownHosts.firstOrNull { it.hostId == connectionHostId }
-                workspaceRoute != null ->
-                    legacyMatchingHosts.singleOrNull()
+                workspaceRoute != null -> workspaceHost
                 routedHostId != null && normalizedRoutedHostId == null ->
                     knownHosts.firstOrNull { it.hostId == routedHostId }
                 routedHostId != null ->
@@ -357,19 +342,18 @@ fun hostAwareClient(
                 else -> null
             }
             var routedHost = host ?: run {
-                val fleetBoundWorkspaceRoute =
-                    workspaceRoute != null &&
-                        (!connectionHostId.isNullOrBlank() || legacyMatchingHosts.size > 1)
-                val fleetBoundRoute = explicitHostRouteId != null || fleetBoundWorkspaceRoute
-                if (fleetBoundRoute) {
-                    request.headers.remove(HttpHeaders.Authorization)
-                }
+                val fleetBoundRoute = explicitHostRouteId != null
+                if (fleetBoundRoute) request.headers.remove(HttpHeaders.Authorization)
                 return@on proceed(request)
             }
-            val routedBase = hostBaseFor(originalUrl, listOf(routedHost))
-            val originalBaseIdentity = (
-                routedBase ?: workspaceRoute?.connection?.baseUrl?.let(::normalizedBaseUrl)
-                )
+            if (routedHost.hostBases().isEmpty()) return@on proceed(request)
+            val routedBase = when {
+                workspaceEvidence?.workspaceId != null ->
+                    workspaceBaseUrl(workspaceEvidence.hostBase, workspaceEvidence.workspaceId)
+                workspaceEvidence != null -> workspaceEvidence.hostBase
+                else -> hostBaseFor(originalUrl, listOf(routedHost))
+            }
+            val originalBaseIdentity = routedBase
                 ?.takeIf { originalUrlIdentity.startsWith("$it/") }
                 ?: return@on proceed(request)
             val routeSuffix =
@@ -393,13 +377,11 @@ fun hostAwareClient(
                         listOf(preferredBase) + routedHost.hostBases().filterNot { it == preferredBase }
                     else -> routedHost.hostBases()
                 }
-                val workspaceId = workspaceRoute?.workspaceId
                 val candidateRequests = candidateBases.map { candidateBase ->
-                    val candidateUrl = when {
-                        routedBase != null -> candidateBase + routeSuffix
-                        workspaceId != null ->
-                            workspaceBaseUrl(candidateBase, workspaceId) + routeSuffix
-                        else -> candidateBase + routeSuffix
+                    val candidateUrl = if (workspaceEvidence?.workspaceId != null) {
+                        workspaceBaseUrl(candidateBase, workspaceEvidence.workspaceId) + routeSuffix
+                    } else {
+                        candidateBase + routeSuffix
                     }
                     candidateBase to candidateUrl
                 }
@@ -735,10 +717,7 @@ class SpecApi(private val client: HttpClient) {
         conn.token?.takeIf { it.isNotBlank() }?.let {
             header(HttpHeaders.Authorization, "Bearer $it")
         }
-        attributes.put(
-            WORKSPACE_ROUTE,
-            WorkspaceRoute(conn, legacyWorkspaceId(conn)),
-        )
+        attributes.put(WORKSPACE_ROUTE, WorkspaceRoute(conn))
     }
 
     private fun HttpRequestBuilder.jsonBody(body: Any) {

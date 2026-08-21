@@ -312,12 +312,26 @@ class HostWorkspacesTest {
                 VerifiedIdentity(secondLegacy.id, "host-a", "ws-1"),
                 VerifiedIdentity(firstLegacy.id, "host-a", "ws-1"),
             ),
+            hosts = listOf(
+                HostConnection(
+                    hostId = "host-a",
+                    publicUrl = "https://current.relay",
+                    legacyPublicUrls = listOf("https://old-a.relay", "https://old-z.relay"),
+                ),
+            ),
         )
         val secondRefresh = replaceHostConnections(
             existing = firstRefresh,
             hostId = "host-a",
             discovered = listOf(discovered),
             identities = emptyList(),
+            hosts = listOf(
+                HostConnection(
+                    hostId = "host-a",
+                    publicUrl = "https://current.relay",
+                    legacyPublicUrls = listOf("https://old-a.relay", "https://old-z.relay"),
+                ),
+            ),
         )
 
         assertEquals(1, firstRefresh.size)
@@ -1024,7 +1038,7 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer direct-token"), authorizations)
     }
 
-    @Test fun workspace_route_identity_disambiguates_hosts_sharing_a_base() = runTest {
+    @Test fun workspace_route_with_ambiguous_evidence_does_not_select_a_stored_host_id() = runTest {
         val sharedBase = "https://contended.relay.example.com"
         val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")
         val second = host.copy(hostId = "host-b", publicUrl = sharedBase, refresh = "refresh-b")
@@ -1035,14 +1049,8 @@ class HostWorkspacesTest {
             engine = MockEngine { req ->
                 when (req.url.encodedPath) {
                     "/host/token" -> {
-                        val body = (req.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
-                        val credential = body.substringAfter("\"refresh\":\"").substringBefore('"')
-                        exchanges += credential
-                        respond(
-                            """{"token":"bearer-${credential.removePrefix("refresh-")}","expires_in":300}""",
-                            HttpStatusCode.OK,
-                            jsonHdr,
-                        )
+                        exchanges += "unexpected"
+                        respond("""{"token":"unexpected","expires_in":300}""", HttpStatusCode.OK, jsonHdr)
                     }
                     "/workspaces/ws-1/threads/thread-1/seen" -> {
                         authorizations += req.headers[HttpHeaders.Authorization]
@@ -1063,9 +1071,9 @@ class HostWorkspacesTest {
 
         SpecApi(client.client).markThreadSeen(connection, "thread-1", null)
 
-        assertEquals(listOf("refresh-b"), exchanges)
-        assertEquals(listOf("Bearer bearer-b"), authorizations)
-        assertEquals(listOf(second.hostId to sharedBase), contacts)
+        assertTrue(exchanges.isEmpty())
+        assertEquals(listOf<String?>(null), authorizations)
+        assertTrue(contacts.isEmpty())
     }
 
     @Test fun a_legacy_url_host_handle_routes_by_its_unambiguous_base() = runTest {
@@ -1275,50 +1283,6 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer relay-bearer"), authorizations)
     }
 
-    @Test fun a_legacy_direct_workspace_suffix_routes_through_a_relay_owned_host() = runTest {
-        val directBase = "http://lan.example"
-        val publicBase = "https://public.relay.example"
-        val current = host.copy(
-            hostId = "host-stable",
-            publicUrl = publicBase,
-            directUrl = directBase,
-            refresh = "refresh-current",
-            relayDomain = "relay.example",
-        )
-        val urls = mutableListOf<String>()
-        val client = hostAwareClient(
-            engine = MockEngine { request ->
-                urls += request.url.toString()
-                when (request.url.encodedPath) {
-                    "/host/token" -> respond(
-                        """{"token":"relay-bearer","expires_in":300}""",
-                        HttpStatusCode.OK,
-                        jsonHdr,
-                    )
-                    "/workspaces/ws/threads/thread-1/seen" ->
-                        respond("{}", HttpStatusCode.OK, jsonHdr)
-                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
-                }
-            },
-            hosts = { listOf(current) },
-        )
-        val legacy = WorkspaceConnection(
-            id = "legacy-direct",
-            baseUrl = "$directBase/workspaces/ws",
-            hostId = directBase,
-        )
-
-        SpecApi(client.client).markThreadSeen(legacy, "thread-1", null)
-
-        assertEquals(
-            listOf(
-                "$publicBase/host/token",
-                "$publicBase/workspaces/ws/threads/thread-1/seen",
-            ),
-            urls,
-        )
-    }
-
     @Test fun a_current_root_does_not_capture_a_longer_legacy_workspace_base() = runTest {
         val currentBase = "https://relay.example"
         val legacyBase = "$currentBase/old"
@@ -1413,13 +1377,10 @@ class HostWorkspacesTest {
         SpecApi(client.client).markThreadSeen(stableConnection, "thread-1", null)
 
         assertEquals(
-            listOf(
-                "$currentBase/host/token",
-                "$currentBase/old/workspaces/ws-1/threads/thread-1/seen",
-            ),
+            listOf("$currentBase/old/workspaces/ws-1/threads/thread-1/seen"),
             urls,
         )
-        assertEquals(listOf("Bearer host-a-bearer"), authorizations)
+        assertEquals(listOf("Bearer old-standing-token"), authorizations)
     }
 
     @Test fun a_legacy_root_alias_routes_with_current_bearer_and_preserves_path_and_query_case() = runTest {
@@ -1507,7 +1468,7 @@ class HostWorkspacesTest {
         )
         val legacyRoot = WorkspaceConnection(
             id = "legacy-root",
-            baseUrl = "https://unrecorded.example/RootCase",
+            baseUrl = oldHostAlias,
             token = "old-standing-token",
             hostId = oldHostAlias,
         )
@@ -1524,7 +1485,7 @@ class HostWorkspacesTest {
         assertEquals(listOf("Bearer current-bearer"), authorizations)
     }
 
-    @Test fun ambiguous_and_unowned_legacy_roots_never_send_their_retained_credential() = runTest {
+    @Test fun ambiguous_and_unowned_legacy_roots_leave_their_request_unchanged() = runTest {
         val oldBase = "https://old.relay.example"
         val ambiguousAuthorizations = mutableListOf<String?>()
         val ambiguousClient = hostAwareClient(
@@ -1579,8 +1540,8 @@ class HostWorkspacesTest {
 
         SpecApi(unownedClient.client).listThreads(unownedRoot)
 
-        assertEquals(listOf<String?>(null), ambiguousAuthorizations)
-        assertEquals(listOf<String?>(null), unownedAuthorizations)
+        assertEquals(listOf("Bearer must-not-leak"), ambiguousAuthorizations)
+        assertEquals(listOf("Bearer must-not-leak"), unownedAuthorizations)
     }
 
     @Test fun unrelated_fleet_hosts_do_not_strip_manual_root_or_workspace_credentials() = runTest {
@@ -1728,6 +1689,92 @@ class HostWorkspacesTest {
         )
     }
 
+    @Test
+    fun an_unscoped_unique_legacy_alias_routes_to_the_current_host() = runTest {
+        val legacyBase = "https://old.relay.example"
+        val currentBase = "https://current.relay.example"
+        val current = host.copy(
+            hostId = "host-stable",
+            publicUrl = currentBase,
+            refresh = "refresh-current",
+            legacyPublicUrls = listOf(legacyBase),
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val contacts = mutableListOf<Pair<String, String>>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                when (request.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"current-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/health" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond(
+                            """{"status":"ok","host_id":"host-stable","workspaces":2}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+            onHostContact = { hostId, base -> contacts += hostId to base },
+        )
+
+        val health = SpecApi(client.client).hostHealth(legacyBase)
+
+        assertEquals(current.hostId, health.hostId)
+        assertEquals(
+            listOf("$currentBase/host/token", "$currentBase/health"),
+            urls,
+        )
+        assertEquals(listOf("Bearer current-bearer"), authorizations)
+        assertEquals(listOf(current.hostId to currentBase), contacts)
+    }
+
+    @Test fun an_unscoped_shared_legacy_alias_remains_unroutable() = runTest {
+        val legacyBase = "https://old.relay.example"
+        val first = host.copy(
+            hostId = "host-a",
+            publicUrl = "https://a.relay.example",
+            refresh = "refresh-a",
+            legacyPublicUrls = listOf(legacyBase),
+        )
+        val second = host.copy(
+            hostId = "host-b",
+            publicUrl = "https://b.relay.example",
+            refresh = "refresh-b",
+            legacyPublicUrls = listOf(legacyBase),
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val contacts = mutableListOf<Pair<String, String>>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond(
+                    """{"status":"ok","host_id":"untrusted"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            },
+            hosts = { listOf(first, second) },
+            onHostContact = { hostId, base -> contacts += hostId to base },
+        )
+
+        SpecApi(client.client).hostHealth(legacyBase)
+
+        assertEquals(listOf("$legacyBase/health"), urls)
+        assertEquals(listOf<String?>(null), authorizations)
+        assertTrue(contacts.isEmpty())
+    }
+
     @Test fun an_unscoped_route_does_not_choose_between_normalized_equivalent_bases() = runTest {
         val sharedBase = "https://contended.relay.example.com"
         val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")
@@ -1800,7 +1847,10 @@ class HostWorkspacesTest {
     @Test fun stale_workspace_url_routes_to_the_hosts_current_public_url_before_send() = runTest {
         val urls = mutableListOf<String>()
         val authorizations = mutableListOf<String?>()
-        val rotated = host.copy(publicUrl = "https://sub-b.relay.example.com")
+        val rotated = host.copy(
+            publicUrl = "https://sub-b.relay.example.com",
+            legacyPublicUrls = listOf(host.publicUrl),
+        )
         val client = hostAwareClient(
             engine = MockEngine { req ->
                 urls += req.url.toString()
@@ -1842,7 +1892,10 @@ class HostWorkspacesTest {
     @Test fun evidence_blob_uses_the_hosts_current_route_and_a_minted_bearer() = runTest {
         val urls = mutableListOf<String>()
         val authorizations = mutableListOf<String?>()
-        val rotated = host.copy(publicUrl = "https://sub-b.relay.example.com")
+        val rotated = host.copy(
+            publicUrl = "https://sub-b.relay.example.com",
+            legacyPublicUrls = listOf(host.publicUrl),
+        )
         val client = hostAwareClient(
             engine = MockEngine { req ->
                 urls += req.url.toString()
@@ -2128,76 +2181,6 @@ class HostWorkspacesTest {
         )
     }
 
-    @Test fun relay_replacement_never_later_sends_an_ambiguous_legacy_credential() = runTest {
-        val sharedLegacyUrl = "https://shared.relay.example"
-        val retained = HostConnection(
-            hostId = "retained",
-            publicUrl = "https://retained.relay.example",
-            directUrl = "http://retained.direct",
-            relayDomain = "relay.example",
-            legacyPublicUrls = listOf(sharedLegacyUrl),
-        )
-        val removed = HostConnection(
-            hostId = "removed",
-            publicUrl = "https://removed.relay.example",
-            relayDomain = "relay.example",
-            legacyPublicUrls = listOf(sharedLegacyUrl),
-        )
-        val fleet = replaceRelayAccountFleet(
-            previous = RelayAccount("relay.example", "old-fleet-token"),
-            replacement = RelayAccount("new.example", "new-fleet-token"),
-            hosts = listOf(retained, removed),
-            connections = listOf(
-                WorkspaceConnection(
-                    id = "ambiguous-legacy",
-                    baseUrl = "$sharedLegacyUrl/workspaces/ws-1",
-                    directToken = "must-not-transfer",
-                ),
-            ),
-        )
-        val authorizations = mutableListOf<String?>()
-        val api = SpecApi(HttpClient(MockEngine { request ->
-            authorizations += request.headers[HttpHeaders.Authorization]
-            respond(
-                """{"workspaces":[{"id":"ws-1","name":"product","state":"healthy"}]}""",
-                HttpStatusCode.OK,
-                jsonHdr,
-            )
-        }) { mshipDefaults() })
-
-        val identities = verifyLegacyIdentities(
-            api,
-            unresolvedLegacyConnections(fleet.connections),
-            fleet.hosts,
-        ).identities
-        val targets = fleetWorkspaceRefreshTargets(
-            hosts = fleet.hosts,
-            connections = fleet.connections,
-            account = RelayAccount("new.example", "new-fleet-token"),
-            identities = identities,
-            routeOwnershipGeneration = 0L,
-        )
-        targets.forEach { target ->
-            refreshHostWorkspaceConnections(
-                api,
-                target.host,
-                identities,
-                directToken = target.directToken,
-            )
-        }
-        assertEquals(listOf<String?>(null), authorizations)
-        assertEquals(listOf(VerifiedIdentity("ambiguous-legacy", retained.hostId, "ws-1")), identities)
-        assertEquals(
-            listOf(
-                WorkspaceConnection(
-                    id = "ambiguous-legacy",
-                    baseUrl = "$sharedLegacyUrl/workspaces/ws-1",
-                ),
-            ),
-            fleet.connections,
-        )
-    }
-
     @Test fun relay_replacement_migrates_an_authenticated_direct_root_end_to_end() = runTest {
         val oldPublic = "https://old.relay.example"
         val direct = "http://direct.example"
@@ -2362,6 +2345,7 @@ class HostWorkspacesTest {
             hostId = known.hostId,
             discovered = firstRefresh.connections,
             identities = firstRefresh.identities,
+            hosts = listOf(known),
         )
 
         assertEquals(emptyList<VerifiedIdentity>(), firstVerification.identities)
@@ -2385,6 +2369,7 @@ class HostWorkspacesTest {
             hostId = known.hostId,
             discovered = secondRefresh.connections,
             identities = secondRefresh.identities,
+            hosts = listOf(known),
         )
 
         assertEquals(
@@ -2735,5 +2720,89 @@ class HostWorkspacesTest {
         }.exceptionOrNull()
 
         assertTrue(error is CancellationException)
+    }
+    @Test fun direct_route_evidence_reroutes_only_to_the_current_relay_base() = runTest {
+        val host = HostConnection(
+            hostId = "host-1",
+            directUrl = "https://direct.example/root",
+            publicUrl = "https://relay.example/root",
+            relayDomain = "relay.example",
+            refresh = "refresh-token",
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                when (request.url.encodedPath) {
+                    "/root/host/token" -> respond(
+                        """{"token":"relay-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/root/workspaces/ws-1/threads/thread-1/seen" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(host) },
+        )
+
+        SpecApi(client.client).markThreadSeen(
+            WorkspaceConnection(
+                "legacy",
+                "https://direct.example/root/workspaces/ws-1",
+                token = "standing-token",
+            ),
+            "thread-1",
+            null,
+        )
+
+        assertEquals(
+            listOf(
+                "https://relay.example/root/host/token",
+                "https://relay.example/root/workspaces/ws-1/threads/thread-1/seen",
+            ),
+            urls,
+        )
+        assertEquals(listOf("Bearer relay-bearer"), authorizations)
+    }
+    @Test fun legacy_alias_ownership_without_a_current_base_leaves_workspace_request_unchanged() = runTest {
+        val legacyBase = "https://old.relay.example/root"
+        val host = HostConnection(
+            hostId = "host-1",
+            publicUrl = "",
+            relayDomain = "relay.example",
+            refresh = "refresh-token",
+            legacyPublicUrls = listOf(legacyBase),
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(host) },
+        )
+
+        SpecApi(client.client).markThreadSeen(
+            WorkspaceConnection(
+                "legacy",
+                "$legacyBase/workspaces/ws-1",
+                token = "standing-token",
+            ),
+            "thread-1",
+            null,
+        )
+
+        assertEquals(
+            listOf("$legacyBase/workspaces/ws-1/threads/thread-1/seen"),
+            urls,
+        )
+        assertEquals(listOf("Bearer standing-token"), authorizations)
     }
 }
