@@ -334,7 +334,7 @@ internal class MessageConnectionOwner(
                 queuedRefreshWaiters = emptyList()
                 request?.let { launched ->
                     scope.launch {
-                        launched.join()
+                        waitForAuthoritativeRefresh(launched)
                         waiters.forEach { it.complete(Unit) }
                     }
                 }

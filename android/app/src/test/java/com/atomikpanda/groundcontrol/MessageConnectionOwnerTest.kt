@@ -301,6 +301,57 @@ class MessageConnectionOwnerTest {
         assertEquals(listOf("load-2"), owner.snapshot.value.threads.getOrThrow().map { it.id })
 
     }
+    @Test fun queued_refresh_waits_through_every_superseding_refresh_until_authoritative_snapshot_publishes() = runTest {
+        val handoffRelease = CompletableDeferred<Unit>()
+        val replacementRefreshStarted = CompletableDeferred<Unit>()
+        val authoritativeRelease = CompletableDeferred<Unit>()
+        var loads = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                loads += 1
+                when (loads) {
+                    1 -> {
+                        withContext(NonCancellable) { handoffRelease.await() }
+                        MessageFullLoad(listOf(thread("obsolete")), emptyList())
+                    }
+                    2 -> {
+                        replacementRefreshStarted.complete(Unit)
+                        awaitCancellation()
+                    }
+                    else -> {
+                        authoritativeRelease.await()
+                        MessageFullLoad(listOf(thread("authoritative")), emptyList())
+                    }
+                }
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+
+        owner.refresh()
+        runCurrent()
+        val handoff = backgroundScope.async { requireNotNull(owner.handoffTo(replacement)) }
+        runCurrent()
+        val queuedRefresh = owner.refresh()
+        handoffRelease.complete(Unit)
+        runCurrent()
+        owner.resumeAfterHandoff(handoff.await())
+        runCurrent()
+        replacementRefreshStarted.await()
+
+        val authoritativeRefresh = owner.refresh()
+        runCurrent()
+
+        assertFalse(queuedRefresh.isCompleted)
+        assertFalse(authoritativeRefresh.isCompleted)
+        authoritativeRelease.complete(Unit)
+        runCurrent()
+        queuedRefresh.join()
+        authoritativeRefresh.join()
+        assertEquals(listOf("authoritative"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+    }
+
 
     @Test fun idle_alias_handoff_retains_ready_state_without_starting_an_initial_load() = runTest {
         var fullLoads = 0
