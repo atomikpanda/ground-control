@@ -1684,6 +1684,92 @@ class HostWorkspacesTest {
         )
     }
 
+    @Test
+    fun an_unscoped_unique_legacy_alias_routes_to_the_current_host() = runTest {
+        val legacyBase = "https://old.relay.example"
+        val currentBase = "https://current.relay.example"
+        val current = host.copy(
+            hostId = "host-stable",
+            publicUrl = currentBase,
+            refresh = "refresh-current",
+            legacyPublicUrls = listOf(legacyBase),
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val contacts = mutableListOf<Pair<String, String>>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                when (request.url.encodedPath) {
+                    "/host/token" -> respond(
+                        """{"token":"current-bearer","expires_in":300}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                    "/health" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond(
+                            """{"status":"ok","host_id":"host-stable","workspaces":2}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(current) },
+            onHostContact = { hostId, base -> contacts += hostId to base },
+        )
+
+        val health = SpecApi(client.client).hostHealth(legacyBase)
+
+        assertEquals(current.hostId, health.hostId)
+        assertEquals(
+            listOf("$currentBase/host/token", "$currentBase/health"),
+            urls,
+        )
+        assertEquals(listOf("Bearer current-bearer"), authorizations)
+        assertEquals(listOf(current.hostId to currentBase), contacts)
+    }
+
+    @Test fun an_unscoped_shared_legacy_alias_remains_unroutable() = runTest {
+        val legacyBase = "https://old.relay.example"
+        val first = host.copy(
+            hostId = "host-a",
+            publicUrl = "https://a.relay.example",
+            refresh = "refresh-a",
+            legacyPublicUrls = listOf(legacyBase),
+        )
+        val second = host.copy(
+            hostId = "host-b",
+            publicUrl = "https://b.relay.example",
+            refresh = "refresh-b",
+            legacyPublicUrls = listOf(legacyBase),
+        )
+        val urls = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val contacts = mutableListOf<Pair<String, String>>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                urls += request.url.toString()
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond(
+                    """{"status":"ok","host_id":"untrusted"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            },
+            hosts = { listOf(first, second) },
+            onHostContact = { hostId, base -> contacts += hostId to base },
+        )
+
+        SpecApi(client.client).hostHealth(legacyBase)
+
+        assertEquals(listOf("$legacyBase/health"), urls)
+        assertEquals(listOf<String?>(null), authorizations)
+        assertTrue(contacts.isEmpty())
+    }
+
     @Test fun an_unscoped_route_does_not_choose_between_normalized_equivalent_bases() = runTest {
         val sharedBase = "https://contended.relay.example.com"
         val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")

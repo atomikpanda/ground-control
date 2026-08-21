@@ -324,9 +324,7 @@ fun hostAwareClient(
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
             val matchingHosts = base?.let { baseIdentity ->
                 knownHosts.filter { candidate ->
-                    candidate.hostBases().any {
-                        normalizedBaseUrl(it) == baseIdentity
-                    }
+                    candidate.hasKnownBaseIdentity(baseIdentity)
                 }
             }.orEmpty()
             val legacyMatchingHosts = workspaceRoute?.let {
