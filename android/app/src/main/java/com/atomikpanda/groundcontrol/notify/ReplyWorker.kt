@@ -28,6 +28,7 @@ internal fun retiredReplyConnectionIds(
 
 internal fun buildReplyNotificationEvent(
     conn: WorkspaceConnection,
+    connectionId: String = conn.id,
     threadId: String,
     fallbackSubject: String,
     preview: String,
@@ -35,7 +36,7 @@ internal fun buildReplyNotificationEvent(
 ): NeedsYouEvent {
     val messages = thread?.messages ?: emptyList()
     return NeedsYouEvent(
-        connectionId = conn.id,
+        connectionId = connectionId,
         baseUrl = conn.baseUrl,
         workspaceName = conn.workspaceName,
         threadId = threadId,
@@ -46,6 +47,21 @@ internal fun buildReplyNotificationEvent(
         decision = activeDecision(messages),
     )
 }
+
+internal fun buildFailedReplyNotificationEvent(
+    persistedConnectionId: String,
+    conn: WorkspaceConnection,
+    threadId: String,
+    fallbackSubject: String,
+    preview: String,
+): NeedsYouEvent = buildReplyNotificationEvent(
+    conn = conn,
+    connectionId = persistedConnectionId,
+    threadId = threadId,
+    fallbackSubject = fallbackSubject,
+    preview = preview,
+    thread = null,
+)
 
 /**
  * Delivers a notification direct-reply / option post reliably: resolves the [WorkspaceConnection]
@@ -67,12 +83,15 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
         val subject = inputData.getString(K_SUBJECT) ?: ""
         val workspace = inputData.getString(K_WORKSPACE) ?: ""
         val baseUrl = inputData.getString(K_BASE_URL) ?: ""
+        val retryAttempt = inputData.getInt(K_RETRY_ATTEMPT, 0)
 
         val notifier = AndroidNotifier(applicationContext)
         val conn = ConnectionsRepository(applicationContext).snapshot().findByConnectionId(connId)
         if (conn == null) {
             notifier.notifyReplyError(
-                NeedsYouEvent(connId, baseUrl, workspace, threadId, subject, "", ""), text,
+                NeedsYouEvent(connId, baseUrl, workspace, threadId, subject, "", ""),
+                text,
+                retryAttempt + 1,
             )
             return Result.failure()
         }
@@ -100,14 +119,15 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
             // Terminal (not retry): auto-retry could double-post. The still-present reply action
             // lets the operator retry manually, and the attempted text is shown so it isn't lost.
             notifier.notifyReplyError(
-                buildReplyNotificationEvent(
+                buildFailedReplyNotificationEvent(
+                    persistedConnectionId = connId,
                     conn = conn,
                     threadId = threadId,
                     fallbackSubject = subject,
                     preview = "",
-                    thread = null,
                 ),
                 text,
+                retryAttempt + 1,
             )
             Result.failure()
         }
@@ -135,9 +155,19 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
         private const val K_SUBJECT = "subject"
         private const val K_WORKSPACE = "workspace"
         private const val K_BASE_URL = "base_url"
+        private const val K_RETRY_ATTEMPT = "retry_attempt"
 
-        /** Unique work name for a thread's in-flight reply, so a duplicate enqueue is a no-op. */
-        fun uniqueWorkName(connId: String, threadId: String): String = "reply_${connId}_$threadId"
+        /** Unique work name for a thread's in-flight reply. A failure notification's action uses
+         * the next name before the failed worker completes; repeated taps share that next name and
+         * KEEP prevents duplicate posts. */
+        fun uniqueWorkName(
+            connId: String,
+            threadId: String,
+            retryAttempt: Int = 0,
+        ): String = "reply_${connId}_$threadId" +
+            if (retryAttempt == 0) "" else "_retry_$retryAttempt"
+
+        internal val enqueuePolicy = ExistingWorkPolicy.KEEP
 
         fun enqueue(
             context: Context,
@@ -147,6 +177,7 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
             subject: String,
             workspace: String,
             baseUrl: String,
+            retryAttempt: Int = 0,
         ) {
             val data = workDataOf(
                 K_CONN to connId,
@@ -155,15 +186,17 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
                 K_SUBJECT to subject,
                 K_WORKSPACE to workspace,
                 K_BASE_URL to baseUrl,
+                K_RETRY_ATTEMPT to retryAttempt,
             )
             val req = OneTimeWorkRequestBuilder<ReplyWorker>()
                 .setInputData(data)
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .build()
-            // KEEP: a rapid double-tap or duplicate broadcast for the same thread must not post
-            // twice while the first reply is still in flight.
-            WorkManager.getInstance(context)
-                .enqueueUniqueWork(uniqueWorkName(connId, threadId), ExistingWorkPolicy.KEEP, req)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                uniqueWorkName(connId, threadId, retryAttempt),
+                enqueuePolicy,
+                req,
+            )
         }
     }
 }

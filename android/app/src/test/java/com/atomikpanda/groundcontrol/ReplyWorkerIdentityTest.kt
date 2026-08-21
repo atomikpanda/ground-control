@@ -3,10 +3,13 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.notify.ReplyWorker
+import com.atomikpanda.groundcontrol.notify.buildFailedReplyNotificationEvent
 import com.atomikpanda.groundcontrol.notify.buildReplyNotificationEvent
 import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
 import com.atomikpanda.groundcontrol.notify.notificationThreadUri
 import com.atomikpanda.groundcontrol.notify.retiredReplyConnectionIds
+import androidx.work.ExistingWorkPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -54,24 +57,49 @@ class ReplyWorkerIdentityTest {
         )
     }
 
-    @Test fun failure_notification_uses_the_resolved_canonical_connection_identity() {
-        val event = buildReplyNotificationEvent(
+    @Test fun failed_retired_reply_updates_its_single_retry_notification() {
+        val event = buildFailedReplyNotificationEvent(
+            persistedConnectionId = "retired",
             conn = canonical,
             threadId = "thread-1",
             fallbackSubject = "Fallback subject",
             preview = "",
-            thread = null,
         )
 
-        assertEquals(canonical.id, event.connectionId)
+        assertEquals("retired", event.connectionId)
         assertEquals(canonical.baseUrl, event.baseUrl)
         assertEquals(canonical.workspaceName, event.workspaceName)
         assertEquals("Fallback subject", event.subject)
         assertEquals(emptyList<Message>(), event.messages)
+        assertEquals(
+            needsYouNotificationId("retired", event.threadId),
+            needsYouNotificationId(event.connectionId, event.threadId),
+        )
+        assertNotEquals(
+            needsYouNotificationId(canonical.id, event.threadId),
+            needsYouNotificationId(event.connectionId, event.threadId),
+        )
+        assertEquals(
+            ReplyWorker.uniqueWorkName("retired", event.threadId),
+            ReplyWorker.uniqueWorkName(event.connectionId, event.threadId),
+        )
+        assertNotEquals(
+            ReplyWorker.uniqueWorkName(canonical.id, event.threadId),
+            ReplyWorker.uniqueWorkName(event.connectionId, event.threadId),
+        )
         assertTrue(
             notificationThreadUri(event.connectionId, event.baseUrl, event.threadId)
-                .contains("connection=${canonical.id}"),
+                .contains("connection=retired"),
         )
+    }
+
+    @Test fun failed_reply_moves_one_immediate_retry_to_a_new_keep_work_name() {
+        val running = ReplyWorker.uniqueWorkName("retired", "thread-1")
+        val retry = ReplyWorker.uniqueWorkName("retired", "thread-1", retryAttempt = 1)
+
+        assertNotEquals(running, retry)
+        assertEquals(retry, ReplyWorker.uniqueWorkName("retired", "thread-1", retryAttempt = 1))
+        assertEquals(ExistingWorkPolicy.KEEP, ReplyWorker.enqueuePolicy)
     }
 
     @Test fun successful_canonical_retry_cancels_all_retired_notification_identities() {

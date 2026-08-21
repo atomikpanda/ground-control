@@ -28,6 +28,7 @@ class ReplyReceiver : BroadcastReceiver() {
             subject = intent.getStringExtra(EXTRA_SUBJECT) ?: "",
             workspace = intent.getStringExtra(EXTRA_WORKSPACE) ?: "",
             baseUrl = intent.getStringExtra(EXTRA_BASE_URL) ?: "",
+            retryAttempt = intent.getIntExtra(EXTRA_RETRY_ATTEMPT, 0),
         )
     }
 
@@ -39,5 +40,6 @@ class ReplyReceiver : BroadcastReceiver() {
         const val EXTRA_SUBJECT = "subject"
         const val EXTRA_WORKSPACE = "workspace"
         const val EXTRA_BASE_URL = "base_url"
+        const val EXTRA_RETRY_ATTEMPT = "retry_attempt"
     }
 }

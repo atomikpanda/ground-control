@@ -21,14 +21,14 @@ import com.atomikpanda.groundcontrol.MainActivity
  */
 class AndroidNotifier(private val context: Context) : Notifier {
 
-    override fun notify(event: NeedsYouEvent) = render(event, errorLine = null)
+    override fun notify(event: NeedsYouEvent) = render(event, errorLine = null, retryAttempt = 0)
 
     /** Re-notify after a failed reply: surface the attempted text (so it isn't lost) + keep the
-     *  reply action for a manual retry. */
-    fun notifyReplyError(event: NeedsYouEvent, failedText: String) =
-        render(event, errorLine = failedText)
+     * reply action for a manual retry. */
+    fun notifyReplyError(event: NeedsYouEvent, failedText: String, retryAttempt: Int) =
+        render(event, errorLine = failedText, retryAttempt = retryAttempt)
 
-    private fun render(event: NeedsYouEvent, errorLine: String?) {
+    private fun render(event: NeedsYouEvent, errorLine: String?, retryAttempt: Int) {
         val notifId = needsYouNotificationId(event.connectionId, event.threadId)
         val agentName = event.workspaceName.ifBlank { "Ground Control" }
         val title = event.subject.ifBlank { agentName }
@@ -87,19 +87,25 @@ class AndroidNotifier(private val context: Context) : Notifier {
         // Reply first so it's always within the standard 3-action budget alongside the option
         // buttons. (Android's standard template renders at most 3 actions; a persistent reply +
         // MAX_OPTION_ACTIONS option buttons must fit — see MAX_OPTION_ACTIONS.)
-        builder.addAction(replyAction(event))
+        builder.addAction(replyAction(event, retryAttempt))
         decisionActionOptions(event.decision, MAX_OPTION_ACTIONS).forEach { opt ->
-            builder.addAction(optionAction(event, opt.text))
+            builder.addAction(optionAction(event, opt.text, retryAttempt))
         }
 
         runCatching { NotificationManagerCompat.from(context).notify(notifId, builder.build()) }
     }
 
-    private fun replyAction(event: NeedsYouEvent): NotificationCompat.Action {
+    private fun replyAction(event: NeedsYouEvent, retryAttempt: Int): NotificationCompat.Action {
         val remoteInput = RemoteInput.Builder(ReplyReceiver.KEY_REPLY_TEXT)
             .setLabel("Reply")
             .build()
-        val pi = replyPendingIntent(event, tag = "reply", optionText = null, mutable = true)
+        val pi = replyPendingIntent(
+            event,
+            tag = "reply",
+            optionText = null,
+            mutable = true,
+            retryAttempt = retryAttempt,
+        )
         return NotificationCompat.Action.Builder(android.R.drawable.ic_menu_send, "Reply", pi)
             .addRemoteInput(remoteInput)
             .setAllowGeneratedReplies(true)
@@ -108,10 +114,20 @@ class AndroidNotifier(private val context: Context) : Notifier {
             .build()
     }
 
-    private fun optionAction(event: NeedsYouEvent, optionText: String): NotificationCompat.Action {
+    private fun optionAction(
+        event: NeedsYouEvent,
+        optionText: String,
+        retryAttempt: Int,
+    ): NotificationCompat.Action {
         // POST the FULL option text (EXTRA_OPTION_TEXT, via replyPendingIntent) so a phone/Watch tap
         // sends the correct full choice; only the VISIBLE label is shortened (#379).
-        val pi = replyPendingIntent(event, tag = "opt_" + optionText.hashCode(), optionText = optionText, mutable = false)
+        val pi = replyPendingIntent(
+            event,
+            tag = "opt_" + optionText.hashCode(),
+            optionText = optionText,
+            mutable = false,
+            retryAttempt = retryAttempt,
+        )
         return NotificationCompat.Action.Builder(0, optionButtonLabel(optionText), pi)
             .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_NONE)
             .setShowsUserInterface(false)
@@ -123,6 +139,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         tag: String,
         optionText: String?,
         mutable: Boolean,
+        retryAttempt: Int,
     ): PendingIntent {
         val discriminator = event.connectionId + "|" + event.threadId + ":" + tag
         val intent = Intent(context, ReplyReceiver::class.java).apply {
@@ -134,6 +151,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
             putExtra(ReplyReceiver.EXTRA_SUBJECT, event.subject)
             putExtra(ReplyReceiver.EXTRA_WORKSPACE, event.workspaceName)
             putExtra(ReplyReceiver.EXTRA_BASE_URL, event.baseUrl)
+            putExtra(ReplyReceiver.EXTRA_RETRY_ATTEMPT, retryAttempt)
             optionText?.let { putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, it) }
         }
         val mutability = when {
