@@ -2084,6 +2084,76 @@ class HostWorkspacesTest {
         )
     }
 
+    @Test fun relay_replacement_never_later_sends_an_ambiguous_legacy_credential() = runTest {
+        val sharedLegacyUrl = "https://shared.relay.example"
+        val retained = HostConnection(
+            hostId = "retained",
+            publicUrl = "https://retained.relay.example",
+            directUrl = "http://retained.direct",
+            relayDomain = "relay.example",
+            legacyPublicUrls = listOf(sharedLegacyUrl),
+        )
+        val removed = HostConnection(
+            hostId = "removed",
+            publicUrl = "https://removed.relay.example",
+            relayDomain = "relay.example",
+            legacyPublicUrls = listOf(sharedLegacyUrl),
+        )
+        val fleet = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example", "old-fleet-token"),
+            replacement = RelayAccount("new.example", "new-fleet-token"),
+            hosts = listOf(retained, removed),
+            connections = listOf(
+                WorkspaceConnection(
+                    id = "ambiguous-legacy",
+                    baseUrl = "$sharedLegacyUrl/workspaces/ws-1",
+                    directToken = "must-not-transfer",
+                ),
+            ),
+        )
+        val authorizations = mutableListOf<String?>()
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            authorizations += request.headers[HttpHeaders.Authorization]
+            respond(
+                """{"workspaces":[{"id":"ws-1","name":"product","state":"healthy"}]}""",
+                HttpStatusCode.OK,
+                jsonHdr,
+            )
+        }) { mshipDefaults() })
+
+        val identities = verifyLegacyIdentities(
+            api,
+            unresolvedLegacyConnections(fleet.connections),
+            fleet.hosts,
+        ).identities
+        val targets = fleetWorkspaceRefreshTargets(
+            hosts = fleet.hosts,
+            connections = fleet.connections,
+            account = RelayAccount("new.example", "new-fleet-token"),
+            identities = identities,
+            routeOwnershipGeneration = 0L,
+        )
+        targets.forEach { target ->
+            refreshHostWorkspaceConnections(
+                api,
+                target.host,
+                identities,
+                directToken = target.directToken,
+            )
+        }
+        assertEquals(listOf<String?>(null), authorizations)
+        assertEquals(listOf(VerifiedIdentity("ambiguous-legacy", retained.hostId, "ws-1")), identities)
+        assertEquals(
+            listOf(
+                WorkspaceConnection(
+                    id = "ambiguous-legacy",
+                    baseUrl = "$sharedLegacyUrl/workspaces/ws-1",
+                ),
+            ),
+            fleet.connections,
+        )
+    }
+
     @Test fun relay_replacement_migrates_an_authenticated_direct_root_end_to_end() = runTest {
         val oldPublic = "https://old.relay.example"
         val direct = "http://direct.example"

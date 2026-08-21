@@ -703,7 +703,7 @@ class HostsRepositoryTest {
         assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
     }
 
-    @Test fun replacing_a_relay_account_does_not_guess_legacy_host_ownership() {
+    @Test fun replacing_a_relay_account_retains_an_ambiguous_legacy_row_without_credentials() {
         val sharedOldUrl = "https://shared.relay.example.com"
         val first = host.copy(
             hostId = "h-first",
@@ -720,6 +720,7 @@ class HostsRepositoryTest {
         val ambiguous = WorkspaceConnection(
             id = "ambiguous",
             baseUrl = "$sharedOldUrl/workspaces/ws",
+            token = "legacy-token",
             directToken = "ambiguous-token",
         )
         val unrelated = WorkspaceConnection(
@@ -735,7 +736,10 @@ class HostsRepositoryTest {
             connections = listOf(ambiguous, unrelated),
         )
 
-        assertEquals(listOf(ambiguous, unrelated), replaced.connections)
+        assertEquals(
+            listOf(ambiguous.copy(token = null, directToken = null), unrelated),
+            replaced.connections,
+        )
     }
 
     @Test fun replacing_a_relay_account_considers_non_retained_legacy_host_owners() {
@@ -765,7 +769,7 @@ class HostsRepositoryTest {
             connections = listOf(ambiguous),
         )
 
-        assertEquals(listOf(ambiguous), replaced.connections)
+        assertEquals(listOf(ambiguous.copy(directToken = null)), replaced.connections)
     }
 
     @Test fun replacing_a_relay_account_drops_stable_identity_with_ambiguous_legacy_ownership() {
