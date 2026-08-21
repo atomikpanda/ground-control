@@ -24,9 +24,12 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -168,6 +171,60 @@ class MessagesViewModelTest {
         assertTrue(polledHosts.containsAll(listOf("a", "b")))
     }
 
+
+    @Test fun live_polling_loads_and_polls_an_atomic_non_alias_replacement() = runTest {
+        val replacementPollStarted = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow(listOf(connA))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" && req.url.host == "b" -> {
+                    replacementPollStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                req.url.parameters["wait"] == "1" -> awaitCancellation()
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        runCurrent()
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = listOf(connB)
+        runCurrent()
+        withTimeout(1_000) { replacementPollStarted.await() }
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(connB.id), content.sections.map { it.connectionId })
+    }
+
+    @Test fun stale_poll_response_does_not_merge_after_connection_replacement() = runTest {
+        val waitStarted = CompletableDeferred<Unit>()
+        val releaseResponse = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow(listOf(connA))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> {
+                    waitStarted.complete(Unit)
+                    releaseResponse.await()
+                    respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        runCurrent()
+        vm.refresh()?.join()
+        val stalePoll = backgroundScope.launch { vm.pollOnce(connA, "2026-06-22T10:00:00Z") }
+        waitStarted.await()
+
+        connections.value = listOf(connB)
+        runCurrent()
+        releaseResponse.complete(Unit)
+        stalePoll.join()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(emptyList<String>(), content.filteredThreads.map { it.thread.id })
+    }
     @Test fun live_polling_renders_empty_config_and_recovers_after_last_connection_is_readded() = runTest {
         val connections = MutableStateFlow(listOf(connA))
         val loadedHosts = mutableListOf<String>()
@@ -369,7 +426,12 @@ class MessagesViewModelTest {
         canonicalPollStarted.await()
         vm.selectWorkspace(retired.id)
 
-        val content = vm.state.value as MessagesUiState.Content
+        val content = withTimeout(1_000) {
+            vm.state.first { state ->
+                state is MessagesUiState.Content &&
+                    state.filteredThreads.firstOrNull()?.thread?.id == "t1"
+            }
+        } as MessagesUiState.Content
         assertEquals("new", polledHost)
         assertTrue(retiredPollCancelled)
         assertEquals(canonical.id, content.selectedConnectionId)

@@ -8,6 +8,7 @@ import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -110,6 +111,7 @@ class MessagesViewModel(
     private val loadJobs = mutableMapOf<String, Pair<WorkspaceConnection, Job>>()
     private var latestConnections: List<WorkspaceConnection> = emptyList()
     private var hasReceivedConnectionSnapshot = false
+    private var hasCompletedInitialLoad = false
     private var livePollingStarted = false
 
     private fun canonicalizeLoadedIdentities(currentConnections: List<WorkspaceConnection>) {
@@ -176,6 +178,7 @@ class MessagesViewModel(
         latestConnections = connections
         hasReceivedConnectionSnapshot = true
         if (connections.isEmpty()) {
+            hasCompletedInitialLoad = true
             _state.value = MessagesUiState.EmptyConfig
             return@launch
         }
@@ -195,6 +198,7 @@ class MessagesViewModel(
                 items = itemsByConn[ws.connection.id] ?: emptyList(),
             )
         }
+        hasCompletedInitialLoad = true
         if (livePollingStarted) {
             reconcileLivePolling(latestConnections)
         } else {
@@ -227,9 +231,11 @@ class MessagesViewModel(
      *  threads changed, merge them into that workspace's section and re-render. Returns the next
      *  cursor (unchanged on a network error). Terminating — unit-tested directly; [startLivePolling]
      *  below is a thin looping wrapper (mirrors ConversationViewModel.pollOnce/startPolling). */
-    internal suspend fun pollOnce(conn: WorkspaceConnection, cursor: String): String {
+    internal suspend fun pollOnce(conn: WorkspaceConnection, cursor: String, owner: Job? = null): String {
         val resp = runCatching { repo.waitForChange(conn, cursor, 25) }.getOrNull() ?: return cursor
-        if (resp.threads.isNotEmpty()) {
+        if (resp.threads.isNotEmpty() && latestConnections.findByConnectionId(conn.id) == conn &&
+            (owner == null || pollJobs[conn.id]?.let { it.first == conn && it.second === owner } == true)
+        ) {
             sections = sections.map { section ->
                 if (section.connectionId != conn.id) section
                 else section.copy(
@@ -284,7 +290,7 @@ class MessagesViewModel(
             }
         }
         canonicalizeLoadedIdentities(currentConnections)
-        if (sections.isEmpty() && currentConnections.isNotEmpty() && _state.value !is MessagesUiState.EmptyConfig) return
+        if (sections.isEmpty() && currentConnections.isNotEmpty() && !hasCompletedInitialLoad) return
         render()
 
         currentConnections.forEach { conn ->
@@ -295,14 +301,17 @@ class MessagesViewModel(
             val conn = currentConnections.findByConnectionId(section.connectionId) ?: return@forEach
             val seed = section.threads.getOrNull()?.mapNotNull { it.updatedAt }?.maxOrNull()
                 ?: java.time.Instant.now().toString()
-            pollJobs[conn.id] = conn to scope().launch {
+            lateinit var pollJob: Job
+            pollJob = scope().launch(start = CoroutineStart.LAZY) {
                 var cursor = seed
                 while (isActive) {
-                    val next = pollOnce(conn, cursor)
+                    val next = pollOnce(conn, cursor, pollJob)
                     if (next == cursor || next.isEmpty()) delay(LIVE_POLL_RETRY_DELAY_MILLIS)
                     if (next.isNotEmpty()) cursor = next
                 }
             }
+            pollJobs[conn.id] = conn to pollJob
+            pollJob.start()
         }
     }
 
