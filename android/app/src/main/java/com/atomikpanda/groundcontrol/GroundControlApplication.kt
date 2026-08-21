@@ -3,7 +3,10 @@ package com.atomikpanda.groundcontrol
 import android.app.Application
 import android.app.NotificationManager
 import android.util.Log
+import com.atomikpanda.groundcontrol.data.ConnectionStateSource
+import com.atomikpanda.groundcontrol.data.ConnectionStateStore
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller
 import com.atomikpanda.groundcontrol.notify.NotificationChannels
 import com.atomikpanda.groundcontrol.notify.NotifiedDatabase
@@ -19,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 private const val REPLY_RESET_RETRY_DELAY_MILLIS = 1_000L
@@ -27,6 +31,16 @@ private const val TAG = "GroundControlApplication"
 
 class GroundControlApplication : Application() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    val connectionStateSource: ConnectionStateSource by lazy {
+        ConnectionStateStore(ConnectionsRepository(this).connections, scope)
+    }
+
+    /** Deterministic owner seam for JVM and instrumentation dependency graphs. */
+    internal fun connectionStateSource(
+        source: Flow<List<WorkspaceConnection>>,
+        coroutineScope: CoroutineScope,
+    ): ConnectionStateSource = ConnectionStateStore(source, coroutineScope)
 
     override fun onCreate() {
         super.onCreate()

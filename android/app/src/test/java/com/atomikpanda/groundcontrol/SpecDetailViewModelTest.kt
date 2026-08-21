@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -14,11 +15,15 @@ import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import java.util.ArrayDeque
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -41,7 +46,11 @@ class SpecDetailViewModelTest {
         handler: io.ktor.client.engine.mock.MockRequestHandler,
     ): SpecDetailViewModel {
         val repo = SpecDetailRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }))
-        return SpecDetailViewModel(repo, conn, "s1", testScope = scope)
+        return SpecDetailViewModel(
+            repo, conn.id, "s1",
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = scope,
+        )
     }
 
     @Test fun load_success_builds_content_with_full_body() = runTest {
@@ -391,5 +400,81 @@ class SpecDetailViewModelTest {
         assertEquals("please fix X", vm.requestChangesDraft.value)
         vm.requestChanges("please fix X")?.join()          // succeeds -> draft cleared
         assertEquals("", vm.requestChangesDraft.value)
+    }
+    @Test fun same_id_route_and_token_replacement_reloads_open_detail_with_the_new_identity() = runTest {
+        val old = WorkspaceConnection("1", "http://old:47100", "old-token", "Old")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val newRequestStarted = CompletableDeferred<Unit>()
+        val requests = mutableListOf<Pair<String, String?>>()
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val repo = SpecDetailRepository(SpecApi(HttpClient(MockEngine { request ->
+            requests += request.url.host to request.headers[HttpHeaders.Authorization]
+            if (request.url.host == "new") newRequestStarted.complete(Unit)
+            val title = if (request.url.host == "new") "New detail" else "Old detail"
+            respond(
+                """{"id":"s1","title":"$title","status":"needs_review","body":"body","acceptance_criteria":[],"open_questions":[]}""",
+                HttpStatusCode.OK,
+                jsonHdr,
+            )
+        }) { mshipDefaults() }))
+        val vm = SpecDetailViewModel(repo, old.id, "s1", source, testScope = backgroundScope)
+
+        vm.load()?.join()
+        source.value = ConnectionState.Ready(listOf(replacement))
+        newRequestStarted.await()
+        val content = vm.state.first {
+            (it as? SpecDetailUiState.Content)?.detail?.title == "New detail"
+        } as SpecDetailUiState.Content
+
+        assertEquals(
+            listOf("old" to "Bearer old-token", "new" to "Bearer new-token"),
+            requests,
+        )
+        assertEquals("New detail", content.detail.title)
+    }
+
+    @Test fun legacy_route_id_loads_through_its_canonical_connection() = runTest {
+        val canonical = WorkspaceConnection("canonical", "http://canonical:47100", "token", "Canonical", legacyConnectionIds = listOf("legacy"))
+        var requestedHost: String? = null
+        val vm = SpecDetailViewModel(
+            SpecDetailRepository(SpecApi(HttpClient(MockEngine { request ->
+                requestedHost = request.url.host
+                respond("""{"id":"s1","title":"Canonical","status":"needs_review","body":"","acceptance_criteria":[],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            "legacy",
+            "s1",
+            MutableStateFlow(ConnectionState.Ready(listOf(canonical))),
+            testScope = backgroundScope,
+        )
+
+        vm.load()?.join()
+
+        assertEquals("canonical", requestedHost)
+        assertEquals("Canonical", (vm.state.value as SpecDetailUiState.Content).detail.title)
+    }
+
+    @Test fun ambiguous_legacy_route_becomes_unavailable_without_a_request() = runTest {
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Loading)
+        var requests = 0
+        val vm = SpecDetailViewModel(
+            SpecDetailRepository(SpecApi(HttpClient(MockEngine {
+                requests += 1
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            "legacy",
+            "s1",
+            source,
+            testScope = backgroundScope,
+        )
+
+        source.value = ConnectionState.Ready(
+            listOf(
+                WorkspaceConnection("one", "http://one:47100", null, "One", legacyConnectionIds = listOf("legacy")),
+                WorkspaceConnection("two", "http://two:47100", null, "Two", legacyConnectionIds = listOf("legacy")),
+            ),
+        )
+
+        assertTrue(vm.state.first { it is SpecDetailUiState.Unavailable } is SpecDetailUiState.Unavailable)
+        assertEquals(0, requests)
     }
 }

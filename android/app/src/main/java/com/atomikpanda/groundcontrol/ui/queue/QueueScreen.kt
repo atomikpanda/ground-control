@@ -111,10 +111,9 @@ fun QueueScreen(
     onRePair: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    // AC9: initial load + live auto-refresh. The poll is cancelled when the tab
-    // leaves composition (correct — we only refresh while the Queue is on screen).
+    // The connection-state owner performs the initial load; this only refreshes while the tab
+    // remains visible.
     LaunchedEffect(Unit) {
-        vm.refresh()
         while (true) {
             delay(15_000)
             vm.refresh()
@@ -171,6 +170,7 @@ fun QueueScreen(
             when (val s = state) {
                 QueueUiState.Loading -> CircularProgressIndicator()
                 QueueUiState.EmptyConfig -> Text("No workspaces connected. Add one in Settings.")
+                is QueueUiState.ConnectionsUnavailable -> Text("Connections unavailable. Open Settings to recover.")
                 is QueueUiState.Content -> {
                     val card = s.current
                     if (card == null) {

@@ -2,9 +2,12 @@ package com.atomikpanda.groundcontrol
 
 import android.content.Context
 import android.net.Uri
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -19,7 +22,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -29,11 +34,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.ConnectionStateSource
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
-import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.appHttpClient
 import com.atomikpanda.groundcontrol.data.DataStoreCoachMarkStore
 import com.atomikpanda.groundcontrol.data.DataStoreNotificationsSetting
+import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
@@ -79,7 +86,7 @@ import com.atomikpanda.groundcontrol.ui.tasks.TasksScreen
 import com.atomikpanda.groundcontrol.ui.tasks.TasksViewModel
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceScreen
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
-import kotlinx.coroutines.runBlocking
+
 
 internal fun newThreadRoute(connectionId: String?): String =
     if (connectionId != null) "newThread?connectionId=$connectionId" else "newThread"
@@ -103,22 +110,87 @@ internal fun workItemRoute(conn: WorkspaceConnection, item: WorkItemSummary): St
 }
 
 @Composable
+internal fun ConnectionStateGate(
+    state: ConnectionState,
+    onRetry: () -> Unit,
+    onOpenSettings: () -> Unit,
+    ready: @Composable () -> Unit,
+) {
+    when (state) {
+        ConnectionState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+        is ConnectionState.Error -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onOpenSettings) { Text("Open Settings") }
+                Button(onClick = onRetry) { Text("Retry") }
+            }
+        }
+        is ConnectionState.Ready -> ready()
+    }
+}
+
+internal data class GroundControlDependencies(
+    val connections: ConnectionsRepository,
+    val hosts: HostsRepository,
+    val connectionStateSource: ConnectionStateSource,
+    val api: SpecApi,
+    val home: HomeFeedRepository,
+    val queue: QueueRepository,
+    val detail: SpecDetailRepository,
+    val tasks: TasksRepository,
+    val threads: ThreadsRepository,
+) {
+    companion object {
+        fun production(context: Context, source: ConnectionStateSource): GroundControlDependencies {
+            val appContext = context.applicationContext
+            val api = SpecApi(appHttpClient(appContext).client)
+            return GroundControlDependencies(
+                connections = ConnectionsRepository(appContext),
+                hosts = HostsRepository(appContext),
+                connectionStateSource = source,
+                api = api,
+                home = HomeFeedRepository(api),
+                queue = QueueRepository(api),
+                detail = SpecDetailRepository(api),
+                tasks = TasksRepository(api),
+                threads = ThreadsRepository(api),
+            )
+        }
+    }
+}
+
+@Composable
 fun GroundControlApp(
     context: Context,
     pendingThread: MutableStateFlow<Pair<String, String>?>? = null,
 ) {
+    val source = remember(context.applicationContext) {
+        (context.applicationContext as GroundControlApplication).connectionStateSource
+    }
+    val dependencies = remember(context.applicationContext, source) {
+        GroundControlDependencies.production(context, source)
+    }
+    GroundControlContent(context, dependencies, pendingThread)
+}
+
+
+@Composable
+internal fun GroundControlContent(
+    context: Context,
+    dependencies: GroundControlDependencies,
+    pendingThread: MutableStateFlow<Pair<String, String>?>? = null,
+) {
+    val connectionStateSource = dependencies.connectionStateSource
     val nav = rememberNavController()
-    val connRepo = remember { ConnectionsRepository(context.applicationContext) }
-    val hostsRepo = remember { HostsRepository(context.applicationContext) }
-    // The client mints and refreshes each host's short-lived bearer itself (#471
-    // AC9), reading the persisted refresh credential off the stored host list.
-    val hostClient = remember { appHttpClient(context.applicationContext) }
-    val api = remember { SpecApi(hostClient.client) }
-    val homeRepo = remember { HomeFeedRepository(api) }
-    val queueRepo = remember { QueueRepository(api) }
-    val detailRepo = remember { SpecDetailRepository(api) }
-    val tasksRepo = remember { TasksRepository(api) }
-    val threadsRepo = remember { ThreadsRepository(api) }
+    val currentEntry by nav.currentBackStackEntryAsState()
+    val connectionState by connectionStateSource.state.collectAsStateWithLifecycle()
+    val connRepo = dependencies.connections
+    val hostsRepo = dependencies.hosts
+    val api = dependencies.api
+    val homeRepo = dependencies.home
+    val queueRepo = dependencies.queue
+    val detailRepo = dependencies.detail
+    val tasksRepo = dependencies.tasks
+    val threadsRepo = dependencies.threads
     // Composition-scoped (cancelled on disposal) — not MainScope(), which would leak its
     // stateIn collector across Activity recreations.
     val appScope = rememberCoroutineScope()
@@ -128,12 +200,12 @@ fun GroundControlApp(
     // "threads" drill-in list so the loaded sections + live-poll loop survive navigating between
     // them (spec: ground-control-thread-findability).
     val messagesVm = viewModel {
-        MessagesViewModel(threadsRepo, connRepo.connections)
+        MessagesViewModel(threadsRepo, connectionStateSource.state)
     }
     // Activity-scoped so relay links received on Home immediately trigger fleet
     // discovery; tying this observer to the Settings destination delays pairing.
     val settingsVm = viewModel {
-        SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo)
+        SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo, connectionState = connectionStateSource)
     }
 
     Scaffold(bottomBar = {
@@ -149,7 +221,8 @@ fun GroundControlApp(
             }
         }
     }) { padding ->
-        val connsForBadges by connRepo.connections.collectAsStateWithLifecycle(initialValue = emptyList())
+        val readyConnections = (connectionState as? ConnectionState.Ready)?.connections.orEmpty()
+        val connsForBadges = readyConnections
         // remember keyed on the connections so the resolver identity is stable across recompositions;
         // staticCompositionLocalOf invalidates every badge reader on a by-reference change, so a fresh
         // lambda each recomposition would needlessly re-render all badge sites (Greptile P2).
@@ -162,7 +235,7 @@ fun GroundControlApp(
                 val vm = viewModel {
                     HomeViewModel(
                         homeRepo,
-                        connectionsProvider = { runBlockingSnapshot(connRepo) },
+                        connectionStateSource.state,
                         hosts = hostsRepo.hosts,
                     )
                 }
@@ -181,11 +254,7 @@ fun GroundControlApp(
             }
             composable(Section.QUEUE.route) {
                 val vm = viewModel {
-                    QueueViewModel(
-                        queueRepo,
-                        connectionsProvider = { runBlockingSnapshot(connRepo) },
-                        hosts = hostsRepo.hosts,
-                    )
+                    QueueViewModel(queueRepo, connectionStateSource.state, hosts = hostsRepo.hosts)
                 }
                 val uriHandler = LocalUriHandler.current
                 QueueScreen(
@@ -210,12 +279,12 @@ fun GroundControlApp(
             }
             composable(Section.TASKS.route) {
                 val vm = viewModel {
-                    TasksViewModel(tasksRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    TasksViewModel(tasksRepo, connectionStateSource.state)
                 }
                 TasksScreen(vm) { connId, slug -> nav.navigate("taskDetail/$connId/$slug") }
             }
             composable(Section.PROJECTS.route) {
-                val vm = viewModel { ProjectsViewModel(connRepo, hostsRepo) }
+                val vm = viewModel { ProjectsViewModel(connRepo, connectionStateSource.state, hostsRepo) }
                 ProjectsScreen(vm, onOpenWorkspace = { connId -> nav.navigate("workspace/$connId") })
             }
             composable(Section.SETTINGS.route) {
@@ -230,15 +299,13 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val specId = entry.arguments?.getString("specId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
                 } else {
                     val title = remember(specId) { specId }
-                    val vm = viewModel(key = "detail-${conn.id}-$specId") {
-                        SpecDetailViewModel(detailRepo, conn, specId)
+                    val vm = viewModel {
+                        SpecDetailViewModel(detailRepo, connectionId, specId, connectionStateSource.state)
                     }
                     SpecDetailScreen(vm, title = title, identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }), onBack = { nav.popBackStack() })
                 }
@@ -252,14 +319,12 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val slug = entry.arguments?.getString("slug").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
                 } else {
-                    val vm = viewModel(key = "taskDetail-${conn.id}-$slug") {
-                        TaskDetailViewModel(tasksRepo, conn, slug)
+                    val vm = viewModel {
+                        TaskDetailViewModel(tasksRepo, connectionId, slug, connectionStateSource.state)
                     }
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
                 }
@@ -269,14 +334,12 @@ fun GroundControlApp(
                 arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
                 } else {
-                    val vm = viewModel(key = "workspace-${conn.id}") {
-                        WorkspaceViewModel(api, conn)
+                    val vm = viewModel {
+                        WorkspaceViewModel(api, connectionId, connectionStateSource.state)
                     }
                     WorkspaceScreen(
                         vm,
@@ -295,13 +358,11 @@ fun GroundControlApp(
                 arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
                 } else {
-                    val vm = viewModel(key = "farm-${conn.id}") { FarmViewModel(api, conn) }
+                    val vm = viewModel { FarmViewModel(api, connectionId, connectionStateSource.state) }
                     FarmScreen(
                         vm = vm,
                         workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
@@ -321,14 +382,12 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "console-${conn.id}-$itemId") {
-                        ConsoleViewModel(api, conn, itemId)
+                    val vm = viewModel {
+                        ConsoleViewModel(api, connectionId, itemId, connectionStateSource.state)
                     }
                     ConsoleScreen(
                         vm,
@@ -347,14 +406,12 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "review-${conn.id}-$itemId") {
-                        ReviewViewModel(api, conn, itemId)
+                    val vm = viewModel {
+                        ReviewViewModel(api, connectionId, itemId, connectionStateSource.state)
                     }
                     ReviewScreen(
                         vm,
@@ -372,14 +429,12 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "done-${conn.id}-$itemId") {
-                        DoneViewModel(api, conn, itemId)
+                    val vm = viewModel {
+                        DoneViewModel(api, connectionId, itemId, connectionStateSource.state)
                     }
                     DoneScreen(
                         vm,
@@ -397,32 +452,37 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                LaunchedEffect(conn?.id, itemId) {
-                    // This route is a pure redirect with no fallback UI of its own, so every
-                    // dead-end pops back to where the user came from instead of stranding them on
-                    // the transient spinner (reachable from the related-item card and from OS-level
-                    // groundcontrol://item deep links).
-                    if (conn == null) {
-                        nav.popBackStack(); return@LaunchedEffect
+                LaunchedEffect(connectionId, itemId) {
+                    connectionStateSource.state.collectLatest { source ->
+                        val ready = source as? ConnectionState.Ready ?: return@collectLatest
+                        val connection = ready.connections.findByConnectionId(connectionId)
+                        if (connection == null) {
+                            nav.popBackStack()
+                            return@collectLatest
+                        }
+                        val item = runCatching { api.getItem(connection, itemId) }.getOrNull()
+                        val current = (connectionStateSource.state.value as? ConnectionState.Ready)
+                            ?.connections
+                            ?.findByConnectionId(connectionId)
+                        if (current != connection || item == null) {
+                            if (item == null && current == connection) nav.popBackStack()
+                            return@collectLatest
+                        }
+                        val dest = workItemRoute(connection, item)
+                        if (dest == null) {
+                            nav.popBackStack()
+                            return@collectLatest
+                        }
+                        nav.navigate(dest) {
+                            popUpTo("item/$connectionId/$itemId") { inclusive = true }
+                        }
                     }
-                    val item = runCatching { api.getItem(conn, itemId) }.getOrNull()
-                    if (item == null) {
-                        nav.popBackStack(); return@LaunchedEffect
-                    }
-                    val dest = workItemRoute(conn, item)
-                    if (dest == null) {
-                        nav.popBackStack(); return@LaunchedEffect
-                    }
-                    nav.navigate(dest) { popUpTo("item/$connectionId/$itemId") { inclusive = true } }
                 }
                 Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
             }
             composable("capture") {
                 val vm = viewModel {
-                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    NewThreadViewModel(threadsRepo, connectionStateSource.state)
                 }
                 NewThreadScreen(
                     vm,
@@ -447,7 +507,7 @@ fun GroundControlApp(
             ) { entry ->
                 val preselect = entry.arguments?.getString("connectionId")
                 val vm = viewModel {
-                    NewThreadViewModel(threadsRepo, connectionsProvider = { runBlockingSnapshot(connRepo) })
+                    NewThreadViewModel(threadsRepo, connectionStateSource.state)
                 }
                 NewThreadScreen(
                     vm,
@@ -469,15 +529,13 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val threadId = entry.arguments?.getString("threadId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
+                val conn = readyConnections.findByConnectionId(connectionId)
                 if (conn == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
                 } else {
-                    val vm = viewModel(key = "thread-${conn.id}-$threadId") {
+                    val vm = viewModel {
                         ConversationViewModel(
-                            threadsRepo, conn, threadId,
+                            threadsRepo, connectionId, threadId, connectionStateSource.state,
                             canceller = AndroidNeedsYouCanceller(context.applicationContext),
                         )
                     }
@@ -500,6 +558,14 @@ fun GroundControlApp(
             }
         }
         }
+        if (currentEntry?.destination?.route != Section.SETTINGS.route && connectionState !is ConnectionState.Ready) {
+            ConnectionStateGate(
+                state = connectionState,
+                onRetry = connectionStateSource::retry,
+                onOpenSettings = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
+                ready = {},
+            )
+        }
     }
 
     if (pendingThread != null) {
@@ -512,7 +578,3 @@ fun GroundControlApp(
         }
     }
 }
-
-/** Bridge the suspend snapshot to the VM's sync provider on first refresh. */
-private fun runBlockingSnapshot(repo: ConnectionsRepository): List<WorkspaceConnection> =
-    runBlocking { repo.snapshot() }

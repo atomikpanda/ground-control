@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.review.ReviewUiState
@@ -16,10 +17,14 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -67,7 +72,9 @@ class ReviewViewModelTest {
 
     private fun vm(scope: CoroutineScope, handler: MockRequestHandler) = ReviewViewModel(
         SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }),
-        conn, "wi-1", testScope = scope,
+        conn.id, "wi-1",
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     /** Routes the item/task/thread fan-out GETs plus the requestChanges POST; records POSTed bodies when given a sink. */
@@ -192,5 +199,53 @@ class ReviewViewModelTest {
         vm.load().join()
         val c = (vm.state.value as ReviewUiState.Content).c   // Content, not Failed
         assertTrue(c.criteria.isEmpty())
+    }
+
+    @Test fun connection_replacement_resets_sending_and_fences_old_request_changes() = runTest {
+        val old = conn.copy(baseUrl = "http://old:47100", token = "old-token")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val oldRequestStarted = CompletableDeferred<Unit>()
+        val releaseOldRequest = CompletableDeferred<Unit>()
+        var replacementLoads = 0
+        val handler: MockRequestHandler = { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads/t1/messages") &&
+                    request.method == HttpMethod.Post -> {
+                    oldRequestStarted.complete(Unit)
+                    releaseOldRequest.await()
+                    respond("{}", HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/items/wi-1") &&
+                    request.method == HttpMethod.Get -> {
+                    if (request.url.host == "new") replacementLoads += 1
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/tasks/a") ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/threads/t1") ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = ReviewViewModel(
+            SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }),
+            old.id,
+            "wi-1",
+            connections,
+            testScope = backgroundScope,
+        )
+        vm.load().join()
+        val staleRequest = vm.requestChanges("held")
+        oldRequestStarted.await()
+        assertTrue(vm.sending.value)
+
+        connections.value = ConnectionState.Ready(listOf(replacement))
+        runCurrent()
+        vm.state.first { replacementLoads == 1 && it is ReviewUiState.Content }
+
+        releaseOldRequest.complete(Unit)
+        staleRequest.join()
+        assertEquals(false, vm.sending.value)
     }
 }

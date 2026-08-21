@@ -41,6 +41,7 @@ import com.journeyapps.barcodescanner.ScanOptions
 fun SettingsScreen(vm: SettingsViewModel) {
     val context = LocalContext.current
     val connections by vm.connections.collectAsStateWithLifecycle()
+    val connectionError by vm.connectionError.collectAsStateWithLifecycle()
     val testResult by vm.testResult.collectAsStateWithLifecycle()
     val discovered by vm.discovered.collectAsStateWithLifecycle()
     val relayAccount by vm.relayAccount.collectAsStateWithLifecycle()
@@ -83,6 +84,15 @@ fun SettingsScreen(vm: SettingsViewModel) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        connectionError?.let { error ->
+            item {
+                ListItem(
+                    headlineContent = { Text("Connections unavailable") },
+                    supportingContent = { Text(error) },
+                    trailingContent = { TextButton(onClick = vm::retryConnections) { Text("Retry") } },
+                )
+            }
+        }
         // The primary path (#471): one relay account, then every host in the fleet
         // arrives by itself — the phone never holds a VM address.
         item { Text("Relay account", style = MaterialTheme.typography.titleMedium) }

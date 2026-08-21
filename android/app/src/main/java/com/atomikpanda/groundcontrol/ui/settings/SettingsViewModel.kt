@@ -2,6 +2,8 @@ package com.atomikpanda.groundcontrol.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.ConnectionStateSource
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.HostConnection
@@ -37,6 +39,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -250,12 +253,18 @@ class SettingsViewModel internal constructor(
     private val notifications: NotificationsSetting,
     private val hosts: HostsRepository,
     private val transformer: RelayDirectoryTransformer = RelayDirectoryTransformer(),
+    private val connectionState: ConnectionStateSource? = null,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
     private fun scope(): CoroutineScope = testScope ?: viewModelScope
 
     val connections: StateFlow<List<WorkspaceConnection>> get() = _connections
     private val _connections = MutableStateFlow<List<WorkspaceConnection>>(emptyList())
+    private val _connectionError = MutableStateFlow<String?>(null)
+
+    /** Non-null when the persisted connection stream failed (e.g. DataStore
+     * corruption) rather than when the fleet is merely empty. */
+    val connectionError: StateFlow<String?> = _connectionError.asStateFlow()
     private val _testResult = MutableStateFlow<SettingsResult?>(null)
     private val refreshFleetMutex = Mutex()
     val testResult: StateFlow<String?> = combine(
@@ -270,7 +279,23 @@ class SettingsViewModel internal constructor(
     }
 
     init {
-        scope().launch { repo.connections.collect { _connections.value = it } }
+        connectionState?.let { source ->
+            scope().launch {
+                source.state.collect { state ->
+                    when (state) {
+                        is ConnectionState.Ready -> {
+                            _connections.value = state.connections
+                            _connectionError.value = null
+                        }
+                        ConnectionState.Loading -> Unit
+                        is ConnectionState.Error -> _connectionError.value =
+                            state.cause.message ?: "Couldn't load connections."
+                    }
+                }
+            }
+        } ?: run {
+            scope().launch { repo.connections.collect { _connections.value = it } }
+        }
         // MainActivity persists relay deep links outside this ViewModel. Observe
         // the repository owner so an already-open Settings screen pulls the new
         // fleet exactly once; equal DataStore emissions must not recurse.
@@ -283,6 +308,10 @@ class SettingsViewModel internal constructor(
                 refreshFleet = { refreshFleet() },
             )
         }
+    }
+
+    fun retryConnections() {
+        connectionState?.retry()
     }
 
     val notificationsEnabled: StateFlow<Boolean> get() = notifications.enabled

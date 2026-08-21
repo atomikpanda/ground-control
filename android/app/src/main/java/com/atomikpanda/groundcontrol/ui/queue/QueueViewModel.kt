@@ -4,8 +4,10 @@ package com.atomikpanda.groundcontrol.ui.queue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ApiConflictException
-import com.atomikpanda.groundcontrol.data.QueueRepository
+import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.ConnectionStatePublicationFence
 import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
 import com.atomikpanda.groundcontrol.data.applyHostLadder
@@ -13,12 +15,15 @@ import com.atomikpanda.groundcontrol.data.dedupeHostErrors
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -34,14 +39,15 @@ data class SpecApprovedNotice(val title: String, val key: String)
 sealed interface QueueUiState {
     data object Loading : QueueUiState
     data object EmptyConfig : QueueUiState
+    data class ConnectionsUnavailable(val cause: Throwable) : QueueUiState
     data class Content(
-        val cards: List<QueueV2Card>,             // live queue; head = current card
-        val resolved: Int,                        // acted-count, for the position indicator
+        val cards: List<QueueV2Card>,
+        val resolved: Int,
         val errors: List<WorkspaceError>,
-        val undo: QueueV2Card?,                    // last acted card, re-insertable at head
+        val undo: QueueV2Card?,
         val inFlight: Boolean,
-        val actionError: String? = null,          // last inline-action failure (transient), shown as a snackbar
-        val specApproved: SpecApprovedNotice? = null,  // last whole-spec finalize, shown as a longer confirmation
+        val actionError: String? = null,
+        val specApproved: SpecApprovedNotice? = null,
     ) : QueueUiState {
         val current: QueueV2Card? get() = cards.firstOrNull()
         val total: Int get() = resolved + cards.size
@@ -68,7 +74,7 @@ sealed interface QueueUiState {
  */
 class QueueViewModel(
     private val repo: QueueRepository,
-    private val connectionsProvider: () -> List<WorkspaceConnection>,
+    private val connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
     private val hosts: Flow<List<HostConnection>> = flowOf(emptyList()),
     private val nowMillis: () -> Long = System::currentTimeMillis,
@@ -78,16 +84,94 @@ class QueueViewModel(
 
     private val resolvedKeys = mutableSetOf<String>()
     private val deferredKeys = LinkedHashSet<String>()
+    private val mutationJobs = mutableMapOf<String, MutableSet<Job>>()
     private var connById: Map<String, WorkspaceConnection> = emptyMap()
     private var lastConnections: List<WorkspaceConnection> = emptyList()
     private var lastFeedErrors: List<WorkspaceError> = emptyList()
     private var lastHosts: List<HostConnection> = emptyList()
+    private var refreshJob: Job? = null
+    private var refreshConnections: List<WorkspaceConnection>? = null
+    private var refreshGeneration = 0L
 
     private fun scope(): CoroutineScope = testScope ?: viewModelScope
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
     private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
+    private fun current(conn: WorkspaceConnection): Boolean =
+        (connectionState.value as? ConnectionState.Ready)?.connections?.find { it.id == conn.id } == conn
+
+    private inline fun publishIfCurrent(conn: WorkspaceConnection, block: () -> Unit): Boolean =
+        synchronized(ConnectionStatePublicationFence.lock) {
+            if (!current(conn)) false else {
+                block()
+                true
+            }
+        }
+
+    private fun mutation(conn: WorkspaceConnection, block: suspend () -> Unit): Job {
+        val job = scope().launch(start = CoroutineStart.LAZY) {
+            if (current(conn)) block()
+        }
+        synchronized(ConnectionStatePublicationFence.lock) {
+            if (!current(conn)) {
+                job.cancel()
+                return job
+            }
+            mutationJobs.getOrPut(conn.id) { mutableSetOf() }.add(job)
+            job.invokeOnCompletion {
+                synchronized(ConnectionStatePublicationFence.lock) {
+                    mutationJobs[conn.id]?.remove(job)
+                }
+            }
+            job.start()
+        }
+        return job
+    }
 
     init {
+        scope().launch {
+            connectionState.collectLatest { source ->
+                val ready = source as? ConnectionState.Ready
+                if (ready != null && refreshConnections == ready.connections && refreshJob?.isActive == true) {
+                    refreshJob?.join()
+                    return@collectLatest
+                }
+                refreshJob?.cancelAndJoin()
+                refreshConnections = ready?.connections
+                val connections = ready?.connections.orEmpty()
+                val invalid = lastConnections.filter { old -> connections.none { it.id == old.id && it == old } }
+                val hasRemainingMutation = synchronized(ConnectionStatePublicationFence.lock) {
+                    invalid.forEach { old -> mutationJobs.remove(old.id)?.forEach { it.cancel() } }
+                    mutationJobs.any { (connectionId, jobs) ->
+                        connections.any { it.id == connectionId } && jobs.isNotEmpty()
+                    }
+                }
+                val replacedConnectionIds = invalid
+                    .filter { old -> connections.any { it.id == old.id } }
+                    .mapTo(mutableSetOf()) { it.id }
+                val removedConnectionIds = invalid
+                    .filter { old -> connections.none { it.id == old.id } }
+                    .mapTo(mutableSetOf()) { it.id }
+                if (replacedConnectionIds.isNotEmpty()) {
+                    _state.value = QueueUiState.Loading
+                } else if (removedConnectionIds.isNotEmpty()) {
+                    content()?.let { current ->
+                        _state.value = current.copy(
+                            cards = current.cards.filterNot { it.connectionId in removedConnectionIds },
+                            inFlight = hasRemainingMutation,
+                        )
+                    }
+                }
+                connById = connections.associateBy { it.id }
+                when (source) {
+                    ConnectionState.Loading -> _state.value = QueueUiState.Loading
+                    is ConnectionState.Error -> _state.value = QueueUiState.ConnectionsUnavailable(source.cause)
+                    is ConnectionState.Ready -> {
+                        refreshJob = startReload(connections)
+                        refreshJob?.join()
+                    }
+                }
+            }
+        }
         scope().launch {
             hosts.emitAtStaleDeadlines(nowMillis).collect { currentHosts ->
                 lastHosts = currentHosts
@@ -126,30 +210,51 @@ class QueueViewModel(
         is PlanAssumptionCard -> ""
     }
 
-    fun refresh(): Job? {
-        val connections = connectionsProvider()
-        if (connections.isEmpty()) { _state.value = QueueUiState.EmptyConfig; return null }
+    fun refresh(): Job? = when (val source = connectionState.value) {
+        is ConnectionState.Ready -> startReload(source.connections)
+        ConnectionState.Loading -> { _state.value = QueueUiState.Loading; null }
+        is ConnectionState.Error -> { _state.value = QueueUiState.ConnectionsUnavailable(source.cause); null }
+    }
+
+    private fun startReload(connections: List<WorkspaceConnection>): Job? {
+        refreshJob?.cancel()
+        refreshConnections = connections
+        val generation = ++refreshGeneration
+        return reload(connections, generation).also { refreshJob = it }
+    }
+
+    private fun reload(connections: List<WorkspaceConnection>, generation: Long): Job? {
+        if (connections.isEmpty()) {
+            lastConnections = emptyList()
+            _state.value = QueueUiState.EmptyConfig
+            return null
+        }
         connById = connections.associateBy { it.id }
+        lastConnections = connections
         val prev = content()
         if (prev == null) _state.value = QueueUiState.Loading
         return scope().launch {
             val feed = repo.load(connections)
             val currentHosts = hosts.first()
-            lastConnections = connections
-            lastFeedErrors = feed.errors
-            lastHosts = currentHosts
-            val errors = renderedErrors()
-            val fresh = feed.cards.filterNot { it.key in resolvedKeys }
-            if (prev == null) {
-                _state.value = QueueUiState.Content(
-                    cards = fresh, resolved = 0,
-                    errors = errors, undo = null, inFlight = false,
-                )
-            } else {
-                // live refresh: keep the current head stable, merge the rest by urgency
-                val head = prev.current
-                val merged = mergeKeepingHead(head, fresh)
-                _state.value = prev.copy(cards = merged, errors = errors)
+            synchronized(ConnectionStatePublicationFence.lock) {
+                if (
+                    refreshGeneration != generation ||
+                    (connectionState.value as? ConnectionState.Ready)?.connections != connections
+                ) return@launch
+                lastFeedErrors = feed.errors
+                lastHosts = currentHosts
+                val errors = renderedErrors()
+                val fresh = feed.cards.filterNot { it.key in resolvedKeys }
+                if (prev == null) {
+                    _state.value = QueueUiState.Content(
+                        cards = fresh, resolved = 0,
+                        errors = errors, undo = null, inFlight = false,
+                    )
+                } else {
+                    val head = prev.current
+                    val merged = mergeKeepingHead(head, fresh)
+                    _state.value = prev.copy(cards = merged, errors = errors)
+                }
             }
         }
     }
@@ -201,15 +306,15 @@ class QueueViewModel(
         if (card !is ProseCard && card !is CriteriaCard) return null
         val specId = card.specId() ?: return null
         val connectionId = card.connectionId
+        val conn = connById[connectionId] ?: return null
         // Only auto-approve when this is the spec's LAST un-acted chunk. If sibling chunk-cards
         // of this spec are still queued, approving now could sweep them away unreviewed (serve
         // treats an unreviewed prose section as non-blocking, so a Skipped card would resolve
         // silently). In that case just advance past this card; the spec auto-approves later when
         // its last chunk is approved.
         val isLastChunk = c.cards.none { it.key != card.key && it.connectionId == connectionId && it.specId() == specId }
-        _state.value = c.copy(inFlight = true, actionError = null)
-        return scope().launch {
-            val conn = conn(card)
+        if (!publishIfCurrent(conn) { _state.value = c.copy(inFlight = true, actionError = null) }) return null
+        return mutation(conn) {
             runCatching {
                 when (card) {
                     is CriteriaCard -> card.items.forEach { repo.setCriterionVerdict(conn, specId, it.id, "approved") }
@@ -222,22 +327,33 @@ class QueueViewModel(
                     // whole spec approved — all its cards leave the queue. Do NOT arm undo: the
                     // approve can't be reversed server-side (a restored card re-acts into a 409).
                     // Surface an explicit whole-spec confirmation instead (AC4), naming what shipped.
-                    resolveSpec(connectionId, specId)
-                    removeSpecCardsAdvancing(specId, card, armUndo = false, approvedTitle = card.specTitle().ifBlank { specId })
+                    resolveSpec(conn, connectionId, specId) {
+                        removeSpecCardsAdvancing(
+                            specId,
+                            card,
+                            armUndo = false,
+                            approvedTitle = card.specTitle().ifBlank { specId },
+                        )
+                    }
                 } else {
-                    // this card's items ARE approved; its siblings still await review — advance past it only
-                    resolvedKeys.add(card.key); deferredKeys.remove(card.key)
-                    advancePast(card, armUndo = true)
+                    publishIfCurrent(conn) {
+                        // this card's items ARE approved; its siblings still await review — advance past it only
+                        resolvedKeys.add(card.key)
+                        deferredKeys.remove(card.key)
+                        advancePast(card, armUndo = true)
+                    }
                 }
-            }.onFailure { t ->
-                if (t is ApiConflictException) {
+            }.onFailure { error ->
+                if (error is ApiConflictException) {
                     // A 409 on the approve is ambiguous — already approved by a concurrent device, or
                     // genuinely blocked by a server-side blocker we have no card for. Reconcile against
                     // a fresh load rather than blindly resolving a still-`needs_review` spec.
-                    reconcileApproveConflict(card, connectionId, specId)
+                    if (current(conn)) reconcileApproveConflict(card, conn, connectionId, specId)
                 } else {
-                    val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+                    publishIfCurrent(conn) {
+                        val current = content() ?: return@publishIfCurrent
+                        _state.value = current.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+                    }
                 }
             }
         }
@@ -254,9 +370,9 @@ class QueueViewModel(
         val card = c.current ?: return null
         val specId = card.specId() ?: return null
         val connectionId = card.connectionId
-        _state.value = c.copy(inFlight = true, actionError = null)
-        return scope().launch {
-            val conn = conn(card)
+        val conn = connById[connectionId] ?: return null
+        if (!publishIfCurrent(conn) { _state.value = c.copy(inFlight = true, actionError = null) }) return null
+        return mutation(conn) {
             runCatching {
                 when (card) {
                     is CriteriaCard -> card.items.forEach { repo.setCriterionVerdict(conn, specId, it.id, "flagged", comment) }
@@ -265,11 +381,14 @@ class QueueViewModel(
                 }
                 repo.requestChanges(conn, specId, comment)
             }.onSuccess {
-                resolveSpec(connectionId, specId)
-                removeSpecCardsAdvancing(specId, card, armUndo = false)
+                resolveSpec(conn, connectionId, specId) {
+                    removeSpecCardsAdvancing(specId, card, armUndo = false)
+                }
             }.onFailure {
-                val c2 = content() ?: return@launch
-                _state.value = c2.copy(inFlight = false, actionError = "Couldn't request changes — try again.")
+                publishIfCurrent(conn) {
+                    val current = content() ?: return@publishIfCurrent
+                    _state.value = current.copy(inFlight = false, actionError = "Couldn't request changes — try again.")
+                }
             }
         }
     }
@@ -283,20 +402,30 @@ class QueueViewModel(
         val c = content() ?: return null
         val conn = connById[connectionId] ?: return null
         c.cards.filterIsInstance<CriteriaCard>().firstOrNull { it.connectionId == connectionId && it.specId == specId } ?: return null
-        _state.value = c.copy(inFlight = true, actionError = null)
-        return scope().launch {
+        if (!publishIfCurrent(conn) { _state.value = c.copy(inFlight = true, actionError = null) }) return null
+        return mutation(conn) {
             runCatching { repo.setCriterionVerdict(conn, specId, itemId, verdict, comment) }
-                .onSuccess { rev ->
-                    val allApproved = rev.acceptanceCriteria.isNotEmpty() && rev.acceptanceCriteria.all { it.verdict == "approved" }
-                    val card = if (allApproved)
-                        content()?.cards?.firstOrNull { it is CriteriaCard && it.connectionId == connectionId && it.specId == specId }
-                    else null
-                    if (card != null) finalizeInPlaceCard(card, connectionId, specId)   // every criterion approved → complete
-                    else updateCriteriaCard(connectionId, specId, rev)                  // mixed verdicts → stay in place
+                .onSuccess { review ->
+                    val allApproved =
+                        review.acceptanceCriteria.isNotEmpty() &&
+                            review.acceptanceCriteria.all { it.verdict == "approved" }
+                    val card = if (allApproved) {
+                        synchronized(ConnectionStatePublicationFence.lock) {
+                            if (!current(conn)) null else {
+                                content()?.cards?.firstOrNull {
+                                    it is CriteriaCard && it.connectionId == connectionId && it.specId == specId
+                                }
+                            }
+                        }
+                    } else null
+                    if (card != null) finalizeInPlaceCard(card, conn, connectionId, specId)
+                    else publishIfCurrent(conn) { updateCriteriaCard(connectionId, specId, review) }
                 }
                 .onFailure {
-                    val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't update — try again.")
+                    publishIfCurrent(conn) {
+                        val current = content() ?: return@publishIfCurrent
+                        _state.value = current.copy(inFlight = false, actionError = "Couldn't update — try again.")
+                    }
                 }
         }
     }
@@ -310,21 +439,32 @@ class QueueViewModel(
         val c = content() ?: return null
         val conn = connById[connectionId] ?: return null
         c.cards.filterIsInstance<QuestionsCard>().firstOrNull { it.connectionId == connectionId && it.specId == specId } ?: return null
-        _state.value = c.copy(inFlight = true, actionError = null)
-        return scope().launch {
+        if (!publishIfCurrent(conn) { _state.value = c.copy(inFlight = true, actionError = null) }) return null
+        return mutation(conn) {
             runCatching { repo.answerQuestion(conn, specId, questionId, answer) }
-                .onSuccess { rev ->
-                    if (rev.openQuestions.any { it.answer.isNullOrBlank() }) {
-                        updateQuestionsCard(connectionId, specId, rev)             // unanswered remain → rebuild with them
+                .onSuccess { review ->
+                    if (review.openQuestions.any { it.answer.isNullOrBlank() }) {
+                        publishIfCurrent(conn) { updateQuestionsCard(connectionId, specId, review) }
                     } else {
-                        val card = content()?.cards?.firstOrNull { it is QuestionsCard && it.connectionId == connectionId && it.specId == specId }
-                        if (card != null) finalizeInPlaceCard(card, connectionId, specId)   // all answered → complete
-                        else { val c2 = content() ?: return@launch; _state.value = c2.copy(inFlight = false) }
+                        val card = synchronized(ConnectionStatePublicationFence.lock) {
+                            if (!current(conn)) null else {
+                                content()?.cards?.firstOrNull {
+                                    it is QuestionsCard && it.connectionId == connectionId && it.specId == specId
+                                }
+                            }
+                        }
+                        if (card != null) finalizeInPlaceCard(card, conn, connectionId, specId)
+                        else publishIfCurrent(conn) {
+                            val current = content() ?: return@publishIfCurrent
+                            _state.value = current.copy(inFlight = false)
+                        }
                     }
                 }
                 .onFailure {
-                    val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't answer — try again.")
+                    publishIfCurrent(conn) {
+                        val current = content() ?: return@publishIfCurrent
+                        _state.value = current.copy(inFlight = false, actionError = "Couldn't answer — try again.")
+                    }
                 }
         }
     }
@@ -334,16 +474,22 @@ class QueueViewModel(
     fun answerDecision(optionText: String): Job? {
         val c = content() ?: return null
         val card = c.current as? DecisionCard ?: return null
-        _state.value = c.copy(inFlight = true, actionError = null)
-        return scope().launch {
-            runCatching { repo.answerDecision(conn(card), card.threadId, optionText) }
+        val conn = connById[card.connectionId] ?: return null
+        if (!publishIfCurrent(conn) { _state.value = c.copy(inFlight = true, actionError = null) }) return null
+        return mutation(conn) {
+            runCatching { repo.answerDecision(conn, card.threadId, optionText) }
                 .onSuccess {
-                    resolvedKeys.add(card.key); deferredKeys.remove(card.key)
-                    advancePast(card, armUndo = true)
+                    publishIfCurrent(conn) {
+                        resolvedKeys.add(card.key)
+                        deferredKeys.remove(card.key)
+                        advancePast(card, armUndo = true)
+                    }
                 }
                 .onFailure {
-                    val c2 = content() ?: return@launch
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't send — try again.")
+                    publishIfCurrent(conn) {
+                        val current = content() ?: return@publishIfCurrent
+                        _state.value = current.copy(inFlight = false, actionError = "Couldn't send — try again.")
+                    }
                 }
         }
     }
@@ -372,9 +518,20 @@ class QueueViewModel(
     /** Mark every currently-queued card of ([connectionId], [specId]) resolved (so it stays gone across
      *  refreshes). Scoped to the connection: spec ids are workspace-local, so acting on one workspace's
      *  spec must not resolve another workspace's same-id cards. */
-    private fun resolveSpec(connectionId: String, specId: String) {
-        val keys = content()?.cards?.filter { it.connectionId == connectionId && it.specId() == specId }?.map { it.key }.orEmpty()
-        resolvedKeys.addAll(keys); deferredKeys.removeAll(keys.toSet())
+    private inline fun resolveSpec(
+        conn: WorkspaceConnection,
+        connectionId: String,
+        specId: String,
+        afterResolve: () -> Unit,
+    ): Boolean = publishIfCurrent(conn) {
+        val keys = content()
+            ?.cards
+            ?.filter { it.connectionId == connectionId && it.specId() == specId }
+            ?.map { it.key }
+            .orEmpty()
+        resolvedKeys.addAll(keys)
+        deferredKeys.removeAll(keys.toSet())
+        afterResolve()
     }
 
     /** Drop every card of the acting [head]'s spec from the live queue in one step (advancing past a
@@ -443,30 +600,45 @@ class QueueViewModel(
      * A 409 on the spec approve is reconciled via [reconcileApproveConflict]. Undo is not armed: the
      * underlying writes (verdicts / answers) can't be reversed server-side.
      */
-    private suspend fun finalizeInPlaceCard(card: QueueV2Card, connectionId: String, specId: String) {
-        val c = content() ?: return
-        val isLastChunk = c.cards.none { it.key != card.key && it.connectionId == connectionId && it.specId() == specId }
-        if (!isLastChunk) {
-            resolvedKeys.add(card.key); deferredKeys.remove(card.key)
-            removeCard(card)
-            return
-        }
-        runCatching { repo.approve(conn(card), specId) }
-            .onSuccess {
-                resolveSpec(connectionId, specId)
-                // Whole spec just shipped via in-place finalize → confirm by name, matching the swipe path.
-                removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
+    private suspend fun finalizeInPlaceCard(
+        card: QueueV2Card,
+        conn: WorkspaceConnection,
+        connectionId: String,
+        specId: String,
+    ) {
+        val isLastChunk = synchronized(ConnectionStatePublicationFence.lock) {
+            if (!current(conn)) return
+            val current = content() ?: return
+            val last = current.cards.none {
+                it.key != card.key && it.connectionId == connectionId && it.specId() == specId
             }
-            .onFailure { t ->
-                if (t is ApiConflictException) {
-                    reconcileApproveConflict(card, connectionId, specId)
-                } else {
-                    val c2 = content() ?: return
-                    _state.value = c2.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+            if (!last) {
+                resolvedKeys.add(card.key)
+                deferredKeys.remove(card.key)
+                removeCard(card)
+            }
+            last
+        }
+        if (!isLastChunk) return
+        runCatching { repo.approve(conn, specId) }
+            .onSuccess {
+                resolveSpec(conn, connectionId, specId) {
+                    // Whole spec just shipped via in-place finalize → confirm by name, matching the swipe path.
+                    removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
                 }
             }
-    }
+            .onFailure { error ->
+                if (error is ApiConflictException) {
+                    if (current(conn)) reconcileApproveConflict(card, conn, connectionId, specId)
+                } else {
+                    publishIfCurrent(conn) {
+                        val current = content() ?: return@publishIfCurrent
+                        _state.value = current.copy(inFlight = false, actionError = "Couldn't approve — try again.")
+                    }
+                }
+            }
 
+    }
     /**
      * A 409 from a spec /approve is ambiguous: the spec may already be approved server-side (a
      * concurrent device) OR the approve is genuinely blocked by a server-side blocker we have no card
@@ -475,16 +647,41 @@ class QueueViewModel(
      * rather than silently resolving a still-`needs_review` spec. A failed reload defaults to keeping
      * the card (never lose it on a network blip).
      */
-    private suspend fun reconcileApproveConflict(card: QueueV2Card, connectionId: String, specId: String) {
-        val feed = runCatching { repo.load(connectionsProvider()) }.getOrNull()
-        val stillUnderReview = feed?.cards?.any { it.connectionId == connectionId && it.specId() == specId } ?: true
-        if (stillUnderReview) {
-            val c2 = content() ?: return
-            _state.value = c2.copy(inFlight = false, actionError = "Approve blocked — this spec still needs review.")
-        } else {
-            resolveSpec(connectionId, specId)
-            // 409 reconciled to "already approved" → the spec still shipped, so confirm it by name.
-            removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
+    private suspend fun reconcileApproveConflict(
+        card: QueueV2Card,
+        conn: WorkspaceConnection,
+        connectionId: String,
+        specId: String,
+    ) {
+        val connections = synchronized(ConnectionStatePublicationFence.lock) {
+            val currentConnections = (connectionState.value as? ConnectionState.Ready)?.connections
+            currentConnections?.takeIf { current(conn) }
+        } ?: return
+        val feed = runCatching { repo.load(connections) }.getOrNull()
+        val stillUnderReview =
+            feed?.cards?.any { it.connectionId == connectionId && it.specId() == specId } ?: true
+        synchronized(ConnectionStatePublicationFence.lock) {
+            if (
+                (connectionState.value as? ConnectionState.Ready)?.connections != connections ||
+                !current(conn)
+            ) return
+            if (stillUnderReview) {
+                val current = content() ?: return
+                _state.value = current.copy(
+                    inFlight = false,
+                    actionError = "Approve blocked — this spec still needs review.",
+                )
+            } else {
+                val keys = content()
+                    ?.cards
+                    ?.filter { it.connectionId == connectionId && it.specId() == specId }
+                    ?.map { it.key }
+                    .orEmpty()
+                resolvedKeys.addAll(keys)
+                deferredKeys.removeAll(keys.toSet())
+                // 409 reconciled to "already approved" → the spec still shipped, so confirm it by name.
+                removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
+            }
         }
     }
 

@@ -63,12 +63,8 @@ fun MessagesScreen(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
-        // The activity-scoped VM may already hold fresh Content (loaded by HomeScreen) — only
-        // force a reload+spinner when there's nothing to show yet. Always (re)start polling so
-        // this screen stays live even if Home's own startLivePolling() call raced or was skipped.
-        if (vm.state.value !is MessagesUiState.Content) {
-            vm.refresh()?.join()
-        }
+        // ConnectionState owns the initial load. Entering this screen only starts long-polling;
+        // a second refresh here can race and overwrite that authoritative load.
         vm.startLivePolling()
     }
 
@@ -105,6 +101,9 @@ fun MessagesScreen(
                 MessagesUiState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 MessagesUiState.EmptyConfig -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                     Text("Add a workspace in Settings to see messages.")
+                }
+                is MessagesUiState.ConnectionsUnavailable -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                    Text("Connections unavailable. Open Settings to recover.")
                 }
                 is MessagesUiState.Content -> {
                     // Threads are grouped by WorkItem for display; the tap target still needs each

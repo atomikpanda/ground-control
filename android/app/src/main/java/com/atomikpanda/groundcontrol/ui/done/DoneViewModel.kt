@@ -2,8 +2,10 @@ package com.atomikpanda.groundcontrol.ui.done
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
-import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
+import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
@@ -31,6 +33,7 @@ data class DoneContent(
 
 sealed interface DoneUiState {
     data object Loading : DoneUiState
+    data class Unavailable(val message: String) : DoneUiState
     data class Content(val c: DoneContent) : DoneUiState
     data class Failed(val reason: String) : DoneUiState
 }
@@ -41,18 +44,34 @@ sealed interface DoneUiState {
  *  the spec review summary (same fan-out pattern as ReviewViewModel). */
 class DoneViewModel(
     private val api: SpecApi,
-    private val conn: WorkspaceConnection,
+    connectionId: String,
     private val itemId: String,
+    connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<DoneUiState>(DoneUiState.Loading)
     val state: StateFlow<DoneUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
+    private var loadJob: Job? = null
+    private val routeConnection = ReactiveRouteConnection(connectionId, connectionState, viewModelScope) { source, snapshot ->
+        loadJob?.cancel()
+        if (snapshot == null) {
+            _state.value = DoneUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
+        } else {
+            loadJob = load(snapshot)
+        }
+    }
 
-    fun load(): Job = scope.launch { _state.value = fetch() }
+    fun load(): Job = routeConnection.current()?.let(::load) ?: scope.launch { }
 
-    private suspend fun fetch(): DoneUiState = try {
+    private fun load(snapshot: RouteConnectionSnapshot): Job = scope.launch {
+        val next = fetch(snapshot)
+        routeConnection.publishIfCurrent(snapshot) { _state.value = next }
+    }
+
+    private suspend fun fetch(snapshot: RouteConnectionSnapshot): DoneUiState = try {
+        val conn = snapshot.connection
         val item = api.getItem(conn, itemId)
         coroutineScope {
             // Launch the (independent) review fetch alongside the per-task fetches — it only needs

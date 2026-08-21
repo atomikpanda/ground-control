@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.console.ConsoleUiState
@@ -16,10 +17,14 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -58,7 +63,9 @@ class ConsoleViewModelTest {
 
     private fun vm(scope: CoroutineScope, handler: MockRequestHandler) = ConsoleViewModel(
         SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }),
-        conn, "wi-1", testScope = scope,
+        conn.id, "wi-1",
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     /** Routes the four fan-out GETs plus the item-scoped steer POST; records POSTed bodies when given a sink. */
@@ -217,5 +224,88 @@ class ConsoleViewModelTest {
         val focused = c.tasks.first()
         assertEquals("dev", focused.phase)
         assertEquals("2026-07-13T12:00:00Z", focused.lastActivityAt)
+    }
+
+    @Test fun send_after_state_replacement_posts_to_the_current_workspace() = runTest {
+        val old = conn.copy(baseUrl = "http://old:47100", token = "old-token")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val postHosts = mutableListOf<String>()
+        val vm = ConsoleViewModel(
+            SpecApi(HttpClient(MockEngine { request ->
+                when {
+                    request.url.encodedPath.endsWith("/items/wi-1/messages") -> {
+                        postHosts += request.url.host
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    request.url.encodedPath.endsWith("/items/wi-1") -> respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                    request.url.encodedPath.endsWith("/tasks/a") -> respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                    request.url.encodedPath.endsWith("/journal/a") -> respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                    request.url.encodedPath.endsWith("/threads/t1") -> respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                    else -> respondError(HttpStatusCode.NotFound)
+                }
+            }) { mshipDefaults() }),
+            old.id,
+            "wi-1",
+            connections,
+            testScope = backgroundScope,
+        )
+        vm.load().join()
+        connections.value = ConnectionState.Ready(listOf(replacement))
+        vm.onDraftChange("new destination")
+        vm.sendDraft().join()
+
+        assertEquals(listOf("new"), postHosts)
+    }
+
+    @Test fun connection_replacement_resets_sending_and_fences_the_old_send() = runTest {
+        val old = conn.copy(baseUrl = "http://old:47100", token = "old-token")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val oldSendStarted = CompletableDeferred<Unit>()
+        val releaseOldSend = CompletableDeferred<Unit>()
+        var replacementLoads = 0
+        val handler: MockRequestHandler = { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1/messages") &&
+                    request.method == HttpMethod.Post -> {
+                    oldSendStarted.complete(Unit)
+                    releaseOldSend.await()
+                    respond("{}", HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/items/wi-1") &&
+                    request.method == HttpMethod.Get -> {
+                    if (request.url.host == "new") replacementLoads += 1
+                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/tasks/a") ->
+                    respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/journal/a") ->
+                    respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/threads/t1") ->
+                    respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        val vm = ConsoleViewModel(
+            SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }),
+            old.id,
+            "wi-1",
+            connections,
+            testScope = backgroundScope,
+        )
+        vm.load().join()
+        vm.onDraftChange("held")
+        val staleSend = vm.sendDraft()
+        oldSendStarted.await()
+        assertTrue(vm.sending.value)
+
+        connections.value = ConnectionState.Ready(listOf(replacement))
+        runCurrent()
+        vm.state.first { replacementLoads == 1 && it is ConsoleUiState.Content }
+        releaseOldSend.complete(Unit)
+        staleSend.join()
+        assertEquals(false, vm.sending.value)
+        assertEquals("held", vm.draft.value)
     }
 }

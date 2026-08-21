@@ -1,13 +1,14 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.buildJson
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.mshipDefaults
-import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessageConnectionSnapshot
+import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateFilter
 import com.atomikpanda.groundcontrol.ui.messages.mergeThreadsById
@@ -23,32 +24,31 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-
-private fun MessagesUiState.Content.threadsFor(connectionId: String): List<ThreadSummary> =
-    sections.single { it.connectionId == connectionId }.threads.getOrThrow()
-
-private fun MessagesViewModel.content(): MessagesUiState.Content =
-    state.value as MessagesUiState.Content
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class MessagesViewModelTest {
@@ -65,11 +65,7 @@ class MessagesViewModelTest {
     }) { install(ContentNegotiation) { json(buildJson()) } }))
 
     @Test fun sections_carry_workspace_name_and_connection_id_and_threads() = runTest {
-        val vm = MessagesViewModel(
-            repo(),
-            flowOf(listOf(WorkspaceConnection("42", "http://h:47100", null, "ws-alpha"))),
-            backgroundScope,
-        )
+        val vm = MessagesViewModel(repo(), connectionState(listOf(WorkspaceConnection("42", "http://h:47100", null, "ws-alpha"))), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         val sec = content.sections[0]
@@ -82,9 +78,37 @@ class MessagesViewModelTest {
     }
 
     @Test fun empty_connections_yields_empty_config() = runTest {
-        val vm = MessagesViewModel(repo(), flowOf(emptyList()), backgroundScope)
+        val vm = MessagesViewModel(repo(), connectionState(emptyList()), backgroundScope)
         vm.refresh()?.join()
         assertEquals(MessagesUiState.EmptyConfig, vm.state.value)
+    }
+
+    @Test fun queued_empty_refresh_does_not_publish_after_connections_are_replaced() = runTest {
+        val empty = ConnectionState.Ready(emptyList())
+        val replacement = ConnectionState.Ready(listOf(connA))
+        val source = MutableStateFlow<ConnectionState>(empty)
+        var replaceOnNextRead = false
+        val state = object : StateFlow<ConnectionState> by source {
+            override val value: ConnectionState
+                get() = source.value.also {
+                    if (replaceOnNextRead) {
+                        replaceOnNextRead = false
+                        source.value = replacement
+                    }
+                }
+        }
+        val vm = MessagesViewModel(repo(), state, backgroundScope)
+        runCurrent()
+        val published = mutableListOf<MessagesUiState>()
+        backgroundScope.launch { vm.state.collect { published += it } }
+        runCurrent()
+        published.clear()
+
+        replaceOnNextRead = true
+        vm.refresh()!!.join()
+        runCurrent()
+
+        assertTrue(published.none { it == MessagesUiState.EmptyConfig })
     }
 
     // --- live-merge + filters + unread counts -------------------------------------------------
@@ -108,7 +132,7 @@ class MessagesViewModelTest {
         val vm = MessagesViewModel(repoWith { req ->
             if (req.url.parameters["wait"] == "1") respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
             else respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
-        }, flowOf(listOf(WorkspaceConnection("1", "http://h:47100", null, "ws"))), backgroundScope)
+        }, connectionState(listOf(WorkspaceConnection("1", "http://h:47100", null, "ws"))), backgroundScope)
         vm.refresh()?.join()
         val before = (vm.state.value as MessagesUiState.Content).filteredThreads
         assertEquals(listOf("t3", "t2", "t1"), before.map { it.thread.id })
@@ -131,7 +155,9 @@ class MessagesViewModelTest {
             "ws",
             legacyConnectionIds = listOf(retired.id),
         )
-        val connections = MutableStateFlow(listOf(retired))
+        val connections = MutableStateFlow<com.atomikpanda.groundcontrol.data.ConnectionState>(
+            com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(retired)),
+        )
         var canonicalWaitCalls = 0
         var polledHost: String? = null
         var retiredPollCancelled = false
@@ -160,14 +186,14 @@ class MessagesViewModelTest {
         vm.selectWorkspace(retired.id)
         vm.startLivePolling()
         runCurrent()
-        connections.value = listOf(canonical)
+        connections.value = com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(canonical))
+        runCurrent()
         vm.selectWorkspace(retired.id)
-        val content = vm.state.first { candidate ->
-            candidate is MessagesUiState.Content &&
-                candidate.filteredThreads.any {
-                    it.connectionId == canonical.id &&
-                        it.thread.updatedAt == "2026-06-22T12:00:00Z"
-                }
+
+        val content = vm.state.first { state ->
+            val current = state as? MessagesUiState.Content ?: return@first false
+            current.selectedConnectionId == canonical.id &&
+                current.filteredThreads.firstOrNull()?.thread?.id == "t1"
         } as MessagesUiState.Content
         assertEquals("new", polledHost)
         assertTrue(retiredPollCancelled)
@@ -175,6 +201,211 @@ class MessagesViewModelTest {
         assertEquals(listOf(canonical.id), content.sections.map { it.connectionId }.distinct())
         assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
         assertEquals("t1", content.filteredThreads.first().thread.id)
+    }
+
+    @Test fun adoption_refreshes_sections_for_newly_visible_workspaces() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "old")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "canonical",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        val added = WorkspaceConnection("added", "http://added:47100", null, "added")
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(retired)))
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads") -> respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.state.first { it is MessagesUiState.Content }
+
+        connections.value = ConnectionState.Ready(listOf(canonical, added))
+
+        val content = vm.state.first {
+            (it as? MessagesUiState.Content)?.sections?.map { section -> section.connectionId }?.toSet() ==
+                setOf(canonical.id, added.id)
+        } as MessagesUiState.Content
+        assertEquals(setOf(canonical.id, added.id), content.sections.map { it.connectionId }.toSet())
+    }
+
+    @Test fun connection_error_cancels_live_polling() = runTest {
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(connA)))
+        val pollStarted = CompletableDeferred<Unit>()
+        val pollCancelled = CompletableDeferred<Unit>()
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.parameters["wait"] == "1" -> {
+                    pollStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        pollCancelled.complete(Unit)
+                    }
+                }
+                request.url.encodedPath.endsWith("/threads") -> respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+        vm.state.first { it is MessagesUiState.Content }
+        vm.startLivePolling()
+        pollStarted.await()
+
+        connections.value = ConnectionState.Error(IllegalStateException("DataStore unavailable"))
+
+        pollCancelled.await()
+        runCurrent()
+        assertTrue(vm.state.value is MessagesUiState.ConnectionsUnavailable)
+    }
+
+    @Test fun same_id_replacement_cancels_old_poll_and_starts_the_new_route() = runTest {
+        val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "ws")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val oldPollStarted = CompletableDeferred<Unit>()
+        val oldPollCancelled = CompletableDeferred<Unit>()
+        val newPollStarted = CompletableDeferred<Unit>()
+        var oldPollRequests = 0
+        var newPollRequests = 0
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.parameters["wait"] == "1" && request.url.host == "old" -> {
+                    oldPollRequests += 1
+                    oldPollStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        oldPollCancelled.complete(Unit)
+                    }
+                }
+                request.url.parameters["wait"] == "1" && request.url.host == "new" -> {
+                    newPollRequests += 1
+                    newPollStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                request.url.encodedPath.endsWith("/threads") ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        vm.state.first { it is MessagesUiState.Content }
+        vm.startLivePolling()
+        oldPollStarted.await()
+        connections.value = ConnectionState.Ready(listOf(replacement))
+        oldPollCancelled.await()
+        newPollStarted.await()
+
+        assertEquals(1, oldPollRequests)
+        assertEquals(1, newPollRequests)
+        assertEquals(
+            listOf(replacement.id),
+            (vm.state.value as MessagesUiState.Content).sections.map { it.connectionId },
+        )
+    }
+
+    @Test fun ready_source_performs_one_automatic_initial_load() = runTest {
+        var threadLists = 0
+        var itemLists = 0
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads") -> {
+                    threadLists += 1
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/items") -> {
+                    itemLists += 1
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.state.first { it is MessagesUiState.Content }
+
+        assertEquals(1, threadLists)
+        assertEquals(1, itemLists)
+    }
+
+    @Test fun pull_refresh_fences_a_held_automatic_initial_load() = runTest {
+        val initialStarted = CompletableDeferred<Unit>()
+        val releaseInitial = CompletableDeferred<Unit>()
+        var threadRequests = 0
+        val oldThreads = """[{"id":"old","subject":"old","updated_at":"2026-06-22T09:00:00Z"}]"""
+        val newThreads = """[{"id":"new","subject":"new","updated_at":"2026-06-22T10:00:00Z"}]"""
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads") -> {
+                    threadRequests += 1
+                    if (threadRequests == 1) {
+                        initialStarted.complete(Unit)
+                        releaseInitial.await()
+                        respond(oldThreads, HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        respond(newThreads, HttpStatusCode.OK, jsonHdr)
+                    }
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+        initialStarted.await()
+
+        vm.refresh()!!.join()
+        assertEquals(
+            listOf("new"),
+            (vm.state.value as MessagesUiState.Content).filteredThreads.map { it.thread.id },
+        )
+
+        releaseInitial.complete(Unit)
+        runCurrent()
+        assertEquals(
+            listOf("new"),
+            (vm.state.value as MessagesUiState.Content).filteredThreads.map { it.thread.id },
+        )
+    }
+
+    @Test fun adoption_drops_removed_sections_and_cancels_their_live_poll() = runTest {
+        val canonical = WorkspaceConnection(
+            "C",
+            "http://c:47100",
+            null,
+            "ws-c",
+            legacyConnectionIds = listOf(connA.id),
+        )
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(connA, connB)))
+        val bPollStarted = CompletableDeferred<Unit>()
+        val bPollCancelled = CompletableDeferred<Unit>()
+        var bPollRequests = 0
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.parameters["wait"] == "1" && request.url.host == "b" -> {
+                    bPollRequests += 1
+                    bPollStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        bPollCancelled.complete(Unit)
+                    }
+                }
+                request.url.parameters["wait"] == "1" -> awaitCancellation()
+                request.url.encodedPath.endsWith("/threads") -> respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        vm.refresh()?.join()
+        vm.startLivePolling()
+        bPollStarted.await()
+        connections.value = ConnectionState.Ready(listOf(canonical))
+        bPollCancelled.await()
+        val content = vm.state.first {
+            (it as? MessagesUiState.Content)?.sections?.map { section -> section.connectionId } == listOf(canonical.id)
+        } as MessagesUiState.Content
+
+        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId })
+        assertEquals(1, bPollRequests)
     }
 
     @Test fun live_polling_started_before_refresh_tracks_adoption_during_the_load() = runTest {
@@ -186,7 +417,9 @@ class MessagesViewModelTest {
             "ws",
             legacyConnectionIds = listOf(retired.id),
         )
-        val connections = MutableStateFlow(listOf(retired))
+        val connections = MutableStateFlow<com.atomikpanda.groundcontrol.data.ConnectionState>(
+            com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(retired)),
+        )
         val initialRequestStarted = CompletableDeferred<Unit>()
         val releaseInitialRequest = CompletableDeferred<Unit>()
         val canonicalPollStarted = CompletableDeferred<Unit>()
@@ -209,7 +442,7 @@ class MessagesViewModelTest {
         vm.startLivePolling()
         initialRequestStarted.await()
         assertEquals(MessagesUiState.Loading, vm.state.value)
-        connections.value = listOf(canonical)
+        connections.value = com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(canonical))
         runCurrent()
         releaseInitialRequest.complete(Unit)
         refresh?.join()
@@ -220,7 +453,7 @@ class MessagesViewModelTest {
         assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
     }
 
-    @Test fun canonical_alias_convergence_keeps_one_owner_without_merging_owner_state() = runTest {
+    @Test fun adoption_drops_retired_duplicate_sections_and_loads_the_canonical_owner() = runTest {
         val retiredA = WorkspaceConnection("retired-a", "http://old-a:47100", null, "ws")
         val retiredB = WorkspaceConnection("retired-b", "http://old-b:47100", null, "ws")
         val canonical = WorkspaceConnection(
@@ -230,35 +463,19 @@ class MessagesViewModelTest {
             "ws",
             legacyConnectionIds = listOf(retiredA.id, retiredB.id),
         )
-        val connections = MutableStateFlow(listOf(retiredA, retiredB))
+        val connections = MutableStateFlow(ConnectionState.Ready(listOf(retiredA, retiredB)))
         val vm = MessagesViewModel(repoWith { req ->
             when {
                 req.url.parameters["wait"] == "1" -> awaitCancellation()
-                req.url.encodedPath.endsWith("/items") && req.url.host == "old-a" ->
+                req.url.host == "new" ->
                     respond(
-                        """[{"id":"item-1","kind":"feature","title":"new item","phase":"inbox","updated_at":"2026-06-22T10:00:00Z"},
-                            {"id":"item-new-only","kind":"feature","title":"new only","phase":"inbox","updated_at":"2026-06-22T12:00:00Z"}]""",
-                        HttpStatusCode.OK,
-                        jsonHdr,
-                    )
-                req.url.encodedPath.endsWith("/items") ->
-                    respond(
-                        """[{"id":"item-1","kind":"feature","title":"old item","phase":"inbox","updated_at":"2026-06-22T09:00:00Z"},
-                            {"id":"item-old-only","kind":"feature","title":"old only","phase":"inbox","updated_at":"2026-06-22T11:00:00Z"}]""",
-                        HttpStatusCode.OK,
-                        jsonHdr,
-                    )
-                req.url.host == "old-a" ->
-                    respond(
-                        """[{"id":"t1","subject":"new thread","updated_at":"2026-06-22T10:00:00Z"},
-                            {"id":"t-new-only","subject":"new only","updated_at":"2026-06-22T12:00:00Z"}]""",
+                        """[{"id":"t1","subject":"canonical thread","updated_at":"2026-06-22T12:00:00Z"}]""",
                         HttpStatusCode.OK,
                         jsonHdr,
                     )
                 else ->
                     respond(
-                        """[{"id":"t1","subject":"old thread","updated_at":"2026-06-22T09:00:00Z"},
-                            {"id":"t-old-only","subject":"old only","updated_at":"2026-06-22T11:00:00Z"}]""",
+                        """[{"id":"t-old-only","subject":"old only","updated_at":"2026-06-22T11:00:00Z"}]""",
                         HttpStatusCode.OK,
                         jsonHdr,
                     )
@@ -269,47 +486,13 @@ class MessagesViewModelTest {
         vm.startLivePolling()
         runCurrent()
 
-        connections.value = listOf(canonical)
+        connections.value = ConnectionState.Ready(listOf(canonical))
         runCurrent()
 
         val content = vm.state.value as MessagesUiState.Content
-        val section = content.sections.single()
-        assertEquals(canonical.id, section.connectionId)
-        assertEquals(canonical.id, content.selectedConnectionId)
-        val threads = section.threads.getOrThrow()
-        assertEquals(listOf("t1", "t-new-only"), threads.map { it.id })
-        assertEquals("new thread", threads.single { it.id == "t1" }.subject)
-        assertEquals(setOf("item-1", "item-new-only"), section.items.map { it.id }.toSet())
-        assertEquals("new item", section.items.single { it.id == "item-1" }.title)
-    }
-
-    @Test fun canonical_alias_owner_is_unique_when_canonical_precedes_retired_row() = runTest {
-        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
-        val canonical = WorkspaceConnection(
-            "canonical",
-            "http://new:47100",
-            null,
-            "ws",
-            legacyConnectionIds = listOf(retired.id),
-        )
-        val connections = MutableStateFlow(listOf(retired))
-        val vm = MessagesViewModel(repoWith { req ->
-            respond(
-                """[{"id":"t1","subject":"thread","updated_at":"2026-06-22T10:00:00Z"}]""",
-                HttpStatusCode.OK,
-                jsonHdr,
-            )
-        }, connections, backgroundScope)
-        vm.refresh()?.join()
-
-        connections.value = listOf(canonical, retired)
-        runCurrent()
-
-        val content = vm.state.value as MessagesUiState.Content
-        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId })
+        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId }.distinct())
         assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
     }
-
     private val mixedThreadsWsAJson = """
         [{"id":"a1","subject":"x","updated_at":"2026-06-22T09:00:00Z","unseen":true,"needs_you":false},
          {"id":"a2","subject":"y","updated_at":"2026-06-22T10:00:00Z","unseen":false,"needs_you":true},
@@ -329,7 +512,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_all_shows_every_thread() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(4, content.filteredThreads.size)
@@ -337,7 +520,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_unread_shows_only_unseen_threads_across_workspaces() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         vm.selectStateFilter(ThreadStateFilter.UNREAD)
         val content = vm.state.value as MessagesUiState.Content
@@ -345,7 +528,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_needs_you_shows_only_needs_you_threads() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         vm.selectStateFilter(ThreadStateFilter.NEEDS_YOU)
         val content = vm.state.value as MessagesUiState.Content
@@ -353,7 +536,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun state_filter_composes_with_workspace_selection() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         vm.selectWorkspace("A")
         vm.selectStateFilter(ThreadStateFilter.UNREAD)
@@ -371,7 +554,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun filteredThreads_carries_the_owning_connectionId_per_thread() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         val byThreadId = content.filteredThreads.associate { it.thread.id to it.connectionId }
@@ -382,7 +565,7 @@ class MessagesViewModelTest {
     }
 
     @Test fun unread_count_reflects_unseen_threads_total_and_per_workspace() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(2, content.unreadCount)
@@ -391,14 +574,14 @@ class MessagesViewModelTest {
     }
 
     @Test fun topThreads_returns_most_recent_n_newest_first_optionally_scoped_to_a_workspace() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         assertEquals(listOf("b1", "a3"), vm.topThreads(2).map { it.id })
         assertEquals(listOf("a3"), vm.topThreads(1, "A").map { it.id })
     }
 
     @Test fun unreadCountFor_returns_total_for_all_and_per_workspace_count_when_scoped() = runTest {
-        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), flowOf(listOf(connA, connB)), backgroundScope)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()
         val content = vm.state.value as MessagesUiState.Content
         assertEquals(2, content.unreadCountFor(null))
@@ -431,40 +614,6 @@ class MessagesViewModelTest {
         assertEquals(2, merged.size)
         assertEquals(listOf("t2", "t1"), merged.map { it.id })
     }
-
-    @Test fun same_id_handoff_cancellation_recreates_owner_on_next_connection_emission() = runTest {
-        val original = WorkspaceConnection("same", "http://old:47100", null, "ws")
-        val firstReplacement = original.copy(baseUrl = "http://new:47100")
-        val finalReplacement = firstReplacement.copy(token = "replacement-token")
-        val connections = MutableStateFlow(listOf(original))
-        val oldRequestStarted = CompletableDeferred<Unit>()
-        val releaseOldRequest = CompletableDeferred<Unit>()
-        val vm = MessagesViewModel(repoWith { request ->
-            when {
-                request.url.host == "old" && request.url.encodedPath.endsWith("/threads") -> {
-                    oldRequestStarted.complete(Unit)
-                    try {
-                        awaitCancellation()
-                    } finally {
-                        withContext(NonCancellable) { releaseOldRequest.await() }
-                    }
-                }
-                request.url.encodedPath.endsWith("/threads") ->
-                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
-                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
-            }
-        }, connections, backgroundScope)
-
-        oldRequestStarted.await()
-        connections.value = listOf(firstReplacement)
-        runCurrent()
-        connections.value = listOf(finalReplacement)
-        releaseOldRequest.complete(Unit)
-        runCurrent()
-
-        assertEquals(finalReplacement, vm.ownerSnapshot(finalReplacement.id)?.connection)
-    }
-
     @Test fun cancelled_legacy_handoff_never_launches_an_obsolete_load_before_recreating_the_canonical_owner() = runTest {
         val original = WorkspaceConnection("retired", "http://old:47100", null, "ws", state = "ready")
         val replacement = WorkspaceConnection(
@@ -472,7 +621,7 @@ class MessagesViewModelTest {
             legacyConnectionIds = listOf(original.id),
         )
         val nextReady = replacement.copy(state = "ready")
-        val connections = MutableStateFlow(listOf(original))
+        val connections = MutableStateFlow(ConnectionState.Ready(listOf(original)))
         val oldRefreshStarted = CompletableDeferred<Unit>()
         val oldRefreshCancelled = CompletableDeferred<Unit>()
         val releaseOldRefresh = CompletableDeferred<Unit>()
@@ -516,7 +665,7 @@ class MessagesViewModelTest {
         }
         handoffStartMutexHeld.await()
 
-        connections.value = listOf(replacement)
+        connections.value = ConnectionState.Ready(listOf(replacement))
         runCurrent()
         releaseHandoffStartMutex.complete(Unit)
         oldRefreshCancelled.await()
@@ -531,7 +680,7 @@ class MessagesViewModelTest {
         }
         releaseHandoffCompletionMutex.complete(Unit)
         resumeMutexHeld.await()
-        connections.value = listOf(nextReady)
+        connections.value = ConnectionState.Ready(listOf(nextReady))
         runCurrent()
 
         releaseResumeMutex.complete(Unit)
@@ -553,10 +702,128 @@ class MessagesViewModelTest {
         assertEquals(1, newLoads)
     }
 
+    @Test fun canonical_alias_convergence_keeps_one_owner_without_merging_owner_state() = runTest {
+        val retiredA = WorkspaceConnection("retired-a", "http://old-a:47100", null, "ws")
+        val retiredB = WorkspaceConnection("retired-b", "http://old-b:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retiredA.id, retiredB.id),
+        )
+        val connections = MutableStateFlow(ConnectionState.Ready(listOf(retiredA, retiredB)))
+        val vm = MessagesViewModel(repoWith { req ->
+            when {
+                req.url.parameters["wait"] == "1" -> awaitCancellation()
+                req.url.encodedPath.endsWith("/items") && req.url.host == "old-a" ->
+                    respond(
+                        """[{"id":"item-1","kind":"feature","title":"new item","phase":"inbox","updated_at":"2026-06-22T10:00:00Z"},
+                            {"id":"item-new-only","kind":"feature","title":"new only","phase":"inbox","updated_at":"2026-06-22T12:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                req.url.encodedPath.endsWith("/items") ->
+                    respond(
+                        """[{"id":"item-1","kind":"feature","title":"old item","phase":"inbox","updated_at":"2026-06-22T09:00:00Z"},
+                            {"id":"item-old-only","kind":"feature","title":"old only","phase":"inbox","updated_at":"2026-06-22T11:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                req.url.host == "old-a" ->
+                    respond(
+                        """[{"id":"t1","subject":"new thread","updated_at":"2026-06-22T10:00:00Z"},
+                            {"id":"t-new-only","subject":"new only","updated_at":"2026-06-22T12:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                else ->
+                    respond(
+                        """[{"id":"t1","subject":"old thread","updated_at":"2026-06-22T09:00:00Z"},
+                            {"id":"t-old-only","subject":"old only","updated_at":"2026-06-22T11:00:00Z"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+            }
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+        vm.selectWorkspace(retiredA.id)
+        vm.startLivePolling()
+        runCurrent()
+
+        connections.value = ConnectionState.Ready(listOf(canonical))
+        runCurrent()
+
+        val content = vm.state.value as MessagesUiState.Content
+        val section = content.sections.single()
+        assertEquals(canonical.id, section.connectionId)
+        assertEquals(canonical.id, content.selectedConnectionId)
+        val threads = section.threads.getOrThrow()
+        assertEquals(listOf("t1", "t-new-only"), threads.map { it.id })
+        assertEquals("new thread", threads.single { it.id == "t1" }.subject)
+        assertEquals(setOf("item-1", "item-new-only"), section.items.map { it.id }.toSet())
+        assertEquals("new item", section.items.single { it.id == "item-1" }.title)
+    }
+
+    @Test fun canonical_alias_owner_is_unique_when_canonical_precedes_retired_row() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://new:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        val connections = MutableStateFlow(ConnectionState.Ready(listOf(retired)))
+        val vm = MessagesViewModel(repoWith { req ->
+            respond(
+                """[{"id":"t1","subject":"thread","updated_at":"2026-06-22T10:00:00Z"}]""",
+                HttpStatusCode.OK,
+                jsonHdr,
+            )
+        }, connections, backgroundScope)
+        vm.refresh()?.join()
+
+        connections.value = ConnectionState.Ready(listOf(canonical, retired))
+        runCurrent()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(listOf(canonical.id), content.sections.map { it.connectionId })
+        assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
+    }
+
+    @Test fun newer_connection_revision_fences_a_captured_refresh_before_old_state_can_render() = runTest {
+        val a = WorkspaceConnection("A", "http://a:47100")
+        val b = WorkspaceConnection("B", "http://b:47100")
+        val connections = MutableStateFlow(ConnectionState.Ready(listOf(a)))
+        val aStarted = CompletableDeferred<Unit>()
+        val releaseA = CompletableDeferred<Unit>()
+        val vm = MessagesViewModel(repoWith { request ->
+            when (request.url.host) {
+                "a" -> {
+                    aStarted.complete(Unit)
+                    releaseA.await()
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        val refresh = vm.refresh()
+        aStarted.await()
+        connections.value = ConnectionState.Ready(listOf(b))
+        runCurrent()
+        releaseA.complete(Unit)
+        refresh.join()
+        val content = vm.state.first { it is MessagesUiState.Content &&
+            (it as MessagesUiState.Content).sections.map { section -> section.connectionId } == listOf("B") } as MessagesUiState.Content
+        assertEquals(listOf("B"), content.sections.map { it.connectionId })
+    }
+
     @Test fun refresh_captured_before_newer_connections_never_restores_or_polls_the_old_snapshot() = runTest {
         val connectionA = WorkspaceConnection("A", "http://a:47100", null, "a")
         val connectionB = WorkspaceConnection("B", "http://b:47100", null, "b")
-        val connections = MutableStateFlow(listOf(connectionA))
+        val connections = MutableStateFlow(ConnectionState.Ready(listOf(connectionA)))
         val aRequestStarted = CompletableDeferred<Unit>()
         val releaseA = CompletableDeferred<Unit>()
         val vm = MessagesViewModel(repoWith { request ->
@@ -574,7 +841,7 @@ class MessagesViewModelTest {
 
         val refresh = vm.refresh()
         aRequestStarted.await()
-        connections.value = listOf(connectionB)
+        connections.value = ConnectionState.Ready(listOf(connectionB))
         releaseA.complete(Unit)
         refresh.join()
         val content = vm.state.first { candidate ->
@@ -584,32 +851,37 @@ class MessagesViewModelTest {
         assertEquals(listOf(connectionB.id), content.sections.map { it.connectionId })
     }
 
-    @Test fun newer_connection_revision_fences_a_captured_refresh_before_old_state_can_render() = runTest {
-        val a = WorkspaceConnection("A", "http://a:47100")
-        val b = WorkspaceConnection("B", "http://b:47100")
-        val connections = MutableStateFlow(listOf(a))
-        val aStarted = CompletableDeferred<Unit>()
-        val releaseA = CompletableDeferred<Unit>()
+    @Test fun same_id_handoff_cancellation_recreates_owner_on_next_connection_emission() = runTest {
+        val original = WorkspaceConnection("same", "http://old:47100", null, "ws")
+        val firstReplacement = original.copy(baseUrl = "http://new:47100")
+        val finalReplacement = firstReplacement.copy(token = "replacement-token")
+        val connections = MutableStateFlow(ConnectionState.Ready(listOf(original)))
+        val oldRequestStarted = CompletableDeferred<Unit>()
+        val releaseOldRequest = CompletableDeferred<Unit>()
         val vm = MessagesViewModel(repoWith { request ->
-            when (request.url.host) {
-                "a" -> {
-                    aStarted.complete(Unit)
-                    releaseA.await()
-                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+            when {
+                request.url.host == "old" && request.url.encodedPath.endsWith("/threads") -> {
+                    oldRequestStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        withContext(NonCancellable) { releaseOldRequest.await() }
+                    }
                 }
-                else -> respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/threads") ->
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
             }
         }, connections, backgroundScope)
 
-        val refresh = vm.refresh()
-        aStarted.await()
-        connections.value = listOf(b)
+        oldRequestStarted.await()
+        connections.value = ConnectionState.Ready(listOf(firstReplacement))
         runCurrent()
-        releaseA.complete(Unit)
-        refresh.join()
-        val content = vm.state.first { it is MessagesUiState.Content &&
-            (it as MessagesUiState.Content).sections.map { section -> section.connectionId } == listOf("B") } as MessagesUiState.Content
-        assertEquals(listOf("B"), content.sections.map { it.connectionId })
+        connections.value = ConnectionState.Ready(listOf(finalReplacement))
+        releaseOldRequest.complete(Unit)
+        runCurrent()
+
+        assertEquals(finalReplacement, vm.ownerSnapshot(finalReplacement.id)?.connection)
     }
 
 }

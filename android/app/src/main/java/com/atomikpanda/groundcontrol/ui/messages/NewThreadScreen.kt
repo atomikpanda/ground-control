@@ -83,6 +83,13 @@ fun NewThreadScreen(
             return@Scaffold
         }
 
+        if (state.connectionError != null) {
+            Box(Modifier.fillMaxSize().padding(innerPadding), Alignment.Center) {
+                Text("Connections unavailable. Open Settings to recover.")
+            }
+            return@Scaffold
+        }
+
         if (state.connections.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(innerPadding), Alignment.Center) {
                 Text("Add a workspace in Settings to start a thread.")

@@ -2,14 +2,15 @@ package com.atomikpanda.groundcontrol.ui.projects
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hasStableIdentityTuple
 import com.atomikpanda.groundcontrol.data.ladderFor
-import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
 import com.atomikpanda.groundcontrol.ui.theme.resolveIdentity
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** One Projects-tab row: name + resolved identity + the reused workspace detail route. */
@@ -66,6 +68,7 @@ internal fun projectRowsFlow(
 
 class ProjectsViewModel(
     private val repo: ConnectionsRepository,
+    private val connectionState: StateFlow<ConnectionState>,
     private val hostsRepo: HostsRepository,
 ) : ViewModel() {
     val rows: StateFlow<List<ProjectRow>> get() = _rows
@@ -73,8 +76,10 @@ class ProjectsViewModel(
 
     init {
         viewModelScope.launch {
-            projectRowsFlow(repo.connections, hostsRepo.hosts)
-                .collect { _rows.value = it }
+            projectRowsFlow(
+                connectionState.map { (it as? ConnectionState.Ready)?.connections.orEmpty() },
+                hostsRepo.hosts,
+            ).collect { _rows.value = it }
         }
     }
 

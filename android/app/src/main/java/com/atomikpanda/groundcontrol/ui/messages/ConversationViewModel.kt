@@ -2,10 +2,12 @@ package com.atomikpanda.groundcontrol.ui.messages
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.NotFoundException
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.notify.NeedsYouCanceller
@@ -27,6 +29,7 @@ private const val ACTIVITY_STRIP_ENTRY_COUNT = 2
 
 sealed interface ConversationUiState {
     data object Loading : ConversationUiState
+    data class Unavailable(val message: String) : ConversationUiState
     data class Error(val kind: ErrorKind, val message: String) : ConversationUiState
     data class Content(
         val thread: Thread,
@@ -44,14 +47,13 @@ sealed interface ConversationUiState {
 
 class ConversationViewModel(
     private val repo: ThreadsRepository,
-    private val conn: WorkspaceConnection,
+    private val routeConnectionId: String,
     val threadId: String,
+    connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
     private val canceller: NeedsYouCanceller = NoopNeedsYouCanceller,
 ) : ViewModel() {
 
-    /** This conversation's connection id — exposed for ConversationScreen's open-thread signal (#378). */
-    val connectionId: String get() = conn.id
 
     private val _state = MutableStateFlow<ConversationUiState>(ConversationUiState.Loading)
     val state: StateFlow<ConversationUiState> = _state.asStateFlow()
@@ -64,21 +66,40 @@ class ConversationViewModel(
     private fun scope() = testScope ?: viewModelScope
 
     private var pollJob: Job? = null
+    private var pollingRequested = false
+    private var loadJob: Job? = null
+    private val routeConnection = ReactiveRouteConnection(routeConnectionId, connectionState, viewModelScope) { source, snapshot ->
+        pollJob?.cancel()
+        loadJob?.cancel()
+        if (snapshot == null) {
+            _state.value = ConversationUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
+        } else {
+            loadJob = load(snapshot)
+        }
+    }
+    /** Canonical identity for lifecycle consumers; changes when a route alias is adopted. */
+    val resolvedConnectionId: StateFlow<String?> get() = routeConnection.resolvedConnectionId
 
-    fun load(): Job? {
-        _state.value = ConversationUiState.Loading
+    fun load(): Job = routeConnection.current()?.let(::load) ?: scope().launch { }
+
+    private fun load(snapshot: com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot): Job {
+        routeConnection.publishIfCurrent(snapshot) { _state.value = ConversationUiState.Loading }
         return scope().launch {
-            runCatching { repo.getThread(conn, threadId) }
+            runCatching { repo.getThread(snapshot.connection, threadId) }
                 .onSuccess { thread ->
-                    val journal = fetchJournal(thread.taskSlug)
-                    _state.value = ConversationUiState.Content(thread, journal = journal)
-                    markSeen(thread)
-                    // Opening the thread is "viewing" it: proactively clear any pending needs-you
-                    // notification for it so a message you're already reading doesn't linger in the
-                    // shade (#378). Idempotent — cancelling an absent notification is a no-op.
-                    canceller.cancel(conn.id, threadId)
+                    val journal = fetchJournal(thread.taskSlug, snapshot.connection)
+                    routeConnection.publishIfCurrent(snapshot) {
+                        _state.value = ConversationUiState.Content(thread, journal = journal)
+                        markSeen(thread, snapshot.connection)
+                        canceller.cancel(snapshot.connection.id, threadId)
+                        if (pollingRequested) startPolling()
+                    }
                 }
-                .onFailure { t -> _state.value = ConversationUiState.Error(t.toKind(), t.message ?: "error") }
+                .onFailure { t ->
+                    routeConnection.publishIfCurrent(snapshot) {
+                        _state.value = ConversationUiState.Error(t.toKind(), t.message ?: "error")
+                    }
+                }
         }
     }
 
@@ -91,7 +112,7 @@ class ConversationViewModel(
      *  entries for [taskSlug], oldest-first -- an empty list when the thread has no linked task
      *  (skips the fetch entirely) or the fetch fails, so a flaky/unavailable journal never turns
      *  into a broken conversation. */
-    private suspend fun fetchJournal(taskSlug: String?): List<JournalEntry> {
+    private suspend fun fetchJournal(taskSlug: String?, conn: WorkspaceConnection): List<JournalEntry> {
         if (taskSlug == null) return emptyList()
         return catchingApi { repo.getJournal(conn, taskSlug) }
             .getOrDefault(emptyList())
@@ -100,7 +121,7 @@ class ConversationViewModel(
 
     /** Best-effort: mark this thread seen up to its loaded high-water timestamp.
      *  Never mutates UI state — a failed mark must not disturb the conversation. */
-    private fun markSeen(thread: Thread) {
+    private fun markSeen(thread: Thread, conn: WorkspaceConnection) {
         scope().launch { runCatching { repo.markSeen(conn, threadId, thread.updatedAt) } }
     }
 
@@ -123,27 +144,26 @@ class ConversationViewModel(
      *  user seeing the agent's reply. The unchanged-thread tick below has nothing else
      *  to deliver, so it keeps awaiting the journal inline. */
     internal suspend fun pollOnce(cursor: String): String {
-        val resp = runCatching { repo.waitForChange(conn, cursor, 25) }.getOrNull() ?: return cursor
+        val snapshot = routeConnection.current() ?: return cursor
+        val resp = runCatching { repo.waitForChange(snapshot.connection, cursor, 25) }.getOrNull() ?: return cursor
         val cur = _state.value
         if (cur is ConversationUiState.Content && !cur.inFlight) {
             if (resp.threads.any { it.id == threadId }) {
-                runCatching { repo.getThread(conn, threadId) }
+                runCatching { repo.getThread(snapshot.connection, threadId) }
                     .onSuccess { thread ->
-                        // Preserve a visible send-error banner across a live refresh — an
-                        // agent reply arriving must not silently erase "couldn't send".
-                        // Applied immediately -- do not wait on the journal fetch below.
-                        _state.value = ConversationUiState.Content(thread, sendError = cur.sendError, journal = cur.journal)
-                        refreshJournalAsync(thread.taskSlug)
+                        routeConnection.publishIfCurrent(snapshot) {
+                            val latest = _state.value as? ConversationUiState.Content
+                                ?: return@publishIfCurrent
+                            _state.value = latest.copy(thread = thread)
+                            refreshJournalAsync(thread.taskSlug)
+                        }
                     }
             } else {
-                val journal = fetchJournal(cur.thread.taskSlug)
-                // Re-read state after the await rather than writing back the captured `cur`
-                // (Greptile finding on PR #40): during the inline fetchJournal above, a send()
-                // may have set inFlight=true. Writing `cur.copy(...)` (inFlight=false) would
-                // clear that flag, letting a second tap slip past send()'s in-flight guard and
-                // fire a duplicate POST. Only patch the journal onto the *latest* Content.
-                val latest = _state.value as? ConversationUiState.Content ?: return resp.cursor
-                if (journal != latest.journal) _state.value = latest.copy(journal = journal)
+                val journal = fetchJournal(cur.thread.taskSlug, snapshot.connection)
+                routeConnection.publishIfCurrent(snapshot) {
+                    val latest = _state.value as? ConversationUiState.Content ?: return@publishIfCurrent
+                    if (journal != latest.journal) _state.value = latest.copy(journal = journal)
+                }
             }
         }
         return resp.cursor
@@ -156,19 +176,22 @@ class ConversationViewModel(
      *  a concurrent load()/send() landing in the meantime must win over a stale background
      *  update. */
     private fun refreshJournalAsync(taskSlug: String?) {
+        val snapshot = routeConnection.current() ?: return
         scope().launch {
-            val journal = fetchJournal(taskSlug)
-            (_state.value as? ConversationUiState.Content)?.let { latest ->
-                _state.value = latest.copy(journal = journal)
+            val journal = fetchJournal(taskSlug, snapshot.connection)
+            routeConnection.publishIfCurrent(snapshot) {
+                (_state.value as? ConversationUiState.Content)?.let { latest ->
+                    _state.value = latest.copy(journal = journal)
+                }
             }
         }
     }
-
     /** Start the live-reply loop (idempotent). Seeds from the loaded thread's
      *  high-water `updatedAt`; returns early until a thread is loaded, so the
      *  `since` is always a valid ISO timestamp (never "" the server would 422 on).
      *  Cancelled when the VM's scope is cleared. */
     fun startPolling() {
+        pollingRequested = true
         if (pollJob?.isActive == true) return
         // Only poll a loaded conversation; if the server omitted updated_at, fall
         // back to "now" so live-reply still starts (never a silent no-op).
@@ -186,25 +209,25 @@ class ConversationViewModel(
 
     /** Post a message; no-op if blank or a send is already in flight. Returns null if skipped. */
     fun send(text: String): Job? {
+        val snapshot = routeConnection.current() ?: return null
         if (text.isBlank()) return null
         val current = _state.value as? ConversationUiState.Content ?: return null
         if (current.inFlight) return null
-        // Clear any prior send error when a new attempt starts.
-        _state.value = current.copy(inFlight = true, sendError = null)
+        if (!routeConnection.publishIfCurrent(snapshot) {
+            _state.value = current.copy(inFlight = true, sendError = null)
+        }) return null
         return scope().launch {
-            runCatching { repo.postMessage(conn, threadId, text) }
+            runCatching { repo.postMessage(snapshot.connection, threadId, text) }
                 .onSuccess { updatedThread ->
-                    _draft.value = ""
-                    // Carry the current journal forward: a message send doesn't itself change
-                    // the linked task's journal, and resetting to empty here would flash the
-                    // activity strip away until the next poll refetches it.
-                    _state.value = ConversationUiState.Content(updatedThread, inFlight = false, journal = current.journal)
+                    routeConnection.publishIfCurrent(snapshot) {
+                        _draft.value = ""
+                        _state.value = ConversationUiState.Content(updatedThread, inFlight = false, journal = current.journal)
+                    }
                 }
                 .onFailure { t ->
-                    // Keep the existing thread, drop inFlight, and surface the failure so
-                    // the UI can show it and restore the user's text (instead of silently
-                    // re-enabling an empty compose bar).
-                    _state.value = current.copy(inFlight = false, sendError = t.toSendError())
+                    routeConnection.publishIfCurrent(snapshot) {
+                        _state.value = current.copy(inFlight = false, sendError = t.toSendError())
+                    }
                 }
         }
     }

@@ -33,7 +33,6 @@ import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 @Composable
 fun TasksScreen(vm: TasksViewModel, onTaskClick: (connectionId: String, slug: String) -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { vm.refresh() }
 
     val pullState = rememberPullToRefreshState()
     if (pullState.isRefreshing) {
@@ -48,6 +47,9 @@ fun TasksScreen(vm: TasksViewModel, onTaskClick: (connectionId: String, slug: St
             TasksUiState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
             TasksUiState.EmptyConfig -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                 Text("Add a workspace in Settings.")
+            }
+            is TasksUiState.ConnectionsUnavailable -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                Text("Connections unavailable. Open Settings to recover.")
             }
             is TasksUiState.Content -> LazyColumn(Modifier.fillMaxSize()) {
                 s.sections.forEach { section ->

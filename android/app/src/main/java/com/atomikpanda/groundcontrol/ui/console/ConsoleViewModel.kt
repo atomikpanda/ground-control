@@ -2,8 +2,10 @@ package com.atomikpanda.groundcontrol.ui.console
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
-import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
+import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
 import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Message
@@ -36,6 +38,7 @@ data class ConsoleContent(
 
 sealed interface ConsoleUiState {
     data object Loading : ConsoleUiState
+    data class Unavailable(val message: String) : ConsoleUiState
     data class Content(val c: ConsoleContent) : ConsoleUiState
     data class Failed(val reason: String) : ConsoleUiState
 }
@@ -48,14 +51,25 @@ sealed interface ConsoleUiState {
  *  silently drops the message. */
 class ConsoleViewModel(
     private val api: SpecApi,
-    private val conn: WorkspaceConnection,
+    connectionId: String,
     private val itemId: String,
+    connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ConsoleUiState>(ConsoleUiState.Loading)
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
+    private var loadJob: Job? = null
+    private val routeConnection = ReactiveRouteConnection(connectionId, connectionState, viewModelScope) { source, snapshot ->
+        loadJob?.cancel()
+        _sending.value = false
+        if (snapshot == null) {
+            _state.value = ConsoleUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
+        } else {
+            loadJob = load(snapshot)
+        }
+    }
 
     /** True while a `sendDraft`/`answerOption` POST is in flight; the UI disables the Send
      *  control on this to prevent a double-submit. */
@@ -77,18 +91,25 @@ class ConsoleViewModel(
 
     fun onDraftChange(text: String) { _draft.value = text }
 
-    fun load(): Job = scope.launch { _state.value = fetch() }
+    fun load(): Job = routeConnection.current()?.let(::load) ?: scope.launch { }
+
+    private fun load(snapshot: RouteConnectionSnapshot): Job = scope.launch {
+        val next = fetch(snapshot)
+        routeConnection.publishIfCurrent(snapshot) { _state.value = next }
+    }
 
     /** Periodic refresh; cancel by cancelling the returned Job (bind to the composable's lifecycle). */
     fun startPolling(intervalMs: Long = 4000): Job = scope.launch {
         while (isActive) {
             delay(intervalMs)
-            val next = runCatching { fetch() }.getOrNull()
-            if (next is ConsoleUiState.Content) _state.value = next
+            val snapshot = routeConnection.current() ?: continue
+            val next = runCatching { fetch(snapshot) }.getOrNull()
+            if (next is ConsoleUiState.Content) routeConnection.publishIfCurrent(snapshot) { _state.value = next }
         }
     }
 
-    private suspend fun fetch(): ConsoleUiState = try {
+    private suspend fun fetch(snapshot: RouteConnectionSnapshot): ConsoleUiState = try {
+        val conn = snapshot.connection
         val item = api.getItem(conn, itemId)
         coroutineScope {
             val tasks = item.taskSlugs.map { async { runCatching { api.getTask(conn, it) }.getOrNull() } }
@@ -131,21 +152,23 @@ class ConsoleViewModel(
      *  succeeds — on failure the user's typed text survives so it isn't silently lost. */
     fun sendDraft(): Job = postAndRefresh(_draft.value) { _draft.value = "" }
 
-    private fun postAndRefresh(text: String, onSuccess: () -> Unit = {}): Job = scope.launch {
-        // Post to the *item*, not its thread: an in-flight item created from a spec/task has
-        // no thread yet, so the old thread-scoped send silently no-op'd on exactly the items
-        // you'd want to steer. The server lazily creates+links a thread on first message, and
-        // `itemId` is always present — so a send always has a target (and always reports back).
-        _sending.value = true
-        _sendError.value = null
-        try {
-            val ok = runCatching { api.postItemMessage(conn, itemId, text) }.isSuccess
-            if (ok) onSuccess() else _sendError.value = "Couldn't send — check your connection and try again."
-            // defensive refetch: don't drop to Failed on a transient error
-            val next = runCatching { fetch() }.getOrNull()
-            if (next is ConsoleUiState.Content) _state.value = next
-        } finally {
-            _sending.value = false
+    private fun postAndRefresh(text: String, onSuccess: () -> Unit = {}): Job {
+        val snapshot = routeConnection.current() ?: return scope.launch { }
+        return scope.launch {
+            if (!routeConnection.publishIfCurrent(snapshot) {
+                _sending.value = true
+                _sendError.value = null
+            }) return@launch
+            try {
+                val ok = runCatching { api.postItemMessage(snapshot.connection, itemId, text) }.isSuccess
+                if (!routeConnection.publishIfCurrent(snapshot) {
+                    if (ok) onSuccess() else _sendError.value = "Couldn't send — check your connection and try again."
+                }) return@launch
+                val next = runCatching { fetch(snapshot) }.getOrNull()
+                if (next is ConsoleUiState.Content) routeConnection.publishIfCurrent(snapshot) { _state.value = next }
+            } finally {
+                routeConnection.publishIfCurrent(snapshot) { _sending.value = false }
+            }
         }
     }
 }

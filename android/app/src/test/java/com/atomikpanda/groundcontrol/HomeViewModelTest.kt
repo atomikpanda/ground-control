@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.DIRECTORY_STALE_MS
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
@@ -15,11 +16,13 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -67,13 +70,13 @@ class HomeViewModelTest {
     )
 
     @Test fun no_connections_yields_empty_config() = runTest {
-        val vm = HomeViewModel(repo(), { emptyList() }, this)
+        val vm = HomeViewModel(repo(), connectionState(emptyList()), backgroundScope)
         vm.refresh(); advanceUntilIdle()
         assertEquals(HomeUiState.EmptyConfig, vm.state.value)
     }
 
     @Test fun rail_pins_all_first_then_workspaces_by_count_desc() = runTest {
-        val vm = HomeViewModel(repo(), { conns }, this)
+        val vm = HomeViewModel(repo(), connectionState(conns), backgroundScope)
         vm.refresh()?.join()
         val c = vm.state.value as HomeUiState.Content
         assertEquals(listOf(null, "a", "b"), c.rail.map { it.connectionId })  // All, then ws-a (1 item) before ws-b (0)
@@ -82,7 +85,7 @@ class HomeViewModelTest {
     }
 
     @Test fun select_filters_items_to_one_workspace() = runTest {
-        val vm = HomeViewModel(repo(), { conns }, this)
+        val vm = HomeViewModel(repo(), connectionState(conns), backgroundScope)
         vm.refresh()?.join()
         vm.select("b")
         val c = vm.state.value as HomeUiState.Content
@@ -91,12 +94,10 @@ class HomeViewModelTest {
     }
 
     @Test fun all_count_reflects_only_successful_items_when_error_present() = runTest {
-        val vm = HomeViewModel(repoWithFailingHost(), {
-            listOf(
-                WorkspaceConnection("a", "http://a:47100", null, "ws-a"),
-                WorkspaceConnection("bad", "http://bad:47100", null, "ws-bad"),
-            )
-        }, this)
+        val vm = HomeViewModel(repoWithFailingHost(), connectionState(listOf(
+            WorkspaceConnection("a", "http://a:47100", null, "ws-a"),
+            WorkspaceConnection("bad", "http://bad:47100", null, "ws-bad"),
+        )), backgroundScope)
         vm.refresh()?.join()
         val c = vm.state.value as HomeUiState.Content
         assertEquals(1, c.rail.first().count)                                 // "All" count excludes errored ws-bad
@@ -136,7 +137,7 @@ class HomeViewModelTest {
                 ) { mshipDefaults() },
             ),
         )
-        val vm = HomeViewModel(repository, { listOf(connection) }, backgroundScope, hosts)
+        val vm = HomeViewModel(repository, connectionState(listOf(connection)), backgroundScope, hosts)
 
         vm.refresh()?.join()
 
@@ -166,7 +167,7 @@ class HomeViewModelTest {
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         val vm = HomeViewModel(
             repo = repoWithFailingHost(),
-            connectionsProvider = { listOf(connection) },
+            connectionState = connectionState(listOf(connection)),
             testScope = scope,
             hosts = hosts,
             nowMillis = { now },
@@ -186,5 +187,139 @@ class HomeViewModelTest {
             (vm.state.value as HomeUiState.Content).errors.single().ladderState,
         )
         scope.cancel()
+    }
+    @Test fun connection_state_loading_error_empty_add_and_remove_reuse_one_owner() = runTest {
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Loading)
+        val vm = HomeViewModel(repo(), source, backgroundScope)
+        assertTrue(vm.state.value is HomeUiState.Loading)
+
+        source.value = ConnectionState.Error(IllegalStateException("disk"))
+        assertTrue(vm.state.first { it is HomeUiState.ConnectionsUnavailable } is HomeUiState.ConnectionsUnavailable)
+
+        source.value = ConnectionState.Ready(emptyList())
+        assertEquals(HomeUiState.EmptyConfig, vm.state.first { it is HomeUiState.EmptyConfig })
+
+        source.value = ConnectionState.Ready(listOf(conns[0]))
+        assertEquals(
+            listOf(null, "a"),
+            (vm.state.first { (it as? HomeUiState.Content)?.rail?.map { chip -> chip.connectionId } == listOf(null, "a") }
+                as HomeUiState.Content).rail.map { it.connectionId },
+        )
+
+        source.value = ConnectionState.Ready(conns)
+        assertEquals(
+            listOf(null, "a", "b"),
+            (vm.state.first { (it as? HomeUiState.Content)?.rail?.map { chip -> chip.connectionId } == listOf(null, "a", "b") }
+                as HomeUiState.Content).rail.map { it.connectionId },
+        )
+
+        source.value = ConnectionState.Ready(listOf(conns[1]))
+        assertEquals(
+            listOf(null, "b"),
+            (vm.state.first { (it as? HomeUiState.Content)?.rail?.map { chip -> chip.connectionId } == listOf(null, "b") }
+                as HomeUiState.Content).rail.map { it.connectionId },
+        )
+    }
+
+    @Test fun same_id_route_and_token_replacement_starts_one_new_authoritative_home_load() = runTest {
+        val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "Old")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val newRequestStarted = CompletableDeferred<Unit>()
+        val requests = mutableListOf<Pair<String, String?>>()
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val vm = HomeViewModel(
+            HomeFeedRepository(SpecApi(HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("/specs")) {
+                    requests += request.url.host to request.headers[HttpHeaders.Authorization]
+                    if (request.url.host == "new") newRequestStarted.complete(Unit)
+                }
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+        )
+
+        vm.state.first { it is HomeUiState.Content }
+        source.value = ConnectionState.Ready(listOf(replacement))
+        newRequestStarted.await()
+
+        val content = vm.state.first {
+            (it as? HomeUiState.Content)
+                ?.rail
+                ?.singleOrNull { chip -> chip.connectionId == replacement.id }
+                ?.label == replacement.workspaceName
+        } as HomeUiState.Content
+        assertEquals(
+            listOf("old" to "Bearer old-token", "new" to "Bearer new-token"),
+            requests,
+        )
+        assertEquals(listOf(null, replacement.id), content.rail.map { it.connectionId })
+    }
+
+    @Test fun two_repeated_manual_home_refreshes_publish_only_newest_after_delayed_old_completion() = runTest {
+        val firstManualStarted = CompletableDeferred<Unit>()
+        val firstManualCancelled = CompletableDeferred<Unit>()
+        var specLoads = 0
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conns[0])))
+        val vm = HomeViewModel(
+            HomeFeedRepository(SpecApi(HttpClient(MockEngine { request ->
+                when {
+                    request.url.encodedPath.endsWith("/specs") -> {
+                        specLoads += 1
+                        when (specLoads) {
+                            2 -> {
+                                firstManualStarted.complete(Unit)
+                                try {
+                                    CompletableDeferred<Unit>().await()
+                                    respond("""[{"id":"old","title":"Old","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                                } finally {
+                                    firstManualCancelled.complete(Unit)
+                                }
+                            }
+                            3 -> respond("""[{"id":"new","title":"New","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                            else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                        }
+                    }
+                    else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+        )
+
+        vm.state.first { it is HomeUiState.Content }
+        vm.refresh()
+        firstManualStarted.await()
+        val secondManual = vm.refresh()
+        firstManualCancelled.await()
+        secondManual?.join()
+        assertEquals(listOf("approval:a:new"), (vm.state.value as HomeUiState.Content).items.map { it.key })
+    }
+    @Test fun selected_legacy_workspace_adopts_to_canonical_or_clears_when_ambiguous() = runTest {
+        val legacy = WorkspaceConnection("legacy", "http://legacy:47100", null, "Legacy")
+        val canonical = WorkspaceConnection("canonical", "http://canonical:47100", null, "Canonical", legacyConnectionIds = listOf(legacy.id))
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(legacy)))
+        val vm = HomeViewModel(repo(), source, backgroundScope)
+
+        vm.state.first { it is HomeUiState.Content }
+        vm.select(legacy.id)
+        source.value = ConnectionState.Ready(listOf(canonical))
+        assertEquals(
+            canonical.id,
+            (vm.state.first { (it as? HomeUiState.Content)?.selectedConnectionId == canonical.id } as HomeUiState.Content)
+                .selectedConnectionId,
+        )
+
+        source.value = ConnectionState.Ready(
+            listOf(
+                canonical.copy(id = "one"),
+                canonical.copy(id = "two"),
+            ),
+        )
+        assertEquals(
+            null,
+            (vm.state.first { it is HomeUiState.Content && it.selectedConnectionId == null } as HomeUiState.Content)
+                .selectedConnectionId,
+        )
     }
 }

@@ -48,7 +48,9 @@ class DoneViewModelTest {
 
     private fun vm(scope: CoroutineScope, handler: MockRequestHandler) = DoneViewModel(
         SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }),
-        conn, "wi-1", testScope = scope,
+        conn.id, "wi-1",
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     private fun defaultHandler(): MockRequestHandler = { req ->

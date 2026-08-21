@@ -99,6 +99,8 @@ fun ConsoleScreen(vm: ConsoleViewModel, title: String, identity: WorkspaceIdenti
             when (val s = state) {
                 ConsoleUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                is ConsoleUiState.Unavailable ->
+                    Text(s.message, modifier = Modifier.padding(24.dp))
                 is ConsoleUiState.Failed ->
                     Text(
                         s.reason,

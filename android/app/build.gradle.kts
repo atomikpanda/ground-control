@@ -77,6 +77,11 @@ dependencies {
     testImplementation("io.ktor:ktor-client-mock:2.3.12")
     testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit-ktx:1.2.1")
+    androidTestImplementation("io.ktor:ktor-client-mock:2.3.12")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("androidx.work:work-runtime-ktx:2.9.0")
