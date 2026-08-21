@@ -50,7 +50,7 @@ internal class RelayDirectoryTransformer(
                 subdomain = info.subdomain,
                 publicUrl = route,
                 state = info.state,
-                refresh = info.refresh,
+                refresh = info.refresh?.takeIf(String::isNotBlank),
                 relayDomain = relayDomain,
                 lastSeen = info.lastSeen,
                 runnerState = info.runner?.state,

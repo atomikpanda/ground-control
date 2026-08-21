@@ -134,6 +134,21 @@ class HostsRepositoryTest {
         assertEquals("refresh-credential", out[0].refresh)
     }
 
+    @Test fun blank_directory_refresh_keeps_the_cached_credential() {
+        val directory = RelayDirectoryTransformer().transform(
+            HostsResponse(listOf(HostInfo(
+                hostId = host.hostId,
+                publicUrl = host.publicUrl,
+                refresh = " \t",
+            ))),
+            host.relayDomain!!,
+        )
+
+        val refreshed = replaceValidatedRelayHosts(listOf(host), host.relayDomain!!, directory)
+
+        assertEquals("refresh-credential", refreshed.single().refresh)
+    }
+
     @Test fun two_hosts_stay_independent() {
         // AC5: neither host's failure hides or degrades the other.
         val out = upsertHost(upsertHost(emptyList(), host), host.copy(hostId = "h-2", state = "offline"))
