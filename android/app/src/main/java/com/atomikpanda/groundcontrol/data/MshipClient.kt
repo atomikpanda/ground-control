@@ -357,7 +357,7 @@ fun hostAwareClient(
                 else -> null
             }
             var routedHost = host ?: run {
-                val fleetBoundRoute = explicitHostRouteId != null
+                val fleetBoundRoute = explicitHostRouteId != null || (base != null && matchingHosts.size != 1)
                 if (fleetBoundRoute) request.headers.remove(HttpHeaders.Authorization)
                 return@on proceed(request)
             }

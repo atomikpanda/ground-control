@@ -1609,6 +1609,27 @@ class HostWorkspacesTest {
         assertEquals(listOf<String?>(null), unownedAuthorizations)
     }
 
+    @Test fun unscoped_ambiguous_host_route_strips_standing_authorization() = runTest {
+        val sharedBase = "https://shared.relay.example"
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond("""{"workspaces":[]}""", HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = {
+                listOf(
+                    host.copy(hostId = "host-a", publicUrl = sharedBase),
+                    host.copy(hostId = "host-b", publicUrl = sharedBase),
+                )
+            },
+        )
+
+        SpecApi(client.client).listWorkspaces(sharedBase, "must-not-leak")
+
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
     @Test fun unrelated_fleet_hosts_do_not_strip_manual_root_or_workspace_credentials() = runTest {
         val authorizations = mutableListOf<String?>()
         val unrelatedHost = host.copy(

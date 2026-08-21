@@ -303,11 +303,12 @@ internal fun legacyRouteOwnership(
     candidateHosts: List<HostConnection>,
 ): LegacyRouteOwnership {
     if (
-        candidateHosts
-            .map(HostConnection::hostId)
-            .filter(String::isNotBlank)
-            .distinct()
-            .size != candidateHosts.count { it.hostId.isNotBlank() }
+        candidateHosts.any { it.hostId.isBlank() } ||
+            candidateHosts
+                .map(HostConnection::hostId)
+                .filter(String::isNotBlank)
+                .distinct()
+                .size != candidateHosts.count { it.hostId.isNotBlank() }
     ) {
         return LegacyRouteOwnership.Ambiguous
     }
@@ -388,7 +389,7 @@ private val ENCODED_PATH_SEPARATOR = Regex("%2f|%5c", RegexOption.IGNORE_CASE)
 private val ENCODED_DOT = Regex("%2e", RegexOption.IGNORE_CASE)
 
 private fun safeRawPathSegments(path: String): List<String>? {
-    val segments = path.split('/').filter(String::isNotEmpty)
+    val segments = path.split('/')
     return segments.takeUnless { segments.any { segment ->
         val dotDecoded = segment.replace(ENCODED_DOT, ".")
         dotDecoded == "." ||

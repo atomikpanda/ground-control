@@ -480,6 +480,20 @@ class ConnectionsCodecTest {
         )
     }
 
+    @Test fun legacy_route_ownership_treats_blank_host_records_as_ambiguous() {
+        val sharedBase = "https://relay.test/gc"
+        val validHost = HostConnection(hostId = "h1", publicUrl = sharedBase)
+        val blankHost = HostConnection(hostId = "", publicUrl = sharedBase)
+
+        assertEquals(
+            LegacyRouteOwnership.Ambiguous,
+            legacyRouteOwnership(
+                WorkspaceConnection("legacy", "$sharedBase/workspaces/ws-1"),
+                listOf(validHost, blankHost),
+            ),
+        )
+    }
+
     @Test fun legacy_route_ownership_accepts_historical_and_direct_identities() {
         val relayHost = HostConnection(
             hostId = "h1",
@@ -500,6 +514,18 @@ class ConnectionsCodecTest {
             legacyRouteOwnership(
                 WorkspaceConnection("legacy", "https://direct.test/root/workspaces/ws-1"),
                 listOf(relayHost),
+            ),
+        )
+    }
+
+    @Test fun legacy_route_ownership_preserves_empty_path_segments() {
+        val host = HostConnection(hostId = "h1", publicUrl = "https://relay.test/root")
+
+        assertEquals(
+            LegacyRouteOwnership.Unknown,
+            legacyRouteOwnership(
+                WorkspaceConnection("legacy", "https://relay.test/root//workspaces/ws-1"),
+                listOf(host),
             ),
         )
     }
