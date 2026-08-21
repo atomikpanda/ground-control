@@ -15,13 +15,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -120,6 +125,43 @@ internal fun connectionRouteBinding(
 
 internal fun <T> Result<T>.getOrNullOrRethrowCancellation(): T? =
     onFailure { if (it is CancellationException) throw it }.getOrNull()
+
+/** A route-entry-owned holder that keeps one child store for its active connection snapshot. */
+internal class ConnectionRouteViewModelStore : ViewModel() {
+    private var snapshotKey: String? = null
+    private var owner = ConnectionRouteViewModelOwner()
+
+    fun ownerFor(key: String): ConnectionRouteViewModelOwner {
+        if (snapshotKey != key) {
+            owner.clear()
+            owner = ConnectionRouteViewModelOwner()
+            snapshotKey = key
+        }
+        return owner
+    }
+
+    override fun onCleared() {
+        owner.clear()
+    }
+}
+
+internal class ConnectionRouteViewModelOwner : ViewModelStoreOwner {
+    override val viewModelStore = ViewModelStore()
+
+    fun clear() = viewModelStore.clear()
+}
+
+@Composable
+private fun ConnectionRouteViewModelScope(
+    binding: ConnectionRouteBinding,
+    content: @Composable () -> Unit,
+) {
+    val routeStore: ConnectionRouteViewModelStore = viewModel()
+    val owner = routeStore.ownerFor(binding.viewModelKey)
+    CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+        key(binding.viewModelKey) { content() }
+    }
+}
 
 @Composable
 fun GroundControlApp(
@@ -256,10 +298,10 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
                     val title = remember(specId) { specId }
-                    val vm = viewModel(key = binding.viewModelKey) {
+                    val vm = viewModel {
                         SpecDetailViewModel(detailRepo, conn, specId)
                     }
                     SpecDetailScreen(vm, title = title, identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }), onBack = { nav.popBackStack() })
@@ -281,9 +323,9 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
-                    val vm = viewModel(key = binding.viewModelKey) {
+                    val vm = viewModel {
                         TaskDetailViewModel(tasksRepo, conn, slug)
                     }
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
@@ -301,9 +343,9 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
-                    val vm = viewModel(key = binding.viewModelKey) {
+                    val vm = viewModel {
                         WorkspaceViewModel(api, conn)
                     }
                     WorkspaceScreen(
@@ -330,9 +372,9 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
-                    val vm = viewModel(key = binding.viewModelKey) { FarmViewModel(api, conn) }
+                    val vm = viewModel { FarmViewModel(api, conn) }
                     FarmScreen(
                         vm = vm,
                         workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
@@ -359,9 +401,9 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
-                    val vm = viewModel(key = binding.viewModelKey) {
+                    val vm = viewModel {
                         ConsoleViewModel(api, conn, itemId)
                     }
                     ConsoleScreen(
@@ -388,9 +430,9 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
-                    val vm = viewModel(key = binding.viewModelKey) {
+                    val vm = viewModel {
                         ReviewViewModel(api, conn, itemId)
                     }
                     ReviewScreen(
@@ -416,9 +458,9 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
-                    val vm = viewModel(key = binding.viewModelKey) {
+                    val vm = viewModel {
                         DoneViewModel(api, conn, itemId)
                     }
                     DoneScreen(
@@ -519,9 +561,9 @@ fun GroundControlApp(
                 )
                 if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
-                } else {
+                } else ConnectionRouteViewModelScope(binding) {
                     val conn = binding.connection
-                    val vm = viewModel(key = binding.viewModelKey) {
+                    val vm = viewModel {
                         ConversationViewModel(
                             threadsRepo, conn, threadId,
                             canceller = AndroidNeedsYouCanceller(context.applicationContext),
