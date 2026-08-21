@@ -28,6 +28,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
@@ -445,6 +446,7 @@ class MessagesViewModelTest {
             legacyConnectionIds = listOf(original.id),
         )
         val nextReady = replacement.copy(state = "ready")
+        val connections = MutableStateFlow(listOf(original))
         val oldRefreshStarted = CompletableDeferred<Unit>()
         val oldRefreshCancelled = CompletableDeferred<Unit>()
         val releaseOldRefresh = CompletableDeferred<Unit>()
