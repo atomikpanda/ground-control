@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import io.ktor.client.call.NoTransformationFoundException
 import io.ktor.serialization.JsonConvertException
 import java.util.UUID
 
@@ -71,7 +72,10 @@ internal data class FleetRefreshFailure(
 
 internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure {
     if (error is CancellationException) throw error
-    return if (error is JsonConvertException) {
+    return if (
+        error is JsonConvertException ||
+        error is NoTransformationFoundException
+    ) {
         classifyMalformedFleetDirectoryFailure(error)
     } else if (error is AuthException) {
         FleetRefreshFailure(

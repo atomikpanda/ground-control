@@ -65,7 +65,7 @@ data class HostInfo(
 )
 
 @Serializable
-data class HostsResponse(val hosts: List<HostInfo> = emptyList())
+data class HostsResponse(val hosts: List<HostInfo>)
 
 /** The host app's unauthenticated `GET /health`: ids and counts only. */
 @Serializable

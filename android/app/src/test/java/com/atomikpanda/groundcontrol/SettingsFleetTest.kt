@@ -23,6 +23,7 @@ import com.atomikpanda.groundcontrol.ui.settings.selectedDiscoveryConnection
 import com.atomikpanda.groundcontrol.ui.settings.verificationForGeneration
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.ui.settings.visibleSettingsResult
+import io.ktor.client.call.NoTransformationFoundException
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -45,6 +46,15 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsFleetTest {
+    private fun directoryApi(payload: String, contentType: String = "application/json") =
+        SpecApi(HttpClient(MockEngine {
+            respond(
+                payload,
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, contentType),
+            )
+        }) { mshipDefaults() })
+
     @Test fun an_external_relay_account_update_refreshes_an_existing_settings_screen() = runTest {
         val accounts = MutableStateFlow<RelayAccount?>(null)
         var refreshes = 0
@@ -376,13 +386,7 @@ class SettingsFleetTest {
     }
 
     @Test fun malformed_http_directory_response_preserves_cached_observations() = runTest {
-        val api = SpecApi(HttpClient(MockEngine {
-            respond(
-                """{"hosts":[{"last_seen":"not-a-number"}]}""",
-                HttpStatusCode.OK,
-                headersOf(HttpHeaders.ContentType, "application/json"),
-            )
-        }) { mshipDefaults() })
+        val api = directoryApi("""{"hosts":[{"last_seen":"not-a-number"}]}""")
 
         val error = runCatching {
             api.listHosts("relay.example.com", "fleet-token")
@@ -396,6 +400,41 @@ class SettingsFleetTest {
             "Relay returned malformed host data — showing last known hosts",
             failure.message,
         )
+    }
+
+    @Test fun missing_hosts_in_http_directory_response_preserve_cached_observations() = runTest {
+        val error = runCatching {
+            directoryApi("{}").listHosts("relay.example.com", "fleet-token")
+        }.exceptionOrNull()!!
+
+        assertTrue(error is JsonConvertException)
+        assertFalse(classifyFleetRefreshFailure(error).markRelayUnreachable)
+    }
+
+    @Test fun null_hosts_in_http_directory_response_preserve_cached_observations() = runTest {
+        val error = runCatching {
+            directoryApi("""{"hosts":null}""").listHosts("relay.example.com", "fleet-token")
+        }.exceptionOrNull()!!
+
+        assertTrue(error is JsonConvertException)
+        assertFalse(classifyFleetRefreshFailure(error).markRelayUnreachable)
+    }
+
+    @Test fun empty_hosts_in_http_directory_response_are_allowed() = runTest {
+        val hosts = directoryApi("""{"hosts":[]}""")
+            .listHosts("relay.example.com", "fleet-token")
+
+        assertTrue(hosts.isEmpty())
+    }
+
+    @Test fun incompatible_content_type_for_http_directory_response_preserves_cached_observations() = runTest {
+        val error = runCatching {
+            directoryApi("""{"hosts":[]}""", contentType = "text/plain")
+                .listHosts("relay.example.com", "fleet-token")
+        }.exceptionOrNull()!!
+
+        assertTrue(error is NoTransformationFoundException)
+        assertFalse(classifyFleetRefreshFailure(error).markRelayUnreachable)
     }
 
     @Test fun fleet_refresh_failure_classification_propagates_cancellation() {
