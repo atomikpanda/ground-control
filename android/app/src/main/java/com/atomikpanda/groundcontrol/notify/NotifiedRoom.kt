@@ -108,6 +108,9 @@ interface ReplyOutboxDao {
     @Query("UPDATE reply_outbox SET state = 'READY' WHERE actionKey = :actionKey AND notificationVersion = :version AND state = 'WAITING_FOR_CONNECTION'")
     suspend fun resumeWaiting(actionKey: String, version: String): Int
 
+    @Query("UPDATE reply_outbox SET state = 'STALE' WHERE actionKey = :actionKey AND notificationVersion = :version AND state = 'WAITING_FOR_CONNECTION'")
+    suspend fun terminalizeWaiting(actionKey: String, version: String): Int
+
     @Query("UPDATE reply_outbox SET state = :next WHERE actionKey = :actionKey AND notificationVersion = :version AND state = :expected AND renderVersion IS :renderVersion")
     suspend fun transitionForRender(actionKey: String, version: String, expected: ReplyOutboxState, renderVersion: String?, next: ReplyOutboxState): Int
 

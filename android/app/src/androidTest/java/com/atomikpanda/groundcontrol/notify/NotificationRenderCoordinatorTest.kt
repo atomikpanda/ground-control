@@ -163,6 +163,19 @@ class NotificationRenderCoordinatorTest {
         db.close()
     }
 
+    @Test fun newer_resolution_retires_an_older_active_publication() = runBlocking {
+        val db = database()
+        val cancelled = mutableListOf<String>()
+        val coordinator = NotificationRenderCoordinator(db, FakeReplyRenderer()) { c, t -> cancelled += "$c|$t" }
+        coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "2026-08-21T00:00:00Z"))
+
+        coordinator.retire("c", "t", "2026-08-22T00:00:00Z")
+
+        assertFalse(db.replyNotificationVersionDao().get("c", "t")!!.active)
+        assertEquals(listOf("c|t"), cancelled)
+        db.close()
+    }
+
     @Test fun stale_publication_cannot_resurrect_a_retired_generation() = runBlocking {
         val db = database()
         val renderer = FakeReplyRenderer()
@@ -196,7 +209,7 @@ class NotificationRenderCoordinatorTest {
             val cancelled = mutableListOf<String>()
 
             NotificationRenderCoordinator(db, FakeReplyRenderer()) { c, t -> cancelled += "$c|$t" }
-                .adopt("alias", "canonical", thread)
+                .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", thread, "subject", "", "source"))
 
             assertEquals("canonical", db.replyOutboxDao().get(key)!!.connectionId)
             assertTrue(db.replyNotificationVersionDao().get("canonical", thread)!!.active)
@@ -204,6 +217,26 @@ class NotificationRenderCoordinatorTest {
             assertEquals(listOf("alias|$thread"), cancelled)
             db.close()
         }
+    }
+
+    @Test fun adoption_renders_canonical_replacement_before_retiring_alias_notification() = runBlocking {
+        val db = database()
+        val renderer = FakeReplyRenderer()
+        val cancelled = mutableListOf<String>()
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "alias-cap"),
+        )
+
+        assertTrue(
+            NotificationRenderCoordinator(db, renderer) { c, t -> cancelled += "$c|$t" }
+                .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source")),
+        )
+
+        assertEquals(listOf("alias|thread"), cancelled)
+        assertEquals(listOf("alias-cap"), renderer.renders.map { it?.key })
+        assertTrue(db.replyNotificationVersionDao().get("canonical", "thread")!!.active)
+        assertFalse(db.replyNotificationVersionDao().get("alias", "thread")!!.active)
+        db.close()
     }
 
     @Test fun canonical_collision_terminalizes_every_alias_pending_state() = runBlocking {
@@ -227,7 +260,7 @@ class NotificationRenderCoordinatorTest {
             db.replyOutboxDao().insert(row(state, key = key, connectionId = "alias", threadId = thread))
 
             NotificationRenderCoordinator(db, FakeReplyRenderer()) { _, _ -> }
-                .adopt("alias", "canonical", thread)
+                .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", thread, "subject", "", "source"))
 
             assertEquals(ReplyOutboxState.STALE, db.replyOutboxDao().get(key)!!.state)
             val canonical = db.replyNotificationVersionDao().get("canonical", thread)!!
@@ -251,7 +284,7 @@ class NotificationRenderCoordinatorTest {
         )
 
         NotificationRenderCoordinator(db, FakeReplyRenderer()) { _, _ -> }
-            .adopt("alias", "canonical", "t")
+            .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", "t", "subject", "", "old"))
 
         val canonical = db.replyNotificationVersionDao().get("canonical", "t")!!
         assertFalse(canonical.active)

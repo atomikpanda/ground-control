@@ -61,8 +61,16 @@ internal class ReplyOutbox(
             ) return@withTransaction false
             if (canonical != null) {
                 val current = database.replyNotificationVersionDao().get(persisted.connectionId, persisted.threadId)
-                if (current == null || !current.active || current.version != persisted.notificationVersion ||
-                    current.capabilityKey != persisted.actionKey
+                val capability = if (submission.connectionId == persisted.connectionId || current == null) {
+                    database.replyNotificationVersionDao().get(submission.connectionId, persisted.threadId)
+                } else {
+                    current
+                }
+                if (
+                    capability == null ||
+                    !capability.active ||
+                    capability.version != persisted.notificationVersion ||
+                    capability.capabilityKey != persisted.actionKey
                 ) return@withTransaction false
             }
             database.replyOutboxDao().insert(
@@ -87,7 +95,7 @@ internal class ReplyOutbox(
                 ),
             ) != -1L
         }
-        if (accepted || submission.connectionId != persisted.connectionId) notificationActionHandler(submission)
+        notificationActionHandler(submission)
         if (accepted && canonical != null) scheduler.enqueue(persisted.actionKey)
         return accepted
     }
@@ -98,11 +106,15 @@ internal class ReplyOutbox(
             .forEach { row -> database.replyOutboxDao().terminalizeAbandonedClaim(row.actionKey, row.executionId) }
         val connections = currentConnections()
         val resumable = database.withTransaction {
-            database.replyOutboxDao().waitingForConnection().filter { row ->
-                connections.findByConnectionId(row.connectionId) != null &&
-                    database.replyNotificationVersionDao().get(row.connectionId, row.threadId)
-                        ?.let { it.active && it.version == row.notificationVersion && it.capabilityKey == row.actionKey } == true &&
-                    database.replyOutboxDao().resumeWaiting(row.actionKey, row.notificationVersion) == 1
+            database.replyOutboxDao().waitingForConnection().mapNotNull { row ->
+                if (connections.findByConnectionId(row.connectionId) == null) return@mapNotNull null
+                val current = database.replyNotificationVersionDao().get(row.connectionId, row.threadId)
+                if (current?.active == true && current.version == row.notificationVersion && current.capabilityKey == row.actionKey) {
+                    row.takeIf { database.replyOutboxDao().resumeWaiting(row.actionKey, row.notificationVersion) == 1 }
+                } else {
+                    database.replyOutboxDao().terminalizeWaiting(row.actionKey, row.notificationVersion)
+                    null
+                }
             }
         }
         (database.replyOutboxDao().ready() + resumable).distinctBy { it.actionKey }

@@ -38,7 +38,7 @@ class NeedsYouReconciler(
      * the plain notifier seam. */
     private val publish: suspend (NeedsYouEvent) -> Boolean = { notifier.notify(it); true },
     private val retire: suspend (String, String, String) -> Unit = { _, _, _ -> },
-    private val adopt: suspend (String, String, String) -> Unit = { _, _, _ -> },
+    private val adopt: suspend (String, String, NeedsYouEvent) -> Boolean = { _, _, _ -> true },
     /** The thread currently open+foregrounded (see [OpenThreadRegistry]), or null. Suppresses a
      *  duplicate notification for the thread the user is already viewing (#378). Defaults to
      *  "nothing open" so non-UI callers/tests keep the original always-notify behavior. */
@@ -55,15 +55,34 @@ class NeedsYouReconciler(
                     break
                 }
             }
+            suspend fun eventForThread(): NeedsYouEvent {
+                val messages = runCatching { repo.getThread(conn, t.id).messages }
+                    .getOrDefault(emptyList())
+                return NeedsYouEvent(
+                    connectionId = conn.id,
+                    baseUrl = conn.baseUrl,
+                    workspaceName = conn.workspaceName,
+                    threadId = t.id,
+                    subject = t.subject,
+                    preview = t.lastMessage,
+                    updatedAt = t.updatedAt ?: "",
+                    messages = messages,
+                    decision = activeDecision(messages),
+                )
+            }
             if (retiredNotified) {
                 if (needsAttention) {
-                    // Persist the current identity before retiring aliases so an interrupted
-                    // adoption cannot turn an existing notification into a duplicate.
-                    if (!currentNotified) store.markNotified(conn.id, t.id)
+                    var adopted = true
                     for (retiredId in conn.legacyConnectionIds) {
-                        adopt(retiredId, conn.id, t.id)
-                        store.clear(retiredId, t.id)
+                        if (store.isNotified(retiredId, t.id)) {
+                            if (adopt(retiredId, conn.id, eventForThread())) {
+                                store.clear(retiredId, t.id)
+                            } else {
+                                adopted = false
+                            }
+                        }
                     }
+                    if (adopted) store.markNotified(conn.id, t.id)
                 } else {
                     // A resolved alias must be retired, not adopted: otherwise its capability
                     // remains actionable under the canonical identity after dedupe is cleared.
@@ -80,24 +99,7 @@ class NeedsYouReconciler(
                     // reconcile should surface it.
                     continue
                 }
-                // Fetch the full thread once (gated by the dedupe store, so one GET per new
-                // notification) to build MessagingStyle context + resolve the active decision.
-                // Degrades to the summary preview if the fetch fails — a notification always fires.
-                val messages = runCatching { repo.getThread(conn, t.id).messages }
-                    .getOrDefault(emptyList())
-                val published = publish(
-                    NeedsYouEvent(
-                        connectionId = conn.id,
-                        baseUrl = conn.baseUrl,
-                        workspaceName = conn.workspaceName,
-                        threadId = t.id,
-                        subject = t.subject,
-                        preview = t.lastMessage,
-                        updatedAt = t.updatedAt ?: "",
-                        messages = messages,
-                        decision = activeDecision(messages),
-                    ),
-                )
+                val published = publish(eventForThread())
                 if (published) store.markNotified(conn.id, t.id)
             } else if (!needsAttention) {
                 // Publication can succeed immediately before a process death prevents the dedupe

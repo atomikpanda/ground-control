@@ -75,7 +75,7 @@ internal class NotificationRenderCoordinator(
         val retired = database.withTransaction {
             val current = database.replyNotificationVersionDao().get(connectionId, threadId)
             val currentSource = current?.version?.substringBeforeLast('#')
-            if (current?.active == true && (sourceVersion.isBlank() || currentSource == sourceVersion)) {
+            if (current?.active == true && (sourceVersion.isBlank() || currentSource.isNullOrBlank() || currentSource <= sourceVersion)) {
                 database.replyNotificationVersionDao().deactivate(connectionId, threadId, current.version)
                 true
             } else false
@@ -83,24 +83,44 @@ internal class NotificationRenderCoordinator(
         if (retired) cancel(connectionId, threadId)
     }
 
-    suspend fun adopt(sourceConnectionId: String, targetConnectionId: String, threadId: String) {
-        if (sourceConnectionId == targetConnectionId) return
-        withThreadLock(sourceConnectionId, threadId) {
+    suspend fun adopt(sourceConnectionId: String, targetConnectionId: String, event: NeedsYouEvent): Boolean {
+        if (sourceConnectionId == targetConnectionId) return true
+        return withThreadLock(sourceConnectionId, event.threadId) {
+            val target = database.withTransaction {
+                val versions = database.replyNotificationVersionDao()
+                val source = versions.get(sourceConnectionId, event.threadId) ?: return@withTransaction null
+                val current = versions.get(targetConnectionId, event.threadId)
+                when {
+                    current?.active == false -> {
+                        database.replyOutboxDao().terminalizeConnectionActions(sourceConnectionId, event.threadId)
+                        versions.deactivate(sourceConnectionId, event.threadId, source.version)
+                        null
+                    }
+                    current == null -> {
+                        versions.insert(source.copy(connId = targetConnectionId))
+                        ReplyCapability(source.version, requireNotNull(source.capabilityKey))
+                    }
+                    else -> ReplyCapability(current.version, requireNotNull(current.capabilityKey))
+                }
+            }
+            if (target == null) {
+                cancel(sourceConnectionId, event.threadId)
+                return@withThreadLock true
+            }
+            if (!runCatching { notifier.renderCurrent(event, target) }.getOrDefault(false)) return@withThreadLock false
             database.withTransaction {
                 val versions = database.replyNotificationVersionDao()
-                val source = versions.get(sourceConnectionId, threadId) ?: return@withTransaction
-                val target = versions.get(targetConnectionId, threadId)
-                if (target != null) {
-                    // Any canonical record is authoritative, including an inactive retirement
-                    // tombstone. Never resurrect the alias capability over it.
-                    database.replyOutboxDao().terminalizeConnectionActions(sourceConnectionId, threadId)
+                val source = versions.get(sourceConnectionId, event.threadId) ?: return@withTransaction
+                val current = versions.get(targetConnectionId, event.threadId) ?: return@withTransaction
+                if (current.version == source.version && current.capabilityKey == source.capabilityKey) {
+                    database.replyOutboxDao().adoptConnection(sourceConnectionId, targetConnectionId, event.threadId)
                 } else {
-                    versions.insert(source.copy(connId = targetConnectionId))
-                    database.replyOutboxDao().adoptConnection(sourceConnectionId, targetConnectionId, threadId)
+                    database.replyOutboxDao().terminalizeConnectionActions(sourceConnectionId, event.threadId)
                 }
-                versions.deactivate(sourceConnectionId, threadId, source.version)
+                versions.deactivate(sourceConnectionId, event.threadId, source.version)
             }
-            cancel(sourceConnectionId, threadId)
+            cancel(sourceConnectionId, event.threadId)
+            true
         }
     }
 

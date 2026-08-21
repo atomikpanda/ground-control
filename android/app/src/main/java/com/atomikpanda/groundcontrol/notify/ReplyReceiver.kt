@@ -49,6 +49,7 @@ class ReplyReceiver @JvmOverloads constructor(
         val pending = goAsync()
         scope.launch {
             try {
+                ReplyStartupGate.awaitReset()
                 intakeFactory(context.applicationContext).submit(intent)
             } finally {
                 pending.finish()

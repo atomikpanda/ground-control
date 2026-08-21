@@ -18,3 +18,10 @@ internal object ReplyStartupGate {
         resetComplete.await()
     }
 }
+
+internal suspend fun <T> withReplyStartupGate(block: suspend () -> T): T =
+    try {
+        block()
+    } finally {
+        ReplyStartupGate.finishReset()
+    }

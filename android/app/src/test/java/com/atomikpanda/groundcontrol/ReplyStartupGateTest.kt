@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.notify.ReplyStartupGate
+import com.atomikpanda.groundcontrol.notify.withReplyStartupGate
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertFalse
@@ -16,6 +17,20 @@ class ReplyStartupGateTest {
         }
         assertFalse(watcher.isCompleted)
         ReplyStartupGate.finishReset()
+        assertTrue(watcher.await())
+    }
+
+    @Test fun database_open_failure_releases_waiters_from_the_reset_generation() = runTest {
+        ReplyStartupGate.beginReset()
+        val watcher = async {
+            ReplyStartupGate.awaitReset()
+            true
+        }
+
+        runCatching {
+            withReplyStartupGate<Nothing> { error("database open failed") }
+        }
+
         assertTrue(watcher.await())
     }
 }

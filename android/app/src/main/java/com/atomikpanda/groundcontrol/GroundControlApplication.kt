@@ -11,7 +11,7 @@ import com.atomikpanda.groundcontrol.notify.NotificationRenderCoordinator
 import com.atomikpanda.groundcontrol.notify.AndroidNotifier
 import com.atomikpanda.groundcontrol.notify.ReplyMigrationResetter
 import com.atomikpanda.groundcontrol.notify.ReplyStartupGate
-import com.atomikpanda.groundcontrol.notify.WorkManagerReplyScheduler
+import com.atomikpanda.groundcontrol.notify.withReplyStartupGate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,16 +27,15 @@ class GroundControlApplication : Application() {
         // must await this exact generation rather than racing mutex acquisition.
         ReplyStartupGate.beginReset()
         scope.launch {
-            val database = NotifiedDatabase.get(this@GroundControlApplication)
-            try {
-                ReplyMigrationResetter(database) {
-                    val manager = getSystemService(NotificationManager::class.java)
-                    manager.activeNotifications
-                        .filter { it.notification.channelId == NotificationChannels.NEEDS_YOU }
-                        .forEach { manager.cancel(it.id) }
-                }.resetIfRequired()
-            } finally {
-                ReplyStartupGate.finishReset()
+            val database = withReplyStartupGate {
+                NotifiedDatabase.get(this@GroundControlApplication).also {
+                    ReplyMigrationResetter(it) {
+                        val manager = getSystemService(NotificationManager::class.java)
+                        manager.activeNotifications
+                            .filter { notification -> notification.notification.channelId == NotificationChannels.NEEDS_YOU }
+                            .forEach { notification -> manager.cancel(notification.id) }
+                    }.resetIfRequired()
+                }
             }
             val renderer = NotificationRenderCoordinator(
                 database,

@@ -130,7 +130,7 @@ class NeedsYouReconcilerTest {
         NeedsYouReconciler(
             store, notifier, routedRepo(),
             retire = { connectionId, threadId, _ -> retired += "$connectionId|$threadId" },
-            adopt = { source, target, threadId -> transfers += "$source|$target|$threadId" },
+            adopt = { source, target, event -> transfers += "$source|$target|${event.threadId}"; true },
         ).reconcile(adopted, listOf(summary("t1", false)))
         assertEquals(listOf("alias|t1", "canonical|t1"), retired)
         assertTrue(transfers.isEmpty())

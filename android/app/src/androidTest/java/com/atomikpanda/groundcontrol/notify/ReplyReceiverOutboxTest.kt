@@ -14,6 +14,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -118,6 +119,29 @@ class ReplyReceiverOutboxTest {
         database.close()
     }
 
+    @Test fun stale_waiting_reply_terminalizes_after_connection_restores_a_newer_generation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        var connections = emptyList<WorkspaceConnection>()
+        val outbox = ReplyOutbox(
+            database,
+            object : ReplyWorkScheduler { override fun enqueue(actionKey: String) = error("stale reply must not run") },
+            { connections },
+            {},
+        )
+        val submission = validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "exact reply").toReplySubmission()!!
+        assertTrue(outbox.submit(submission))
+
+        connections = listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace"))
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("canonical", "thread", "source#2", 2, true, "new-cap"),
+        )
+        outbox.reconcileEligible()
+
+        assertEquals(ReplyOutboxState.STALE, database.replyOutboxDao().get("opaque-key")!!.state)
+        database.close()
+    }
+
     @Test fun reconciliation_enqueues_waiting_current_generation_once_after_connection_returns() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
@@ -202,7 +226,8 @@ class ReplyReceiverOutboxTest {
         val renderer = object : ReplyNotificationRenderer {
             override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?) = true
         }
-        NotificationRenderCoordinator(database, renderer) { _, _ -> }.adopt("alias", "canonical", "thread")
+        NotificationRenderCoordinator(database, renderer) { _, _ -> }
+            .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source"))
         val scheduled = mutableListOf<String>()
         val outbox = ReplyOutbox(database, object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
             { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace", legacyConnectionIds = listOf("alias"))) }, {})
@@ -210,6 +235,30 @@ class ReplyReceiverOutboxTest {
         assertEquals(true, outbox.submit(tap))
         assertEquals("canonical", database.replyOutboxDao().get("opaque-key")!!.connectionId)
         assertEquals(listOf("opaque-key"), scheduled)
+        database.close()
+    }
+
+    @Test fun alias_tap_before_capability_adoption_persists_one_canonical_submission() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "opaque-key"),
+        )
+        val scheduled = mutableListOf<String>()
+        val cancelled = mutableListOf<String>()
+        val outbox = ReplyOutbox(
+            database,
+            object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
+            { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace", legacyConnectionIds = listOf("alias"))) },
+            { cancelled += it.connectionId },
+        )
+        val tap = validIntent().putExtra(ReplyReceiver.EXTRA_CONN_ID, "alias")
+            .putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A").toReplySubmission()!!
+
+        assertTrue(outbox.submit(tap))
+        assertEquals("canonical", database.replyOutboxDao().get("opaque-key")!!.connectionId)
+        assertEquals(listOf("opaque-key"), scheduled)
+        assertEquals(listOf("alias"), cancelled)
         database.close()
     }
 
@@ -228,7 +277,11 @@ class ReplyReceiverOutboxTest {
         )
         NotificationRenderCoordinator(database, object : ReplyNotificationRenderer {
             override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?) = true
-        }) { _, _ -> }.adopt("alias", "canonical", "thread")
+        }) { _, _ -> }.adopt(
+            "alias",
+            "canonical",
+            NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source"),
+        )
         val scheduled = mutableListOf<String>()
         val outbox = ReplyOutbox(
             database,
@@ -335,6 +388,7 @@ class ReplyReceiverOutboxTest {
         }
         val enqueueReached = CountDownLatch(1)
         val releaseEnqueue = CountDownLatch(1)
+
         val outbox = ReplyOutbox(
             database,
             object : ReplyWorkScheduler {
@@ -354,6 +408,29 @@ class ReplyReceiverOutboxTest {
         assertEquals(1L, releaseEnqueue.count)
         releaseEnqueue.countDown()
         database.close()
+    }
+    @Test fun receiver_waits_for_migration_reset_before_submitting_an_action() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val submitted = CompletableDeferred<Unit>()
+        val receiver = ReplyReceiver(
+            intakeFactory = {
+                object : ReplyIntake {
+                    override suspend fun submit(intent: Intent): Boolean {
+                        submitted.complete(Unit)
+                        return true
+                    }
+                }
+            },
+            scope = CoroutineScope(Dispatchers.Unconfined),
+        )
+        ReplyStartupGate.beginReset()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            receiver.onReceive(context, validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A"))
+        }
+
+        assertFalse(submitted.isCompleted)
+        ReplyStartupGate.finishReset()
+        submitted.await()
     }
 
     private fun validIntent() = Intent().apply {
