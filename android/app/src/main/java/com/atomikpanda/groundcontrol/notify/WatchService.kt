@@ -37,10 +37,19 @@ class WatchService : Service() {
         super.onCreate()
         repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         connections = ConnectionsRepository(applicationContext)
+        val database = NotifiedDatabase.get(applicationContext)
+        val renderer = NotificationRenderCoordinator(
+            database,
+            AndroidNotifier(applicationContext),
+            AndroidNeedsYouCanceller(applicationContext)::cancel,
+        )
         reconciler = NeedsYouReconciler(
-            RoomNotifiedStore(NotifiedDatabase.get(applicationContext).notifiedDao()),
+            RoomNotifiedStore(database.notifiedDao()),
             AndroidNotifier(applicationContext),
             repo,
+            publish = renderer::publish,
+            retire = renderer::retire,
+            adopt = renderer::adopt,
             foregroundThreadKey = { OpenThreadRegistry.snapshot() },
         )
     }

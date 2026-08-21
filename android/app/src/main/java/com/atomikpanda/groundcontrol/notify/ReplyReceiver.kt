@@ -3,79 +3,103 @@ package com.atomikpanda.groundcontrol.notify
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Handler
-import android.os.Looper
 import androidx.core.app.RemoteInput
-import androidx.core.content.ContextCompat
+import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.buildJson
 import com.atomikpanda.groundcontrol.data.dto.Decision
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.serialization.decodeFromString
+
+interface ReplyIntake {
+    suspend fun submit(intent: Intent): Boolean
+}
+
+internal class ReplyOutboxIntake private constructor(private val outbox: ReplyOutbox) : ReplyIntake {
+    constructor(context: Context) : this(
+        ReplyOutbox(
+            database = NotifiedDatabase.get(context),
+            scheduler = WorkManagerReplyScheduler(context),
+            currentConnections = { ConnectionsRepository(context).snapshot() },
+            notificationActionHandler = { submission ->
+                AndroidNeedsYouCanceller(context).cancel(submission.connectionId, submission.threadId)
+            },
+        ),
+    )
+
+    internal constructor(outbox: ReplyOutbox, testOnly: Unit = Unit) : this(outbox)
+
+    override suspend fun submit(intent: Intent): Boolean {
+        val submission = intent.toReplySubmission() ?: return false
+        return outbox.submit(submission)
+    }
+}
 
 /**
- * Receives an inline direct-reply (RemoteInput free text) or an option-button tap from a needs-you
- * notification, then hands the post off to an expedited [ReplyWorker] so it survives Doze /
- * process-death (ac6). Never posts on the receiver thread. Not exported (registered in the
- * manifest with android:exported="false").
+ * Receives actions without doing database or WorkManager I/O on the broadcast/main thread. The
+ * durable commit occurs before scheduling, and [PendingResult.finish] is always released.
  */
-class ReplyReceiver : BroadcastReceiver() {
+class ReplyReceiver @JvmOverloads constructor(
+    private val intakeFactory: (Context) -> ReplyIntake = { ReplyOutboxIntake(it) },
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+) : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val connId = intent.getStringExtra(EXTRA_CONN_ID) ?: return
-        val threadId = intent.getStringExtra(EXTRA_THREAD_ID) ?: return
-        // Free-text reply (also the WearOS path) takes precedence; otherwise a raw option tap.
-        val fromRemote = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_REPLY_TEXT)
-        val text = replyText(fromRemote)
-            ?: intent.getStringExtra(EXTRA_OPTION_TEXT)?.takeIf { it.isNotBlank() }
-            ?: return
-        // Scheduling contains no DataStore work and returns immediately. Finish the broadcast after
-        // WorkManager confirms persistence, but never retain it past Android's broadcast window.
         val pending = goAsync()
-        val finished = AtomicBoolean()
-        val finish = Runnable {
-            if (finished.compareAndSet(false, true)) pending.finish()
+        scope.launch {
+            try {
+                intakeFactory(context.applicationContext).submit(intent)
+            } finally {
+                pending.finish()
+            }
         }
-        try {
-            val operation = ReplyWorker.enqueue(
-                context = context,
-                connId = connId,
-                threadId = threadId,
-                text = text,
-                subject = intent.getStringExtra(EXTRA_SUBJECT) ?: "",
-                workspace = intent.getStringExtra(EXTRA_WORKSPACE) ?: "",
-                baseUrl = intent.getStringExtra(EXTRA_BASE_URL) ?: "",
-                notificationVersion = intent.getStringExtra(EXTRA_NOTIFICATION_VERSION) ?: "",
-                retryAttempt = intent.getIntExtra(EXTRA_RETRY_ATTEMPT, 0),
-                decision = intent.decision(),
-            )
-            operation.result.addListener(finish, ContextCompat.getMainExecutor(context))
-            Handler(Looper.getMainLooper()).postDelayed(finish, MAX_BROADCAST_HANDOFF_MS)
-        } catch (_: Exception) {
-            finish.run()
-        }
-    }
-
-    private fun Intent.decision(): Decision? {
-        val options = getStringArrayListExtra(EXTRA_DECISION_OPTIONS) ?: return null
-        return Decision(
-            options = options,
-            recommended = getIntExtra(EXTRA_DECISION_RECOMMENDED, -1).takeIf { it >= 0 },
-            allowFreeText = getBooleanExtra(EXTRA_DECISION_ALLOW_FREE_TEXT, true),
-            multi = getBooleanExtra(EXTRA_DECISION_MULTI, false),
-        )
     }
 
     companion object {
         const val KEY_REPLY_TEXT = "reply_text"
         const val EXTRA_CONN_ID = "conn_id"
         const val EXTRA_THREAD_ID = "thread_id"
+        const val EXTRA_NOTIFICATION_VERSION = "notification_version"
+        const val EXTRA_REPLY_CAPABILITY = "reply_capability"
         const val EXTRA_OPTION_TEXT = "option_text"
+        const val EXTRA_DECISION = "decision"
         const val EXTRA_SUBJECT = "subject"
         const val EXTRA_WORKSPACE = "workspace"
         const val EXTRA_BASE_URL = "base_url"
-        const val EXTRA_RETRY_ATTEMPT = "retry_attempt"
-        const val EXTRA_NOTIFICATION_VERSION = "notification_version"
-        const val EXTRA_DECISION_OPTIONS = "decision_options"
-        const val EXTRA_DECISION_RECOMMENDED = "decision_recommended"
-        const val EXTRA_DECISION_ALLOW_FREE_TEXT = "decision_allow_free_text"
-        const val EXTRA_DECISION_MULTI = "decision_multi"
-        private const val MAX_BROADCAST_HANDOFF_MS = 9_000L
     }
+}
+
+internal fun Intent.toReplySubmission(): ReplySubmission? {
+    val connectionId = getStringExtra(ReplyReceiver.EXTRA_CONN_ID) ?: return null
+    val threadId = getStringExtra(ReplyReceiver.EXTRA_THREAD_ID) ?: return null
+    val version = getStringExtra(ReplyReceiver.EXTRA_NOTIFICATION_VERSION) ?: return null
+    val capability = getStringExtra(ReplyReceiver.EXTRA_REPLY_CAPABILITY) ?: return null
+    val decisionJson = getStringExtra(ReplyReceiver.EXTRA_DECISION)
+    val decision = decisionJson?.let { runCatching { buildJson().decodeFromString<Decision>(it) }.getOrNull() }
+    if (decisionJson != null && decision == null) return null
+    val remote = RemoteInput.getResultsFromIntent(this)?.getCharSequence(ReplyReceiver.KEY_REPLY_TEXT)
+    val freeText = remote?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+    val option = getStringExtra(ReplyReceiver.EXTRA_OPTION_TEXT)?.takeIf { it.isNotEmpty() }
+    val kind = if (freeText != null) ReplyInputKind.FREE_TEXT else ReplyInputKind.OPTION
+    val text = freeText ?: option ?: return null
+    if (kind == ReplyInputKind.FREE_TEXT && decision?.allowFreeText == false) return null
+    if (kind == ReplyInputKind.OPTION && decision != null && text !in decision.options) return null
+    val subject = getStringExtra(ReplyReceiver.EXTRA_SUBJECT).orEmpty()
+    val workspace = getStringExtra(ReplyReceiver.EXTRA_WORKSPACE).orEmpty()
+    val baseUrl = getStringExtra(ReplyReceiver.EXTRA_BASE_URL).orEmpty()
+    if (!validReplyContext(capability, connectionId, threadId, version, text, subject, workspace, baseUrl, decisionJson.orEmpty())) return null
+    return ReplySubmission(
+        actionKey = capability,
+        connectionId = connectionId,
+        threadId = threadId,
+        notificationVersion = version,
+        replyText = text,
+        inputKind = kind,
+        subject = subject,
+        workspace = workspace,
+        baseUrl = baseUrl,
+        decision = decision,
+        decisionJson = decisionJson,
+    )
 }

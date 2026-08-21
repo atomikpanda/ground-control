@@ -18,11 +18,6 @@ data class NeedsYouEvent(
     val messages: List<Message> = emptyList(),
     /** The active, still-unanswered decision (drives the option-action buttons), if any. */
     val decision: Decision? = null,
-    /** Persisted action generation; blank asks the notifier to allocate the next notification cycle. */
-    val replyActionVersion: String = "",
-    /** A successfully posted reply may expose a new notification cycle even when its source stamp
-     * did not change. */
-    val forceNewReplyActionVersion: Boolean = false,
 )
 
 interface NotifiedStore {
@@ -32,16 +27,18 @@ interface NotifiedStore {
 }
 
 interface Notifier {
-    suspend fun notify(event: NeedsYouEvent)
-    /** Observed before the reconcile can queue behind publication, so a later generation cannot clear. */
-    suspend fun activeReplyActionGeneration(connectionId: String, threadId: String): Long? = null
-    suspend fun clearReplyAction(connectionId: String, threadId: String, expectedGeneration: Long?) {}
+    fun notify(event: NeedsYouEvent)
 }
 
 class NeedsYouReconciler(
     private val store: NotifiedStore,
     private val notifier: Notifier,
     private val repo: ThreadsRepository,
+    /** Production supplies generation-safe Room publication; existing non-Android consumers retain
+     * the plain notifier seam. */
+    private val publish: suspend (NeedsYouEvent) -> Unit = { notifier.notify(it) },
+    private val retire: suspend (String, String) -> Unit = { _, _ -> },
+    private val adopt: suspend (String, String, String) -> Unit = { _, _, _ -> },
     /** The thread currently open+foregrounded (see [OpenThreadRegistry]), or null. Suppresses a
      *  duplicate notification for the thread the user is already viewing (#378). Defaults to
      *  "nothing open" so non-UI callers/tests keep the original always-notify behavior. */
@@ -59,17 +56,25 @@ class NeedsYouReconciler(
                 }
             }
             if (retiredNotified) {
-                // Persist the current identity before retiring aliases so an interrupted migration
-                // cannot turn an existing notification into a future duplicate.
-                if (needsAttention && !currentNotified) {
-                    store.markNotified(conn.id, t.id)
-                }
-                for (retiredId in conn.legacyConnectionIds) {
-                    store.clear(retiredId, t.id)
-                }
-                if (!needsAttention) {
-                    val generation = notifier.activeReplyActionGeneration(conn.id, t.id)
-                    notifier.clearReplyAction(conn.id, t.id, generation)
+                if (needsAttention) {
+                    // Persist the current identity before retiring aliases so an interrupted
+                    // adoption cannot turn an existing notification into a duplicate.
+                    if (!currentNotified) store.markNotified(conn.id, t.id)
+                    for (retiredId in conn.legacyConnectionIds) {
+                        adopt(retiredId, conn.id, t.id)
+                        store.clear(retiredId, t.id)
+                    }
+                } else {
+                    // A resolved alias must be retired, not adopted: otherwise its capability
+                    // remains actionable under the canonical identity after dedupe is cleared.
+                    for (retiredId in conn.legacyConnectionIds) {
+                        retire(retiredId, t.id)
+                        store.clear(retiredId, t.id)
+                    }
+                    if (currentNotified) {
+                        retire(conn.id, t.id)
+                        store.clear(conn.id, t.id)
+                    }
                 }
             }
             if (needsAttention && !currentNotified && !retiredNotified) {
@@ -83,7 +88,7 @@ class NeedsYouReconciler(
                 // notification) to build MessagingStyle context + resolve the active decision.
                 // Degrades to the summary preview if the fetch fails — a notification always fires.
                 val messages = runCatching { repo.getThread(conn, t.id).messages }.getOrDefault(emptyList())
-                notifier.notify(
+                publish(
                     NeedsYouEvent(
                         connectionId = conn.id,
                         baseUrl = conn.baseUrl,
@@ -94,13 +99,12 @@ class NeedsYouReconciler(
                         updatedAt = t.updatedAt ?: "",
                         messages = messages,
                         decision = activeDecision(messages),
-                    )
+                    ),
                 )
                 store.markNotified(conn.id, t.id)
             } else if (!needsAttention && currentNotified) {
-                val generation = notifier.activeReplyActionGeneration(conn.id, t.id)
+                retire(conn.id, t.id)
                 store.clear(conn.id, t.id)
-                notifier.clearReplyAction(conn.id, t.id, generation)
             }
         }
     }

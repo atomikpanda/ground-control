@@ -1,20 +1,24 @@
 package com.atomikpanda.groundcontrol.notify
 
-/** Durable outcome for one notification action capability. */
-enum class ReplyActionState {
+/** Durable state of an accepted notification action. */
+enum class ReplyOutboxState {
     READY,
+    WAITING_FOR_CONNECTION,
     IN_FLIGHT,
     SAFE_FAILURE_PENDING_RENDER,
+    SAFE_FAILURE,
     DELIVERED_PENDING_RENDER,
-    UNCERTAIN_PENDING_RENDER,
     DELIVERED,
+    UNCERTAIN_PENDING_RENDER,
     UNCERTAIN,
+    STALE,
 }
 
+enum class ReplyInputKind { FREE_TEXT, OPTION }
 
-/**
- * A response proves that the server rejected the request only for 4xx. A transport failure or
- * server error can occur after append, so retrying it would risk a duplicate message.
- */
-internal fun replyFailureState(httpStatusCode: Int?): ReplyActionState =
-    if (httpStatusCode in 400..499) ReplyActionState.READY else ReplyActionState.UNCERTAIN
+/** A failure can only be retried manually unless it is proven to precede transmission. */
+internal sealed interface ReplyDeliveryOutcome {
+    data object Delivered : ReplyDeliveryOutcome
+    data object SafePreTransmissionFailure : ReplyDeliveryOutcome
+    data object Uncertain : ReplyDeliveryOutcome
+}

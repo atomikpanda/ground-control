@@ -37,7 +37,7 @@ private class FakeStore : NotifiedStore {
 
 private class FakeNotifier : Notifier {
     val events = mutableListOf<NeedsYouEvent>()
-    override suspend fun notify(event: NeedsYouEvent) { events += event }
+    override fun notify(event: NeedsYouEvent) { events += event }
 }
 
 class NeedsYouReconcilerTest {
@@ -120,6 +120,21 @@ class NeedsYouReconcilerTest {
         assertFalse("canonical|t1" in store.marks)
         assertFalse("retired|t1" in store.marks)
         assertTrue("other|t1" in store.marks)
+    }
+
+    @Test fun resolved_alias_is_retired_without_canonical_adoption() = runTest {
+        val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("alias"))
+        val store = FakeStore(); val notifier = FakeNotifier()
+        store.markNotified("alias", "t1")
+        val retired = mutableListOf<String>(); val transfers = mutableListOf<String>()
+        NeedsYouReconciler(
+            store, notifier, routedRepo(),
+            retire = { connectionId, threadId -> retired += "$connectionId|$threadId" },
+            adopt = { source, target, threadId -> transfers += "$source|$target|$threadId" },
+        ).reconcile(adopted, listOf(summary("t1", false)))
+        assertEquals(listOf("alias|t1"), retired)
+        assertTrue(transfers.isEmpty())
+        assertFalse("alias|t1" in store.marks)
     }
 
     @Test fun plain_note_does_not_notify() = runTest {

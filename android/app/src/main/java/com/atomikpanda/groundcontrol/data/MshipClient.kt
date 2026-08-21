@@ -78,14 +78,11 @@ import kotlinx.serialization.json.jsonPrimitive
 // break a cockpit's entire load.
 fun buildJson(): Json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
-open class ApiResponseException(
-    val status: HttpStatusCode,
-    message: String,
-) : Exception(message)
-open class AuthException(message: String) : ApiResponseException(HttpStatusCode.Unauthorized, message)
-class NotFoundException(message: String) : ApiResponseException(HttpStatusCode.NotFound, message)
+open class AuthException(message: String) : Exception(message)
+class NotFoundException(message: String) : Exception(message)
 /** 409 — carries the server's verbatim `detail` (approval blockers or invalid transition). */
-class ApiConflictException(val detail: String) : ApiResponseException(HttpStatusCode.Conflict, detail)
+class ApiConflictException(val detail: String) : Exception(detail)
+class ApiResponseException(val status: HttpStatusCode, message: String) : Exception(message)
 
 /** Pull FastAPI's `{"detail": "..."}` out of an error body, falling back to the raw text. */
 private fun errorDetail(body: String): String =
@@ -328,9 +325,7 @@ fun hostAwareClient(
             val base = cache?.let { hostBaseFor(originalUrl, knownHosts) }
             val matchingHosts = base?.let { baseIdentity ->
                 knownHosts.filter { candidate ->
-                    candidate.hostBases().any {
-                        normalizedBaseUrl(it) == baseIdentity
-                    }
+                    candidate.hasKnownBaseIdentity(baseIdentity)
                 }
             }.orEmpty()
             val legacyMatchingHosts = workspaceRoute?.let {
