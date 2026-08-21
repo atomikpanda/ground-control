@@ -7,7 +7,6 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
@@ -277,13 +276,6 @@ class MessagesViewModel(
 
     internal fun ownerSnapshot(connectionId: String): MessageConnectionSnapshot? = owners[connectionId]?.snapshot?.value
     internal fun ownerForTest(connectionId: String): MessageConnectionOwner? = owners[connectionId]
-    internal suspend fun holdReconcileMutexForTest(
-        entered: CompletableDeferred<Unit>,
-        release: CompletableDeferred<Unit>,
-    ) = reconcileMutex.withLock {
-        entered.complete(Unit)
-        release.await()
-    }
 
     private fun allThreads(connectionId: String?): List<ThreadSummary> = sections()
         .filter { connectionId == null || it.connectionId == connectionId }
