@@ -308,6 +308,9 @@ fun hostAwareClient(
             val cache = tokens
             val knownHosts = hosts()
             val originalUrl = request.url.buildString()
+            val hostSnapshotHasUniqueIds =
+                knownHosts.all { it.hostId.isNotBlank() } &&
+                    knownHosts.map(HostConnection::hostId).distinct().size == knownHosts.size
             val originalPath = originalUrl.substringBefore('?').substringBefore('#')
             val originalUrlIdentity = normalizedBaseUrl(originalPath)
                 ?: return@on proceed(request)
@@ -353,11 +356,13 @@ fun hostAwareClient(
                         else -> null
                     }
                 }
-                base != null -> matchingHosts.singleOrNull()
+                base != null && hostSnapshotHasUniqueIds -> matchingHosts.singleOrNull()
                 else -> null
             }
             var routedHost = host ?: run {
-                val fleetBoundRoute = explicitHostRouteId != null || (base != null && matchingHosts.size != 1)
+                val fleetBoundRoute =
+                    explicitHostRouteId != null ||
+                        (base != null && (!hostSnapshotHasUniqueIds || matchingHosts.size != 1))
                 if (fleetBoundRoute) request.headers.remove(HttpHeaders.Authorization)
                 return@on proceed(request)
             }

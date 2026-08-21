@@ -634,6 +634,26 @@ class HostsRepositoryTest {
         assertEquals("standing-token", restored.directToken)
     }
 
+    @Test fun replacing_a_relay_account_never_promotes_a_relay_bearer_to_direct() {
+        val directBase = "http://lan:47190"
+        val relayOwned = WorkspaceConnection(
+            id = "relay-owned",
+            baseUrl = "${host.publicUrl}/workspaces/ws",
+            token = "relay-bearer",
+            hostId = host.hostId,
+            workspaceId = "ws",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = directBase)),
+            connections = listOf(relayOwned),
+        )
+
+        assertTrue(replaced.connections.isEmpty())
+    }
+
     @Test fun replacing_a_relay_account_preserves_same_host_rows_when_credentials_disagree() {
         val directBase = "http://lan:47190"
         val first = WorkspaceConnection(
