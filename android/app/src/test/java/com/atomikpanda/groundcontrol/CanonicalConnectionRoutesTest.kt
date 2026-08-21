@@ -3,6 +3,8 @@ package com.atomikpanda.groundcontrol
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class CanonicalConnectionRoutesTest {
@@ -56,5 +58,52 @@ class CanonicalConnectionRoutesTest {
         assertEquals("specDetail/canonical/spec-1", workItemRoute(adopted, spec))
         assertEquals("taskDetail/canonical/task-1", workItemRoute(adopted, task))
         assertEquals("thread/canonical/thread-1", workItemRoute(adopted, thread))
+    }
+
+    @Test fun replacing_a_connection_rebinds_the_route_and_changes_its_view_model_key() {
+        val original = adopted.copy(
+            baseUrl = "https://direct.example",
+            token = "old-token",
+        )
+        val replacement = original.copy(
+            baseUrl = "https://relay.example/hosts/host-2/workspaces/ws-1",
+            token = "new-token",
+        )
+
+        val originalBinding = connectionRouteBinding(
+            connections = listOf(original),
+            connectionId = original.id,
+            destinationKey = "detail-spec-1",
+        )!!
+        val replacementBinding = connectionRouteBinding(
+            connections = listOf(replacement),
+            connectionId = replacement.id,
+            destinationKey = "detail-spec-1",
+        )!!
+
+        assertEquals(replacement, replacementBinding.connection)
+        assertNotEquals(originalBinding.viewModelKey, replacementBinding.viewModelKey)
+    }
+
+    @Test fun route_binding_is_stable_for_the_same_connection_and_disappears_when_removed() {
+        val first = connectionRouteBinding(
+            connections = listOf(adopted),
+            connectionId = adopted.id,
+            destinationKey = "thread-thread-1",
+        )
+        val recomposed = connectionRouteBinding(
+            connections = listOf(adopted.copy()),
+            connectionId = adopted.id,
+            destinationKey = "thread-thread-1",
+        )
+
+        assertEquals(first, recomposed)
+        assertNull(
+            connectionRouteBinding(
+                connections = emptyList(),
+                connectionId = adopted.id,
+                destinationKey = "thread-thread-1",
+            ),
+        )
     }
 }

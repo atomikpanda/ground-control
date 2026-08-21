@@ -102,6 +102,20 @@ internal fun workItemRoute(conn: WorkspaceConnection, item: WorkItemSummary): St
     else -> null
 }
 
+internal data class ConnectionRouteBinding(
+    val connection: WorkspaceConnection,
+    val viewModelKey: String,
+)
+
+/** Binds a route to the current canonical connection snapshot. */
+internal fun connectionRouteBinding(
+    connections: List<WorkspaceConnection>,
+    connectionId: String,
+    destinationKey: String,
+): ConnectionRouteBinding? = connections.findByConnectionId(connectionId)?.let { connection ->
+    ConnectionRouteBinding(connection, "$destinationKey-${connection.hashCode()}")
+}
+
 @Composable
 fun GroundControlApp(
     context: Context,
@@ -135,7 +149,8 @@ fun GroundControlApp(
     val settingsVm = viewModel {
         SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo)
     }
-
+    val initialConnections = remember { runBlockingSnapshot(connRepo) }
+    val connsForBadges by connRepo.connections.collectAsStateWithLifecycle(initialValue = initialConnections)
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
         NavigationBar {
@@ -149,7 +164,6 @@ fun GroundControlApp(
             }
         }
     }) { padding ->
-        val connsForBadges by connRepo.connections.collectAsStateWithLifecycle(initialValue = emptyList())
         // remember keyed on the connections so the resolver identity is stable across recompositions;
         // staticCompositionLocalOf invalidates every badge reader on a by-reference change, so a fresh
         // lambda each recomposition would needlessly re-render all badge sites (Greptile P2).
@@ -230,14 +244,17 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val specId = entry.arguments?.getString("specId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "detail-$specId",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the inbox.") }
                 } else {
+                    val conn = binding.connection
                     val title = remember(specId) { specId }
-                    val vm = viewModel(key = "detail-${conn.id}-$specId") {
+                    val vm = viewModel(key = binding.viewModelKey) {
                         SpecDetailViewModel(detailRepo, conn, specId)
                     }
                     SpecDetailScreen(vm, title = title, identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }), onBack = { nav.popBackStack() })
@@ -252,13 +269,16 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val slug = entry.arguments?.getString("slug").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "taskDetail-$slug",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to tasks.") }
                 } else {
-                    val vm = viewModel(key = "taskDetail-${conn.id}-$slug") {
+                    val conn = binding.connection
+                    val vm = viewModel(key = binding.viewModelKey) {
                         TaskDetailViewModel(tasksRepo, conn, slug)
                     }
                     TaskDetailScreen(vm, title = slug, onBack = { nav.popBackStack() })
@@ -269,13 +289,16 @@ fun GroundControlApp(
                 arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "workspace",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
                 } else {
-                    val vm = viewModel(key = "workspace-${conn.id}") {
+                    val conn = binding.connection
+                    val vm = viewModel(key = binding.viewModelKey) {
                         WorkspaceViewModel(api, conn)
                     }
                     WorkspaceScreen(
@@ -295,13 +318,16 @@ fun GroundControlApp(
                 arguments = listOf(navArgument("connectionId") { type = NavType.StringType }),
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "farm",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed.") }
                 } else {
-                    val vm = viewModel(key = "farm-${conn.id}") { FarmViewModel(api, conn) }
+                    val conn = binding.connection
+                    val vm = viewModel(key = binding.viewModelKey) { FarmViewModel(api, conn) }
                     FarmScreen(
                         vm = vm,
                         workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
@@ -321,13 +347,16 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "console-$itemId",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "console-${conn.id}-$itemId") {
+                    val conn = binding.connection
+                    val vm = viewModel(key = binding.viewModelKey) {
                         ConsoleViewModel(api, conn, itemId)
                     }
                     ConsoleScreen(
@@ -347,13 +376,16 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "review-$itemId",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "review-${conn.id}-$itemId") {
+                    val conn = binding.connection
+                    val vm = viewModel(key = binding.viewModelKey) {
                         ReviewViewModel(api, conn, itemId)
                     }
                     ReviewScreen(
@@ -372,13 +404,16 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "done-$itemId",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to the farm.") }
                 } else {
-                    val vm = viewModel(key = "done-${conn.id}-$itemId") {
+                    val conn = binding.connection
+                    val vm = viewModel(key = binding.viewModelKey) {
                         DoneViewModel(api, conn, itemId)
                     }
                     DoneScreen(
@@ -397,22 +432,24 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val itemId = entry.arguments?.getString("itemId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                LaunchedEffect(conn?.id, itemId) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "item-$itemId",
+                )
+                LaunchedEffect(binding?.viewModelKey, itemId) {
                     // This route is a pure redirect with no fallback UI of its own, so every
                     // dead-end pops back to where the user came from instead of stranding them on
                     // the transient spinner (reachable from the related-item card and from OS-level
                     // groundcontrol://item deep links).
-                    if (conn == null) {
+                    if (binding == null) {
                         nav.popBackStack(); return@LaunchedEffect
                     }
-                    val item = runCatching { api.getItem(conn, itemId) }.getOrNull()
+                    val item = runCatching { api.getItem(binding.connection, itemId) }.getOrNull()
                     if (item == null) {
                         nav.popBackStack(); return@LaunchedEffect
                     }
-                    val dest = workItemRoute(conn, item)
+                    val dest = workItemRoute(binding.connection, item)
                     if (dest == null) {
                         nav.popBackStack(); return@LaunchedEffect
                     }
@@ -469,13 +506,16 @@ fun GroundControlApp(
             ) { entry ->
                 val connectionId = entry.arguments?.getString("connectionId").orEmpty()
                 val threadId = entry.arguments?.getString("threadId").orEmpty()
-                val conn = remember(connectionId) {
-                    runBlockingSnapshot(connRepo).findByConnectionId(connectionId)
-                }
-                if (conn == null) {
+                val binding = connectionRouteBinding(
+                    connections = connsForBadges,
+                    connectionId = connectionId,
+                    destinationKey = "thread-$threadId",
+                )
+                if (binding == null) {
                     Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to messages.") }
                 } else {
-                    val vm = viewModel(key = "thread-${conn.id}-$threadId") {
+                    val conn = binding.connection
+                    val vm = viewModel(key = binding.viewModelKey) {
                         ConversationViewModel(
                             threadsRepo, conn, threadId,
                             canceller = AndroidNeedsYouCanceller(context.applicationContext),
