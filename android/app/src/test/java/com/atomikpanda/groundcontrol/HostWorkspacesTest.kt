@@ -12,6 +12,9 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.adoptManualConnections
 import com.atomikpanda.groundcontrol.data.deriveConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
+import com.atomikpanda.groundcontrol.data.RelayDirectoryTransformer
+import com.atomikpanda.groundcontrol.data.dto.HostInfo
+import com.atomikpanda.groundcontrol.data.dto.HostsResponse
 import com.atomikpanda.groundcontrol.data.hostAwareClient
 import com.atomikpanda.groundcontrol.data.hostBase
 import com.atomikpanda.groundcontrol.data.mshipDefaults
@@ -22,9 +25,10 @@ import com.atomikpanda.groundcontrol.data.replaceHostConnections
 import com.atomikpanda.groundcontrol.data.recordHostContact
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.verifyLegacyIdentities
-import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
-import com.atomikpanda.groundcontrol.data.legacyConnectionsForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.fleetWorkspaceRefreshTargets
+import java.io.IOException
+import com.atomikpanda.groundcontrol.data.legacyConnectionsForDiscovery
+import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -475,7 +479,8 @@ class HostWorkspacesTest {
             respond(hostsPayload, HttpStatusCode.OK, jsonHdr)
         }) { mshipDefaults() })
 
-        val hosts = api.listHosts("relay.example.com", "fleet-tok")
+        val response = api.listHosts("relay.example.com", "fleet-tok")
+        val hosts = requireNotNull(response.hosts)
         assertEquals("https://enroll.relay.example.com/hosts", url)
         assertEquals("fleet-tok", fleet)
         assertEquals(2, hosts.size)
@@ -484,6 +489,38 @@ class HostWorkspacesTest {
         // A freshly provisioned VM is visible before anyone approves it (AC1).
         assertEquals("pending-approval", hosts[1].state)
         assertNull(hosts[1].hostId)
+    }
+
+    @Test fun listHosts_propagates_transport_failures_without_invalid_directory_reclassification() = runTest {
+        val api = SpecApi(HttpClient(MockEngine {
+            throw IOException("response stream reset")
+        }) { mshipDefaults() })
+
+        val error = runCatching {
+            api.listHosts("relay.example.com", "fleet-tok")
+        }.exceptionOrNull()
+
+        assertTrue(error is IOException)
+    }
+
+    @Test fun persisted_relay_path_root_is_used_for_workspace_requests() = runTest {
+        val directory = RelayDirectoryTransformer().transform(
+            HostsResponse(listOf(HostInfo(
+                hostId = "host-root",
+                publicUrl = "HTTPS://ROOT.RELAY.EXAMPLE/relay-root/",
+            ))),
+            "relay.example.com",
+        )
+        val host = directory.hosts.single()
+        var url: String? = null
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            url = request.url.toString()
+            respond("""{"workspaces":[]}""", HttpStatusCode.OK, jsonHdr)
+        }) { mshipDefaults() })
+
+        api.listWorkspaces(host.hostBase(), null)
+
+        assertEquals("https://root.relay.example/relay-root/workspaces", url)
     }
 
     // ---- the host-scoped refresh exchange (AC9) -----------------------------

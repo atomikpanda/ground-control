@@ -16,18 +16,20 @@ import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.WorkspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.HostsCodec
 import com.atomikpanda.groundcontrol.data.hostBase
-import com.atomikpanda.groundcontrol.data.hostFrom
-import com.atomikpanda.groundcontrol.data.hostsFrom
+import com.atomikpanda.groundcontrol.data.InvalidRelayDirectoryException
+import com.atomikpanda.groundcontrol.data.RelayDirectoryTransformer
 import com.atomikpanda.groundcontrol.data.ladderFor
 import com.atomikpanda.groundcontrol.data.markRelayUnreachable
-import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.replaceRelayDirectoryFleet
 import com.atomikpanda.groundcontrol.data.replaceRelayAccountFleet
+import com.atomikpanda.groundcontrol.data.replaceValidatedRelayHosts
 import com.atomikpanda.groundcontrol.data.recordDirectHostDiscovery
 import com.atomikpanda.groundcontrol.data.routeOwnershipGenerationAfter
 import com.atomikpanda.groundcontrol.data.upsertHost
 import com.atomikpanda.groundcontrol.data.upsertConnection
 import com.atomikpanda.groundcontrol.data.dto.HostInfo
+import com.atomikpanda.groundcontrol.data.dto.HostsResponse
+import com.atomikpanda.groundcontrol.ui.settings.fleetWorkspaceRefreshTarget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -139,50 +141,65 @@ class HostsRepositoryTest {
             state = "pending-approval",
             relayDomain = "relay.example.com",
             requestId = "req-1",
+            publicUrl = "https://pending.relay.example.com",
         )
-        val out = replaceRelayHosts(listOf(pending), "relay.example.com", listOf(host))
+        val directory = RelayDirectoryTransformer().transform(
+            HostsResponse(listOf(HostInfo(
+                hostId = host.hostId,
+                publicUrl = host.publicUrl,
+                refresh = host.refresh,
+            ))),
+            "relay.example.com",
+        )
+        val out = replaceValidatedRelayHosts(listOf(pending), "relay.example.com", directory)
         assertEquals(listOf("h-1"), out.map { it.hostId })
         assertEquals("refresh-credential", out.single().refresh)
     }
 
-    @Test fun directory_entries_require_a_non_blank_host_or_request_identity() {
-        assertNull(hostFrom(HostInfo(hostId = ""), "relay.example.com"))
-        assertNull(hostFrom(HostInfo(hostId = "  ", requestId = " "), "relay.example.com"))
-        assertEquals(
-            "pending:req-1",
-            hostFrom(
-                HostInfo(hostId = "", requestId = "req-1"),
-                "relay.example.com",
-            )?.hostId,
+    @Test fun matching_relay_refresh_replaces_a_direct_row_by_host_id_and_keeps_its_direct_route() {
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val direct = HostConnection(
+            hostId = "h-1",
+            publicUrl = "",
+            directUrl = "http://192.168.1.9:47190",
+        )
+        val directory = RelayDirectoryTransformer().transform(
+            HostsResponse(listOf(HostInfo(
+                hostId = "h-1",
+                state = "online",
+                publicUrl = "https://h-1.relay.example.com",
+                refresh = "relay-refresh",
+            ))),
+            account.relayDomain,
+        )
+
+        val merged = replaceValidatedRelayHosts(listOf(direct), account.relayDomain, directory)
+
+        assertEquals(1, merged.size)
+        assertEquals(account.relayDomain, merged.single().relayDomain)
+        assertEquals("relay-refresh", merged.single().refresh)
+        assertEquals(direct.directUrl, merged.single().directUrl)
+        assertTrue(
+            fleetWorkspaceRefreshTarget(
+                host = merged.single(),
+                hosts = merged,
+                connections = emptyList(),
+                account = account,
+                identities = emptyList(),
+                routeOwnershipGeneration = 1L,
+            ) != null,
         )
     }
 
-    @Test fun a_non_empty_directory_without_any_usable_identity_is_rejected() {
+    @Test fun transformer_rejects_directory_entries_without_a_valid_identity() {
         val result = runCatching {
-            hostsFrom(
-                listOf(
-                    HostInfo(hostId = ""),
-                    HostInfo(hostId = "  ", requestId = " "),
-                ),
+            RelayDirectoryTransformer().transform(
+                HostsResponse(listOf(HostInfo(hostId = "", publicUrl = "https://host.test"))),
                 "relay.example.com",
             )
         }
 
-        assertTrue(result.exceptionOrNull() is IllegalStateException)
-    }
-
-    @Test fun a_mixed_directory_rejects_the_whole_authoritative_decode() {
-        val result = runCatching {
-            hostsFrom(
-                listOf(
-                    HostInfo(hostId = "valid-host"),
-                    HostInfo(hostId = "", requestId = " "),
-                ),
-                "relay.example.com",
-            )
-        }
-
-        assertTrue(result.exceptionOrNull() is IllegalStateException)
+        assertTrue(result.exceptionOrNull() is InvalidRelayDirectoryException)
     }
 
     @Test fun a_genuinely_empty_directory_remains_authoritative() {
@@ -192,16 +209,49 @@ class HostsRepositoryTest {
             hostId = host.hostId,
             workspaceId = "ws",
         )
+        val emptyDirectory = RelayDirectoryTransformer().transform(
+            HostsResponse(emptyList()),
+            "relay.example.com",
+        )
 
         val replaced = replaceRelayDirectoryFleet(
             relayDomain = "relay.example.com",
             existingHosts = listOf(host),
-            replacementHosts = hostsFrom(emptyList(), "relay.example.com"),
+            directory = emptyDirectory,
             connections = listOf(workspace),
         )
 
         assertEquals(emptyList<HostConnection>(), replaced.hosts)
         assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
+    }
+
+    @Test fun validated_sentinel_route_is_persisted_verbatim_without_a_second_normalization() = runTest {
+        val dataStore = newDataStore("validated-sentinel.preferences_pb", backgroundScope)
+        val repository = HostsRepository(dataStore)
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        repository.setRelayAccount(account)
+        val snapshot = repository.routeOwnershipSnapshot()
+        val calls = mutableListOf<String>()
+        val directory = RelayDirectoryTransformer { route ->
+            calls += route
+            "https://sentinel.relay.example/root/"
+        }.transform(
+            HostsResponse(listOf(HostInfo(hostId = "h-sentinel", publicUrl = "https://wire.relay.example/root"))),
+            account.relayDomain,
+        )
+
+        assertTrue(
+            repository.replaceValidatedRelayDirectory(
+                expectedAccount = account,
+                directory = directory,
+                expectedGeneration = snapshot.generation,
+            )
+        )
+        assertEquals(listOf("https://wire.relay.example/root"), calls)
+        assertEquals(
+            "https://sentinel.relay.example/root/",
+            repository.snapshot().single().publicUrl,
+        )
     }
 
     @Test fun direct_discovery_generation_rejects_an_account_A_B_A_change() {
@@ -838,10 +888,14 @@ class HostsRepositoryTest {
         val otherWorkspace = retainedWorkspace.copy(id = "other", hostId = otherHost.hostId)
         val manualWorkspace = WorkspaceConnection(id = "manual", baseUrl = "http://lan")
 
+        val directory = RelayDirectoryTransformer().transform(
+            HostsResponse(listOf(HostInfo(hostId = host.hostId, publicUrl = host.publicUrl))),
+            "relay.example.com",
+        )
         val replaced = replaceRelayDirectoryFleet(
             relayDomain = "relay.example.com",
             existingHosts = listOf(host, removedHost, otherHost),
-            replacementHosts = listOf(host),
+            directory = directory,
             connections = listOf(
                 retainedWorkspace,
                 removedWorkspace,

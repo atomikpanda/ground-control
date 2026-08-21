@@ -1,6 +1,5 @@
 package com.atomikpanda.groundcontrol.data
 
-import com.atomikpanda.groundcontrol.data.dto.HostInfo
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import java.io.IOException
 import kotlinx.serialization.Serializable
@@ -277,49 +276,35 @@ fun markRelayUnreachable(
     if (host.relayDomain == relayDomain) host.copy(state = null) else host
 }
 
-/** A successful directory response is authoritative for one relay. Entries no
- * longer present (notably an approved pending request) disappear, while
- * [upsertHost] carries local overrides and direct URLs onto the fresh rows. */
-fun replaceRelayHosts(
+/** Replace one relay's rows with a validated directory without transforming its
+ * canonical route a second time. Only fields owned by the phone carry forward. */
+internal fun replaceValidatedRelayHosts(
     existing: List<HostConnection>,
     relayDomain: String,
-    hosts: List<HostConnection>,
+    directory: ValidatedRelayDirectory,
 ): List<HostConnection> {
-    val retained = existing.filterNot { it.relayDomain == relayDomain }
-    return hosts.fold(retained) { current, host ->
-        val prior = existing.firstOrNull { it.hostId == host.hostId }
-        val merged = if (prior == null) host else upsertHost(listOf(prior), host).single()
-        upsertHost(current, merged)
+    val replacementIds = directory.hosts.mapTo(mutableSetOf()) { it.hostId }
+    val retained = existing.filterNot {
+        it.relayDomain == relayDomain || it.hostId in replacementIds
     }
-}
-
-/** Project a directory entry into the stored model. Pending-approval rows have
- *  no `host_id` yet and are keyed by their enroll request id instead. */
-fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
-    val id = info.hostId?.takeIf { it.isNotBlank() }
-        ?: info.requestId?.takeIf { it.isNotBlank() }?.let { "pending:$it" }
-        ?: return null
-    return HostConnection(
-        hostId = id,
-        label = info.label,
-        subdomain = info.subdomain,
-        publicUrl = info.publicUrl,
-        state = info.state,
-        refresh = info.refresh,
-        relayDomain = relayDomain,
-        lastSeen = info.lastSeen,
-        runnerState = info.runner?.state,
-        requestId = info.requestId,
-    )
-}
-
-/** Project an entire relay directory atomically: an empty response is valid,
- * but every row in a nonempty response must carry a usable stable or pending
- * identity before the caller may authoritatively replace cached hosts. */
-fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
-    val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
-    check(hosts.size == infos.size) {
-        "Relay directory contained an unusable host identity"
+    return retained + directory.hosts.map { host ->
+        val prior = existing.singleOrNull { it.hostId == host.hostId }
+        if (prior == null) {
+            host
+        } else {
+            val directIdentity = prior.directUrl?.let(::normalizedBaseUrl)
+            host.copy(
+                labelOverride = prior.labelOverride,
+                directUrl = prior.directUrl,
+                refresh = host.refresh ?: prior.refresh,
+                lastContactAtMillis = prior.lastContactAtMillis,
+                legacyPublicUrls = (
+                    prior.legacyPublicUrls + listOfNotNull(prior.publicUrl, prior.directUrl)
+                    )
+                    .mapNotNull(::normalizedBaseUrl)
+                    .filter { it != host.publicUrl && it != directIdentity }
+                    .distinct(),
+            )
+        }
     }
-    return hosts
 }

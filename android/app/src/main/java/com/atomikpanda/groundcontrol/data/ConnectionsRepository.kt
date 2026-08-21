@@ -1,6 +1,8 @@
 package com.atomikpanda.groundcontrol.data
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -14,18 +16,19 @@ import kotlinx.coroutines.flow.map
 internal val Context.dataStore by preferencesDataStore(name = "ground_control")
 internal val CONNECTIONS = stringPreferencesKey("connections")
 
-class ConnectionsRepository(private val context: Context) {
+class ConnectionsRepository internal constructor(private val dataStore: DataStore<Preferences>) {
+    constructor(context: Context) : this(context.dataStore)
     val connections: Flow<List<WorkspaceConnection>> =
-        context.dataStore.data.map { ConnectionsCodec.decode(it[CONNECTIONS] ?: "") }
+        dataStore.data.map { ConnectionsCodec.decode(it[CONNECTIONS] ?: "") }
 
     suspend fun snapshot(): List<WorkspaceConnection> =
-        ConnectionsCodec.decode(context.dataStore.data.first()[CONNECTIONS] ?: "")
+        ConnectionsCodec.decode(dataStore.data.first()[CONNECTIONS] ?: "")
 
     /** All writes are read-modify-write inside ONE edit transform — DataStore
      *  serializes transforms, so concurrent mutations (e.g. two quick "Add"
      *  taps) can't snapshot the same list and lose each other's write. */
     private suspend fun mutate(transform: (List<WorkspaceConnection>) -> List<WorkspaceConnection>) {
-        context.dataStore.edit {
+        dataStore.edit {
             val current = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
             val updated = transform(current)
             it.advanceRouteOwnershipGeneration(updated)
