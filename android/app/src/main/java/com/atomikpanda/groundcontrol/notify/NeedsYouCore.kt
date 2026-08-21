@@ -18,6 +18,11 @@ data class NeedsYouEvent(
     val messages: List<Message> = emptyList(),
     /** The active, still-unanswered decision (drives the option-action buttons), if any. */
     val decision: Decision? = null,
+    /** Persisted action generation; blank asks the notifier to allocate the next notification cycle. */
+    val replyActionVersion: String = "",
+    /** A successfully posted reply may expose a new notification cycle even when its source stamp
+     * did not change. */
+    val forceNewReplyActionVersion: Boolean = false,
 )
 
 interface NotifiedStore {
@@ -27,7 +32,10 @@ interface NotifiedStore {
 }
 
 interface Notifier {
-    fun notify(event: NeedsYouEvent)
+    suspend fun notify(event: NeedsYouEvent)
+    /** Observed before the reconcile can queue behind publication, so a later generation cannot clear. */
+    suspend fun activeReplyActionGeneration(connectionId: String, threadId: String): Long? = null
+    suspend fun clearReplyAction(connectionId: String, threadId: String, expectedGeneration: Long?) {}
 }
 
 class NeedsYouReconciler(
@@ -59,6 +67,10 @@ class NeedsYouReconciler(
                 for (retiredId in conn.legacyConnectionIds) {
                     store.clear(retiredId, t.id)
                 }
+                if (!needsAttention) {
+                    val generation = notifier.activeReplyActionGeneration(conn.id, t.id)
+                    notifier.clearReplyAction(conn.id, t.id, generation)
+                }
             }
             if (needsAttention && !currentNotified && !retiredNotified) {
                 if (shouldSuppressNotification(foregroundThreadKey(), conn.id, t.id)) {
@@ -86,7 +98,9 @@ class NeedsYouReconciler(
                 )
                 store.markNotified(conn.id, t.id)
             } else if (!needsAttention && currentNotified) {
+                val generation = notifier.activeReplyActionGeneration(conn.id, t.id)
                 store.clear(conn.id, t.id)
+                notifier.clearReplyAction(conn.id, t.id, generation)
             }
         }
     }

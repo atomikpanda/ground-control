@@ -37,7 +37,7 @@ private class FakeStore : NotifiedStore {
 
 private class FakeNotifier : Notifier {
     val events = mutableListOf<NeedsYouEvent>()
-    override fun notify(event: NeedsYouEvent) { events += event }
+    override suspend fun notify(event: NeedsYouEvent) { events += event }
 }
 
 class NeedsYouReconcilerTest {

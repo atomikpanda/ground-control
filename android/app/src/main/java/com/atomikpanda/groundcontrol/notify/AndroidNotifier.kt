@@ -11,6 +11,11 @@ import androidx.core.app.Person
 import androidx.core.app.RemoteInput
 import androidx.core.content.LocusIdCompat
 import com.atomikpanda.groundcontrol.MainActivity
+import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.findByConnectionId
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Renders a needs-you notification as a `NotificationCompat.MessagingStyle` conversation: a "me"
@@ -21,14 +26,67 @@ import com.atomikpanda.groundcontrol.MainActivity
  */
 class AndroidNotifier(private val context: Context) : Notifier {
 
-    override fun notify(event: NeedsYouEvent) = render(event, errorLine = null, retryAttempt = 0)
+    override suspend fun notify(event: NeedsYouEvent) = render(event, errorLine = null, retryAttempt = 0)
 
-    /** Re-notify after a failed reply: surface the attempted text (so it isn't lost) + keep the
-     * reply action for a manual retry. */
-    fun notifyReplyError(event: NeedsYouEvent, failedText: String, retryAttempt: Int) =
-        render(event, errorLine = failedText, retryAttempt = retryAttempt)
+    /** Re-notify after a failed reply. Only a definitive rejection gets fresh retry capabilities:
+     * transport/5xx outcomes may already have appended on the server. */
+    suspend fun notifyReplyError(
+        event: NeedsYouEvent,
+        failedText: String,
+        retryAttempt: Int,
+        allowActions: Boolean,
+    ) = render(
+        event,
+        errorLine = failedText,
+        retryAttempt = retryAttempt,
+        showActions = allowActions,
+    )
 
-    private fun render(event: NeedsYouEvent, errorLine: String?, retryAttempt: Int) {
+    override suspend fun activeReplyActionGeneration(connectionId: String, threadId: String): Long? {
+        val canonicalConnId = ConnectionsRepository(context).snapshot()
+            .findByConnectionId(connectionId)?.id ?: connectionId
+        return RoomReplyNotificationVersionStore(
+            NotifiedDatabase.get(context).replyNotificationVersionDao(),
+        ).activeGeneration(canonicalConnId, threadId)
+    }
+
+    override suspend fun clearReplyAction(
+        connectionId: String,
+        threadId: String,
+        expectedGeneration: Long?,
+    ) {
+        val canonicalConnId = ConnectionsRepository(context).snapshot()
+            .findByConnectionId(connectionId)?.id ?: connectionId
+        renderLocks.computeIfAbsent("$canonicalConnId|$threadId") { Mutex() }.withLock {
+            RoomReplyNotificationVersionStore(
+                NotifiedDatabase.get(context).replyNotificationVersionDao(),
+            ).clear(canonicalConnId, threadId, expectedGeneration)
+        }
+    }
+
+    private suspend fun render(
+        event: NeedsYouEvent,
+        errorLine: String?,
+        retryAttempt: Int,
+        showActions: Boolean = true,
+    ) {
+        val canonicalConnId = ConnectionsRepository(context).snapshot()
+            .findByConnectionId(event.connectionId)?.id ?: event.connectionId
+        val renderLock = renderLocks.computeIfAbsent("$canonicalConnId|${event.threadId}") { Mutex() }
+        renderLock.withLock {
+            val versionStore = RoomReplyNotificationVersionStore(
+                NotifiedDatabase.get(context).replyNotificationVersionDao(),
+            )
+            val renderedEvent = event.copy(
+                replyActionVersion = event.replyActionVersion.ifBlank {
+                    versionStore.activate(
+                        canonicalConnId,
+                        event.threadId,
+                        event.updatedAt,
+                        event.forceNewReplyActionVersion,
+                    )
+                },
+            )
         val notifId = needsYouNotificationId(event.connectionId, event.threadId)
         val agentName = event.workspaceName.ifBlank { "Ground Control" }
         val title = event.subject.ifBlank { agentName }
@@ -87,12 +145,21 @@ class AndroidNotifier(private val context: Context) : Notifier {
         // Reply first so it's always within the standard 3-action budget alongside the option
         // buttons. (Android's standard template renders at most 3 actions; a persistent reply +
         // MAX_OPTION_ACTIONS option buttons must fit — see MAX_OPTION_ACTIONS.)
-        builder.addAction(replyAction(event, retryAttempt))
-        decisionActionOptions(event.decision, MAX_OPTION_ACTIONS).forEach { opt ->
-            builder.addAction(optionAction(event, opt.text, retryAttempt))
+        if (showActions) {
+            // Reply first so it's always within the standard 3-action budget alongside the option
+            // buttons. (Android's standard template renders at most 3 actions; a persistent reply +
+            // MAX_OPTION_ACTIONS option buttons must fit — see MAX_OPTION_ACTIONS.)
+            builder.addAction(replyAction(renderedEvent, retryAttempt))
+            decisionActionOptions(renderedEvent.decision, MAX_OPTION_ACTIONS).forEach { opt ->
+                builder.addAction(optionAction(renderedEvent, opt.text, retryAttempt))
+            }
         }
 
-        runCatching { NotificationManagerCompat.from(context).notify(notifId, builder.build()) }
+            check(versionStore.isCurrent(canonicalConnId, event.threadId, renderedEvent.replyActionVersion)) {
+                "Reply notification action version was superseded before publication"
+            }
+            NotificationManagerCompat.from(context).notify(notifId, builder.build())
+        }
     }
 
     private fun replyAction(event: NeedsYouEvent, retryAttempt: Int): NotificationCompat.Action {
@@ -141,7 +208,8 @@ class AndroidNotifier(private val context: Context) : Notifier {
         mutable: Boolean,
         retryAttempt: Int,
     ): PendingIntent {
-        val discriminator = event.connectionId + "|" + event.threadId + ":" + tag
+        val discriminator = event.connectionId + "|" + event.threadId +
+            "|${event.replyActionVersion}|$retryAttempt:$tag"
         val intent = Intent(context, ReplyReceiver::class.java).apply {
             // Distinct action per (thread, tag) so PendingIntents don't collide (extras are ignored
             // for PendingIntent equality).
@@ -152,6 +220,13 @@ class AndroidNotifier(private val context: Context) : Notifier {
             putExtra(ReplyReceiver.EXTRA_WORKSPACE, event.workspaceName)
             putExtra(ReplyReceiver.EXTRA_BASE_URL, event.baseUrl)
             putExtra(ReplyReceiver.EXTRA_RETRY_ATTEMPT, retryAttempt)
+            putExtra(ReplyReceiver.EXTRA_NOTIFICATION_VERSION, event.replyActionVersion)
+            event.decision?.let { decision ->
+                putStringArrayListExtra(ReplyReceiver.EXTRA_DECISION_OPTIONS, ArrayList(decision.options))
+                putExtra(ReplyReceiver.EXTRA_DECISION_RECOMMENDED, decision.recommended ?: -1)
+                putExtra(ReplyReceiver.EXTRA_DECISION_ALLOW_FREE_TEXT, decision.allowFreeText)
+                putExtra(ReplyReceiver.EXTRA_DECISION_MULTI, decision.multi)
+            }
             optionText?.let { putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, it) }
         }
         val mutability = when {
@@ -169,6 +244,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
 
     companion object {
         const val KEY_ME = "me"
+        private val renderLocks = ConcurrentHashMap<String, Mutex>()
 
         /**
          * Option buttons rendered alongside the always-present free-text reply. Android's standard

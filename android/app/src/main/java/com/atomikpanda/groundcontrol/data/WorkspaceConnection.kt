@@ -133,6 +133,11 @@ internal fun Iterable<WorkspaceConnection>.findByConnectionId(
     return aliasMatch.takeUnless { ambiguousAlias }
 }
 
+/** Canonical local identity for persisted notification work and action capabilities. */
+internal fun Iterable<WorkspaceConnection>.canonicalReplyConnectionId(
+    connectionId: String,
+): String = findByConnectionId(connectionId)?.id ?: connectionId
+
 /** The same verified workspace on the same host, whatever URL it answers on. */
 private fun sameWorkspace(a: WorkspaceConnection, b: WorkspaceConnection): Boolean =
     a.hasStableIdentityTuple() &&
