@@ -6,6 +6,8 @@ import com.atomikpanda.groundcontrol.data.LegacyIdentityVerification
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.mshipDefaults
+import com.atomikpanda.groundcontrol.data.hostsFrom
+import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.settings.canAdoptDirectHostIdentity
@@ -54,6 +56,26 @@ class SettingsFleetTest {
                 headersOf(HttpHeaders.ContentType, contentType),
             )
         }) { mshipDefaults() })
+
+    private suspend fun assertInvalidDirectoryKeepsCachedFleet(payload: String) {
+        val relayDomain = "relay.example.com"
+        val cached = HostConnection(
+            hostId = "cached",
+            publicUrl = "https://cached.relay.example.com",
+            relayDomain = relayDomain,
+            state = "online",
+        )
+        var persisted = listOf(cached)
+
+        val error = runCatching {
+            val entries = directoryApi(payload).listHosts(relayDomain, "fleet-token")
+            persisted = replaceRelayHosts(persisted, relayDomain, hostsFrom(entries, relayDomain))
+        }.exceptionOrNull()
+
+        assertTrue(error != null)
+        assertFalse(classifyMalformedFleetDirectoryFailure(error!!).markRelayUnreachable)
+        assertEquals(listOf(cached), persisted)
+    }
 
     @Test fun an_external_relay_account_update_refreshes_an_existing_settings_screen() = runTest {
         val accounts = MutableStateFlow<RelayAccount?>(null)
@@ -435,6 +457,45 @@ class SettingsFleetTest {
 
         assertTrue(error is NoTransformationFoundException)
         assertFalse(classifyFleetRefreshFailure(error).markRelayUnreachable)
+    }
+
+    @Test fun duplicate_host_identity_in_http_directory_preserves_cached_fleet() = runTest {
+        assertInvalidDirectoryKeepsCachedFleet(
+            """{"hosts":[
+                {"host_id":"host-a","public_url":"https://a.relay.example.com"},
+                {"host_id":"host-a","public_url":"https://b.relay.example.com"}
+            ]}""",
+        )
+    }
+
+    @Test fun duplicate_pending_request_in_http_directory_preserves_cached_fleet() = runTest {
+        assertInvalidDirectoryKeepsCachedFleet(
+            """{"hosts":[
+                {"state":"pending-approval","request_id":"request-a"},
+                {"state":"pending-approval","request_id":"request-a"}
+            ]}""",
+        )
+    }
+
+    @Test fun route_less_approved_host_in_http_directory_preserves_cached_fleet() = runTest {
+        assertInvalidDirectoryKeepsCachedFleet(
+            """{"hosts":[{"host_id":"host-a","state":"online"}]}""",
+        )
+    }
+
+    @Test fun valid_directory_entries_preserve_pending_rows_and_status_count() = runTest {
+        val relayDomain = "relay.example.com"
+        val entries = directoryApi(
+            """{"hosts":[
+                {"host_id":"host-a","public_url":"https://a.relay.example.com"},
+                {"state":"pending-approval","request_id":"request-a"}
+            ]}""",
+        ).listHosts(relayDomain, "fleet-token")
+
+        val stored = replaceRelayHosts(emptyList(), relayDomain, hostsFrom(entries, relayDomain))
+
+        assertEquals(entries.size, stored.size)
+        assertEquals(listOf("host-a", "pending:request-a"), stored.map { it.hostId })
     }
 
     @Test fun fleet_refresh_failure_classification_propagates_cancellation() {

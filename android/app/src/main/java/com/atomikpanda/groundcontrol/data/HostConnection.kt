@@ -327,9 +327,16 @@ fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
  * but every row in a nonempty response must carry a usable stable or pending
  * identity before the caller may authoritatively replace cached hosts. */
 fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
+    check(
+        infos
+            .filter { !it.hostId.isNullOrBlank() }
+            .all { normalizedBaseUrl(it.publicUrl) != null }
+    ) {
+        "Relay directory contained an approved host without a usable route"
+    }
     val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
-    check(hosts.size == infos.size) {
-        "Relay directory contained an unusable host identity"
+    check(hosts.size == infos.size && hosts.map { it.hostId }.toSet().size == hosts.size) {
+        "Relay directory contained an unusable or duplicate host identity"
     }
     validateUniqueHostIds(hosts)
     return hosts
