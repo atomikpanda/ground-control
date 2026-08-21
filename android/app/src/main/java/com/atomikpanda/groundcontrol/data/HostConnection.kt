@@ -247,9 +247,9 @@ object HostsCodec {
  */
 fun upsertHost(existing: List<HostConnection>, host: HostConnection): List<HostConnection> {
     val prior = existing.firstOrNull { it.hostId == host.hostId }
-    val retainedDirectUrl = host.directUrl ?: prior?.directUrl
+    val retainedDirectUrl = (host.directUrl ?: prior?.directUrl)?.let(::normalizedBaseUrl)
     val currentPublicIdentity = normalizedBaseUrl(host.publicUrl)
-    val currentDirectIdentity = retainedDirectUrl?.let(::normalizedBaseUrl)
+    val currentDirectIdentity = retainedDirectUrl
     val merged = host.copy(
         labelOverride = host.labelOverride ?: prior?.labelOverride,
         directUrl = retainedDirectUrl,
@@ -306,14 +306,17 @@ fun replaceRelayHosts(
 /** Project a directory entry into the stored model. Pending-approval rows have
  *  no `host_id` yet and are keyed by their enroll request id instead. */
 fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
-    val id = info.hostId?.takeIf { it.isNotBlank() }
+    val stableId = info.hostId?.takeIf { it.isNotBlank() }
+    val id = stableId
         ?: info.requestId?.takeIf { it.isNotBlank() }?.let { "pending:$it" }
         ?: return null
+    val publicUrl = normalizedBaseUrl(info.publicUrl)
+    if (stableId != null && publicUrl == null) return null
     return HostConnection(
         hostId = id,
         label = info.label,
         subdomain = info.subdomain,
-        publicUrl = info.publicUrl,
+        publicUrl = publicUrl.orEmpty(),
         state = info.state,
         refresh = info.refresh,
         relayDomain = relayDomain,
@@ -327,13 +330,6 @@ fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
  * but every row in a nonempty response must carry a usable stable or pending
  * identity before the caller may authoritatively replace cached hosts. */
 fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
-    check(
-        infos
-            .filter { !it.hostId.isNullOrBlank() }
-            .all { normalizedBaseUrl(it.publicUrl) != null }
-    ) {
-        "Relay directory contained an approved host without a usable route"
-    }
     val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
     check(hosts.size == infos.size && hosts.map { it.hostId }.toSet().size == hosts.size) {
         "Relay directory contained an unusable or duplicate host identity"

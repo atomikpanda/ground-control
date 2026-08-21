@@ -498,6 +498,32 @@ class SettingsFleetTest {
         assertEquals(listOf("host-a", "pending:request-a"), stored.map { it.hostId })
     }
 
+    @Test fun relay_replacement_canonicalizes_public_direct_and_legacy_routes() = runTest {
+        val relayDomain = "relay.example.com"
+        val existing = HostConnection(
+            hostId = "host-a",
+            publicUrl = " https://old.relay.example.com/ ",
+            directUrl = " https://lan.example:47190/ ",
+            legacyPublicUrls = listOf(" https://legacy.relay.example.com/ "),
+            relayDomain = relayDomain,
+        )
+        val entries = directoryApi(
+            """{"hosts":[{"host_id":"host-a","public_url":" https://new.relay.example.com/ "}]}""",
+        ).listHosts(relayDomain, "fleet-token")
+
+        val stored = replaceRelayHosts(listOf(existing), relayDomain, hostsFrom(entries, relayDomain)).single()
+
+        assertEquals("https://new.relay.example.com", stored.publicUrl)
+        assertEquals("https://lan.example:47190", stored.directUrl)
+        assertEquals(
+            listOf(
+                "https://legacy.relay.example.com",
+                "https://old.relay.example.com",
+            ),
+            stored.legacyPublicUrls,
+        )
+    }
+
     @Test fun fleet_refresh_failure_classification_propagates_cancellation() {
         val cancellation = CancellationException("scope cancelled")
 
