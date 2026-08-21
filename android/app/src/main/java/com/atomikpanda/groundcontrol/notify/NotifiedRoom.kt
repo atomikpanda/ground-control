@@ -120,6 +120,9 @@ interface ReplyOutboxDao {
     @Query("UPDATE reply_outbox SET state = 'STALE' WHERE actionKey = :actionKey AND state IN ('DELIVERED_PENDING_RENDER', 'SAFE_FAILURE_PENDING_RENDER', 'UNCERTAIN_PENDING_RENDER')")
     suspend fun markStale(actionKey: String): Int
 
+    @Query("UPDATE reply_outbox SET connectionId = :targetConnectionId WHERE connectionId = :sourceConnectionId AND threadId = :threadId AND state IN ('READY', 'WAITING_FOR_CONNECTION')")
+    suspend fun adoptConnection(sourceConnectionId: String, targetConnectionId: String, threadId: String): Int
+
     @Query("UPDATE reply_outbox SET renderVersion = :renderVersion, renderCapabilityKey = :capabilityKey WHERE actionKey = :actionKey AND state = 'SAFE_FAILURE_PENDING_RENDER'")
     suspend fun setRenderTarget(actionKey: String, renderVersion: String, capabilityKey: String): Int
 }
@@ -195,6 +198,7 @@ abstract class NotifiedDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS reply_action_tombstones (actionKey TEXT NOT NULL PRIMARY KEY, terminalReason TEXT NOT NULL)")
                 db.execSQL("CREATE TABLE IF NOT EXISTS reply_migration_state (singletonId INTEGER NOT NULL PRIMARY KEY, legacyNotificationResetRequired INTEGER NOT NULL)")
                 db.execSQL("INSERT OR REPLACE INTO reply_action_tombstones(actionKey, terminalReason) SELECT actionKey, CASE state WHEN 'DELIVERED' THEN 'DELIVERED' WHEN 'DELIVERED_PENDING_RENDER' THEN 'DELIVERED' WHEN 'UNCERTAIN' THEN 'UNCERTAIN' WHEN 'UNCERTAIN_PENDING_RENDER' THEN 'UNCERTAIN' WHEN 'IN_FLIGHT' THEN 'UNCERTAIN' ELSE 'LEGACY_UNEXECUTABLE' END FROM reply_actions")
+                db.execSQL("DELETE FROM notified")
                 db.execSQL("ALTER TABLE reply_notification_versions RENAME TO reply_notification_versions_legacy")
                 db.execSQL("CREATE TABLE reply_notification_versions (connId TEXT NOT NULL, threadId TEXT NOT NULL, version TEXT NOT NULL, generation INTEGER NOT NULL, active INTEGER NOT NULL, capabilityKey TEXT, PRIMARY KEY(connId, threadId))")
                 db.execSQL("INSERT INTO reply_notification_versions(connId, threadId, version, generation, active, capabilityKey) SELECT connId, threadId, sourceVersion, generation, 0, NULL FROM reply_notification_versions_legacy")

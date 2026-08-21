@@ -36,7 +36,7 @@ class NeedsYouReconciler(
     private val repo: ThreadsRepository,
     /** Production supplies generation-safe Room publication; existing non-Android consumers retain
      * the plain notifier seam. */
-    private val publish: suspend (NeedsYouEvent) -> Unit = { notifier.notify(it) },
+    private val publish: suspend (NeedsYouEvent) -> Boolean = { notifier.notify(it); true },
     private val retire: suspend (String, String) -> Unit = { _, _ -> },
     private val adopt: suspend (String, String, String) -> Unit = { _, _, _ -> },
     /** The thread currently open+foregrounded (see [OpenThreadRegistry]), or null. Suppresses a
@@ -87,8 +87,9 @@ class NeedsYouReconciler(
                 // Fetch the full thread once (gated by the dedupe store, so one GET per new
                 // notification) to build MessagingStyle context + resolve the active decision.
                 // Degrades to the summary preview if the fetch fails — a notification always fires.
-                val messages = runCatching { repo.getThread(conn, t.id).messages }.getOrDefault(emptyList())
-                publish(
+                val messages = runCatching { repo.getThread(conn, t.id).messages }
+                    .getOrDefault(emptyList())
+                val published = publish(
                     NeedsYouEvent(
                         connectionId = conn.id,
                         baseUrl = conn.baseUrl,
@@ -101,7 +102,7 @@ class NeedsYouReconciler(
                         decision = activeDecision(messages),
                     ),
                 )
-                store.markNotified(conn.id, t.id)
+                if (published) store.markNotified(conn.id, t.id)
             } else if (!needsAttention && currentNotified) {
                 retire(conn.id, t.id)
                 store.clear(conn.id, t.id)

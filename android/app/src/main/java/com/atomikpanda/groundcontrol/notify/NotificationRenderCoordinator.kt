@@ -25,7 +25,7 @@ internal class NotificationRenderCoordinator(
     private val notifier: ReplyNotificationRenderer,
     private val cancel: (String, String) -> Unit,
 ) {
-    suspend fun publish(event: NeedsYouEvent) = withThreadLock(event.connectionId, event.threadId) {
+    suspend fun publish(event: NeedsYouEvent): Boolean = withThreadLock(event.connectionId, event.threadId) {
         val capability = database.withTransaction {
             val versions = database.replyNotificationVersionDao()
             val current = versions.get(event.connectionId, event.threadId)
@@ -40,14 +40,17 @@ internal class NotificationRenderCoordinator(
             val generation = (current?.generation ?: 0L) + 1L
             current?.takeIf { it.active }?.let { versions.deactivate(event.connectionId, event.threadId, it.version) }
             val next = ReplyCapability("${event.updatedAt}#$generation", UUID.randomUUID().toString())
-            versions.insert(
-                ReplyNotificationVersionRecord(
-                    event.connectionId, event.threadId, next.version, generation, true, next.key,
-                ),
-            )
+            versions.insert(ReplyNotificationVersionRecord(event.connectionId, event.threadId, next.version, generation, true, next.key))
             next
+        } ?: return@withThreadLock false
+        val rendered = runCatching { notifier.renderCurrent(event, capability) }.getOrDefault(false)
+        if (!rendered) database.withTransaction {
+            val current = database.replyNotificationVersionDao().get(event.connectionId, event.threadId)
+            if (current?.active == true && current.version == capability.version && current.capabilityKey == capability.key) {
+                database.replyNotificationVersionDao().deactivate(event.connectionId, event.threadId, capability.version)
+            }
         }
-        capability?.let { notifier.renderCurrent(event, it) }
+        rendered
     }
 
     suspend fun renderPending(actionKey: String) {
@@ -88,6 +91,7 @@ internal class NotificationRenderCoordinator(
                 versions.insert(source.copy(connId = targetConnectionId))
             }
             versions.deactivate(sourceConnectionId, threadId, source.version)
+            database.replyOutboxDao().adoptConnection(sourceConnectionId, targetConnectionId, threadId)
         }
     }
 
@@ -101,7 +105,7 @@ internal class NotificationRenderCoordinator(
         // Lock is held: no newer activation can appear before cancellation/informational render.
         if (expected == ReplyOutboxState.DELIVERED_PENDING_RENDER) {
             cancel(row.connectionId, row.threadId)
-        } else if (!runCatching { notifier.renderCurrent(row.toEvent(), capability = null) }.getOrDefault(false)) {
+        } else if (!runCatching { notifier.renderCurrent(row.toEvent(), capability = null, errorLine = row.replyText) }.getOrDefault(false)) {
             return
         }
         database.withTransaction {

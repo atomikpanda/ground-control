@@ -73,6 +73,7 @@ class WatchService : Service() {
             watchJob = scope.launch {
                 // Re-spread watchers whenever the connection set changes.
                 connections.connections.collectLatest { conns ->
+        ReplyStartupGate.awaitReset()
                     coroutineScope {
                         conns.forEach { conn -> launch { watchOne(conn) } }
                     }

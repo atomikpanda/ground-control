@@ -32,6 +32,7 @@ class NotifiedDatabaseMigrationTest {
         assertFalse(room.replyNotificationVersionDao().get("c", "t")!!.active)
         assertNull(room.replyNotificationVersionDao().get("c", "t")!!.capabilityKey)
         assertTrue(room.replyMigrationStateDao().get()!!.legacyNotificationResetRequired)
+        assertFalse(room.notifiedDao().isNotified("legacy", "thread"))
         room.close()
     }
 
@@ -89,6 +90,7 @@ class NotifiedDatabaseMigrationTest {
                             db.execSQL("INSERT INTO reply_actions(actionKey,state,executionId) VALUES('pending','READY','')")
                             db.execSQL("INSERT INTO reply_actions(actionKey,state,executionId) VALUES('safe','SAFE_FAILURE_PENDING_RENDER','')")
                             db.execSQL("INSERT INTO reply_notification_versions(connId,threadId,sourceVersion,generation,active) VALUES('c','t','source',7,1)")
+                            db.execSQL("INSERT INTO notified(connId,threadId) VALUES('legacy','thread')")
                         }
                         if (version == 6) db.execSQL("INSERT INTO notified(connId,threadId) VALUES('unsupported','thread')")
                     }

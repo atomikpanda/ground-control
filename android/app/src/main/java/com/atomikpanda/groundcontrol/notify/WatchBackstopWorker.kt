@@ -16,6 +16,7 @@ class WatchBackstopWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        ReplyStartupGate.awaitReset()
         val database = NotifiedDatabase.get(applicationContext)
         val repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         val renderer = NotificationRenderCoordinator(

@@ -89,9 +89,11 @@ internal class ReplyOutbox(
                 ),
             ) != -1L
         }
-        // Cancel stale/accepted actions only after the authoritative transaction. A rejected stale
-        // capability must not remain tappable, while the current notification is re-rendered later.
-        notificationActionHandler(submission)
+        // A stale canonical tap must not dismiss the newer live notification. Retired aliases are
+        // physical old notifications, so they are still cancelled even when their capability fails.
+        if (accepted || submission.connectionId != persisted.connectionId) {
+            notificationActionHandler(submission)
+        }
         if (accepted) scheduler.enqueue(persisted.actionKey)
         return accepted
     }
