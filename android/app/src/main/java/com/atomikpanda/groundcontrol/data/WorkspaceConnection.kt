@@ -342,7 +342,12 @@ internal fun WorkspaceConnection.agreesWith(
                 legacyRouteOwnership(copy(baseUrl = storedBase), candidateHosts)
             }
             when (storedRouteOwnership) {
-                is LegacyRouteOwnership.Owned -> storedRouteOwnership.hostId == evidence.hostId
+                is LegacyRouteOwnership.Owned ->
+                    storedRouteOwnership.hostId == evidence.hostId &&
+                        (
+                            storedRouteOwnership.workspaceId == null ||
+                                storedRouteOwnership.workspaceId == evidence.workspaceId
+                        )
                 LegacyRouteOwnership.Ambiguous -> false
                 LegacyRouteOwnership.Unknown, null -> true
             }

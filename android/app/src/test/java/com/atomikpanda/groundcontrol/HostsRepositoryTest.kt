@@ -1113,6 +1113,29 @@ class HostsRepositoryTest {
         }
     }
 
+    @Test fun replacement_directory_adopts_a_direct_host_with_matching_identity() = runTest {
+        val direct = HostConnection(
+            hostId = "shared-host",
+            directUrl = "http://shared-host.lan",
+        )
+        val directoryEntry = HostConnection(
+            hostId = direct.hostId,
+            publicUrl = "https://shared-host.relay.example",
+            relayDomain = "relay.example",
+        )
+
+        val replaced = replaceRelayDirectoryFleet(
+            relayDomain = "relay.example",
+            existingHosts = listOf(direct),
+            replacementHosts = listOf(directoryEntry),
+            connections = emptyList(),
+        ).hosts.single()
+
+        assertEquals("relay.example", replaced.relayDomain)
+        assertEquals("https://shared-host.relay.example", replaced.publicUrl)
+        assertEquals("http://shared-host.lan", replaced.directUrl)
+    }
+
     @Test fun duplicate_host_ingress_keeps_persisted_bytes_unchanged() = runTest {
         val dataStore = newDataStore("duplicate-hosts.preferences_pb", backgroundScope)
         val oldAccount = RelayAccount("old.example", "old-token")

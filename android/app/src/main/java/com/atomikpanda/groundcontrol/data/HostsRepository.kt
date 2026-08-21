@@ -202,7 +202,11 @@ internal fun replaceRelayDirectoryFleet(
     validateUniqueHostIds(replacementHosts)
     val replacementIds = replacementHosts.mapTo(mutableSetOf()) { it.hostId }
     require(
-        existingHosts.none { it.hostId in replacementIds && it.relayDomain != relayDomain },
+        existingHosts.none {
+            it.hostId in replacementIds &&
+                it.relayDomain != null &&
+                it.relayDomain != relayDomain
+        },
     ) { "Incoming host identity belongs to a different relay" }
     val removedHostIds = existingHosts
         .filter { it.relayDomain == relayDomain && it.hostId !in replacementIds }

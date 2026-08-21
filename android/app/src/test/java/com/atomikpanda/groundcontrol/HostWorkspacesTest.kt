@@ -1192,6 +1192,30 @@ class HostWorkspacesTest {
         assertEquals(listOf<String?>(null), authorizations)
     }
 
+    @Test fun stale_explicit_host_base_strips_caller_authorization() = runTest {
+        val known = host.copy(
+            hostId = "host-known",
+            publicUrl = "https://known.relay.example.com",
+            refresh = "known-refresh",
+        )
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                authorizations += request.headers[HttpHeaders.Authorization]
+                respond(listPayload, HttpStatusCode.OK, jsonHdr)
+            },
+            hosts = { listOf(known) },
+        )
+
+        SpecApi(client.client).listWorkspaces(
+            hostBase = "https://stale.relay.example.com",
+            token = "caller-supplied-token",
+            hostId = known.hostId,
+        )
+
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
     @Test fun explicit_route_rejects_duplicate_persisted_host_ids() = runTest {
         val base = "https://first.relay.example.com"
         val duplicateId = "duplicate-host"

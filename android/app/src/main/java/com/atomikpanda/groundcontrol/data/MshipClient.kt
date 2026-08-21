@@ -371,6 +371,10 @@ fun hostAwareClient(
                 workspaceEvidence != null -> workspaceEvidence.hostBase
                 else -> hostBaseFor(originalUrl, listOf(routedHost))
             }
+            if (routedBase == null && explicitHostRouteId != null) {
+                request.headers.remove(HttpHeaders.Authorization)
+                return@on proceed(request)
+            }
             val originalBaseIdentity = routedBase
                 ?.takeIf { originalUrlIdentity.startsWith("$it/") }
                 ?: return@on proceed(request)

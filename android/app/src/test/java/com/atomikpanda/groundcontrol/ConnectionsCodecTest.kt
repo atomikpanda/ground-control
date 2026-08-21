@@ -565,6 +565,19 @@ class ConnectionsCodecTest {
 
         assertNull(evidence.takeIf { conflicting.agreesWith(it, listOf(hostA, hostB)) })
     }
+
+    @Test fun workspace_route_valued_host_id_must_agree_with_the_owned_workspace() {
+        val host = HostConnection(hostId = "host-a", publicUrl = "https://host-a.test/root")
+        val conflicting = WorkspaceConnection(
+            id = "legacy",
+            baseUrl = "${host.publicUrl}/workspaces/ws-1",
+            hostId = "${host.publicUrl}/workspaces/ws-2",
+        )
+        val evidence = legacyRouteOwnership(conflicting, listOf(host))
+            as LegacyRouteOwnership.Owned
+
+        assertNull(evidence.takeIf { conflicting.agreesWith(it, listOf(host)) })
+    }
     @Test fun duplicate_candidate_host_records_make_ownership_ambiguous() {
         val first = HostConnection(hostId = "host-1", publicUrl = "https://host.test/root")
         val second = HostConnection(hostId = "host-1", publicUrl = "https://host.test/root")
