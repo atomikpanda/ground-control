@@ -18,7 +18,8 @@ import com.atomikpanda.groundcontrol.data.legacyConnectionsForDiscovery
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
 import com.atomikpanda.groundcontrol.data.workspaceRefreshGeneration
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
-import com.atomikpanda.groundcontrol.data.hostsFrom
+import com.atomikpanda.groundcontrol.data.InvalidRelayDirectoryException
+import com.atomikpanda.groundcontrol.data.RelayDirectoryTransformer
 import com.atomikpanda.groundcontrol.data.ladderForHost
 import com.atomikpanda.groundcontrol.data.refreshHostWorkspaceConnections
 import com.atomikpanda.groundcontrol.data.reachableHostWorkspaces
@@ -33,6 +34,8 @@ import com.atomikpanda.groundcontrol.data.dto.HostHealth
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.normalizedBaseUrl
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
@@ -46,8 +49,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import io.ktor.client.call.NoTransformationFoundException
-import io.ktor.serialization.JsonConvertException
 import java.util.UUID
 
 /** One host row for the Settings fleet list. */
@@ -64,41 +65,36 @@ internal fun hostRowsFlow(
     }
 }
 
+internal enum class FleetRefreshFailureKind {
+    AUTHENTICATION,
+    INVALID_DIRECTORY,
+    OUTAGE,
+}
+
 internal data class FleetRefreshFailure(
-    val requiresRePair: Boolean,
-    val markRelayUnreachable: Boolean,
+    val kind: FleetRefreshFailureKind,
     val message: String,
-)
+) {
+    val requiresRePair: Boolean get() = kind == FleetRefreshFailureKind.AUTHENTICATION
+    val preservesCachedFleet: Boolean get() = kind == FleetRefreshFailureKind.INVALID_DIRECTORY
+}
 
 internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure {
     if (error is CancellationException) throw error
-    return if (
-        error is JsonConvertException ||
-        error is NoTransformationFoundException
-    ) {
-        classifyMalformedFleetDirectoryFailure(error)
-    } else if (error is AuthException) {
-        FleetRefreshFailure(
-            requiresRePair = true,
-            markRelayUnreachable = false,
+    return when (error) {
+        is AuthException -> FleetRefreshFailure(
+            kind = FleetRefreshFailureKind.AUTHENTICATION,
             message = "Re-pair needed — scan the relay account again",
         )
-    } else {
-        FleetRefreshFailure(
-            requiresRePair = false,
-            markRelayUnreachable = true,
+        is InvalidRelayDirectoryException -> FleetRefreshFailure(
+            kind = FleetRefreshFailureKind.INVALID_DIRECTORY,
+            message = "Relay returned malformed host data — showing last known hosts",
+        )
+        else -> FleetRefreshFailure(
+            kind = FleetRefreshFailureKind.OUTAGE,
             message = "Couldn't reach the relay — showing last known hosts",
         )
     }
-}
-
-internal fun classifyMalformedFleetDirectoryFailure(error: Throwable): FleetRefreshFailure {
-    if (error is CancellationException) throw error
-    return FleetRefreshFailure(
-        requiresRePair = false,
-        markRelayUnreachable = false,
-        message = "Relay returned malformed host data — showing last known hosts",
-    )
 }
 
 internal suspend fun observeRelayAccountChanges(
@@ -248,12 +244,16 @@ private data class SettingsResult(
 )
 
 
-class SettingsViewModel(
+class SettingsViewModel internal constructor(
     private val repo: ConnectionsRepository,
     private val api: SpecApi,
     private val notifications: NotificationsSetting,
     private val hosts: HostsRepository,
+    private val transformer: RelayDirectoryTransformer = RelayDirectoryTransformer(),
+    private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
+    private fun scope(): CoroutineScope = testScope ?: viewModelScope
+
     val connections: StateFlow<List<WorkspaceConnection>> get() = _connections
     private val _connections = MutableStateFlow<List<WorkspaceConnection>>(emptyList())
     private val _testResult = MutableStateFlow<SettingsResult?>(null)
@@ -263,18 +263,18 @@ class SettingsViewModel(
         hosts.relayAccount,
     ) { result, account ->
         result?.let { visibleSettingsResult(it.message, it.owner, account) }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    }.stateIn(scope(), SharingStarted.Eagerly, null)
 
     private fun setTestResult(message: String, owner: RelayAccount? = null) {
         _testResult.value = SettingsResult(message, owner)
     }
 
     init {
-        viewModelScope.launch { repo.connections.collect { _connections.value = it } }
+        scope().launch { repo.connections.collect { _connections.value = it } }
         // MainActivity persists relay deep links outside this ViewModel. Observe
         // the repository owner so an already-open Settings screen pulls the new
         // fleet exactly once; equal DataStore emissions must not recurse.
-        viewModelScope.launch {
+        scope().launch {
             observeRelayAccountChanges(
                 accounts = hosts.relayAccount,
                 hasHostsForAccount = { account ->
@@ -287,7 +287,7 @@ class SettingsViewModel(
 
     val notificationsEnabled: StateFlow<Boolean> get() = notifications.enabled
     fun setNotificationsEnabled(value: Boolean) {
-        viewModelScope.launch { notifications.set(value) }
+        scope().launch { notifications.set(value) }
     }
 
     private fun surfaceRePair(error: Throwable?): Boolean {
@@ -308,7 +308,7 @@ class SettingsViewModel(
             setTestResult("Invalid URL (need http:// or https://)"); return
         }
         val tok = token?.ifBlank { null }
-        viewModelScope.launch {
+        scope().launch {
             val probe = WorkspaceConnection(id ?: UUID.randomUUID().toString(), base, tok, "")
             val health = runCatching { api.health(probe).workspace }
             if (health.isSuccess) {
@@ -354,11 +354,11 @@ class SettingsViewModel(
      */
     fun addFromLink(raw: String): Boolean {
         val c = PairLink.parse(raw) ?: return false
-        viewModelScope.launch { repo.upsert(c) }
+        scope().launch { repo.upsert(c) }
         return true
     }
 
-    fun remove(id: String) { viewModelScope.launch { repo.remove(id) } }
+    fun remove(id: String) { scope().launch { repo.remove(id) } }
 
     // ---- Host workspace discovery (#472) ----
 
@@ -388,7 +388,7 @@ class SettingsViewModel(
             setTestResult("Invalid URL (need http:// or https://)"); return
         }
         val tok = token?.ifBlank { null }
-        viewModelScope.launch {
+        scope().launch {
             val expectedSnapshot = hosts.routeOwnershipSnapshot()
             val expectedHosts = expectedSnapshot.hosts
             val result = runCatching {
@@ -420,10 +420,10 @@ class SettingsViewModel(
     // ---- relay account: the fleet, not an address (#471) --------------------
 
     val relayAccount: StateFlow<RelayAccount?> =
-        hosts.relayAccount.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        hosts.relayAccount.stateIn(scope(), SharingStarted.Eagerly, null)
 
     val hostRows: StateFlow<List<HostRow>> = hostRowsFlow(hosts.hosts)
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        .stateIn(scope(), SharingStarted.Eagerly, emptyList())
 
     /**
      * Store a scanned `groundcontrol://add-relay?...` account and pull the fleet.
@@ -431,12 +431,12 @@ class SettingsViewModel(
      */
     fun addRelayFromLink(raw: String): Boolean {
         val account = PairLink.parseRelay(raw) ?: return false
-        viewModelScope.launch { hosts.setRelayAccount(account) }
+        scope().launch { hosts.setRelayAccount(account) }
         return true
     }
 
     /** Re-read the directory, then each reachable host's workspaces. */
-    fun refreshFleetNow() { viewModelScope.launch { refreshFleet() } }
+    fun refreshFleetNow(): Job = scope().launch { refreshFleet() }
 
     private suspend fun refreshFleet() = refreshFleetMutex.withLock {
         val expectedSnapshot = hosts.routeOwnershipSnapshot()
@@ -445,33 +445,28 @@ class SettingsViewModel(
             return
         }
         var entryCount = 0
-        val entries = try {
-            api.listHosts(account.relayDomain, account.fleetToken)
+        val directory = try {
+            val response = api.listHosts(account.relayDomain, account.fleetToken)
+            entryCount = response.hosts?.size
+                ?: throw InvalidRelayDirectoryException("Relay directory hosts are missing")
+            transformer.transform(response, account.relayDomain)
         } catch (error: Exception) {
             val failure = classifyFleetRefreshFailure(error)
-            val current = if (failure.markRelayUnreachable) {
-                hosts.markRelayUnreachable(account, expectedSnapshot.generation)
-            } else {
-                hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation
+            val current = when {
+                failure.requiresRePair ->
+                    hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation
+                failure.preservesCachedFleet ->
+                    hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation
+                else -> hosts.markRelayUnreachable(account, expectedSnapshot.generation)
             }
             if (current) setTestResult(failure.message, account)
             return
         }
-        entryCount = entries.size
-        val incoming = try {
-            hostsFrom(entries, account.relayDomain)
-        } catch (error: Exception) {
-            val failure = classifyMalformedFleetDirectoryFailure(error)
-            if (hosts.routeOwnershipSnapshot().generation == expectedSnapshot.generation) {
-                setTestResult(failure.message, account)
-            }
-            return
-        }
         if (
-            !hosts.replaceFromRelay(
+            !hosts.replaceValidatedRelayDirectory(
                 expectedAccount = account,
+                directory = directory,
                 expectedGeneration = expectedSnapshot.generation,
-                hosts = incoming,
             )
         ) {
             return
@@ -560,7 +555,7 @@ class SettingsViewModel(
      * direct host can supply fleet identity; every other discovery remains an
      * unowned direct connection with its own base and credential. */
     fun addDiscovered(from: DiscoveredWorkspaces, info: WorkspaceInfo) {
-        viewModelScope.launch {
+        scope().launch {
             val ownerSnapshot = hosts.routeOwnershipSnapshot()
             if (ownerSnapshot.generation != from.expectedGeneration) {
                 rejectStaleDiscovery()

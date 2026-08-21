@@ -1,6 +1,5 @@
 package com.atomikpanda.groundcontrol.data
 
-import com.atomikpanda.groundcontrol.data.dto.HostInfo
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import java.io.IOException
 import kotlinx.serialization.Serializable
@@ -247,9 +246,9 @@ object HostsCodec {
  */
 fun upsertHost(existing: List<HostConnection>, host: HostConnection): List<HostConnection> {
     val prior = existing.firstOrNull { it.hostId == host.hostId }
-    val retainedDirectUrl = (host.directUrl ?: prior?.directUrl)?.let(::normalizedBaseUrl)
+    val retainedDirectUrl = host.directUrl ?: prior?.directUrl
     val currentPublicIdentity = normalizedBaseUrl(host.publicUrl)
-    val currentDirectIdentity = retainedDirectUrl
+    val currentDirectIdentity = retainedDirectUrl?.let(::normalizedBaseUrl)
     val merged = host.copy(
         labelOverride = host.labelOverride ?: prior?.labelOverride,
         directUrl = retainedDirectUrl,
@@ -291,7 +290,7 @@ internal fun validateUniqueHostIds(hosts: List<HostConnection>) {
 fun replaceRelayHosts(
     existing: List<HostConnection>,
     relayDomain: String,
-    hosts: List<HostConnection>,
+    directory: ValidatedRelayDirectory,
 ): List<HostConnection> {
     validateUniqueHostIds(existing)
     validateUniqueHostIds(hosts)

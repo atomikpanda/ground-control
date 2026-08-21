@@ -1,18 +1,26 @@
 package com.atomikpanda.groundcontrol
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import com.atomikpanda.groundcontrol.data.AuthException
+import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.HostsRepository
+import com.atomikpanda.groundcontrol.data.InvalidRelayDirectoryException
 import com.atomikpanda.groundcontrol.data.LegacyIdentityVerification
+import com.atomikpanda.groundcontrol.data.NotificationsSetting
 import com.atomikpanda.groundcontrol.data.RelayAccount
+import com.atomikpanda.groundcontrol.data.RelayDirectoryTransformer
 import com.atomikpanda.groundcontrol.data.SpecApi
-import com.atomikpanda.groundcontrol.data.mshipDefaults
-import com.atomikpanda.groundcontrol.data.hostsFrom
-import com.atomikpanda.groundcontrol.data.replaceRelayHosts
 import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.mshipDefaults
+import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
 import com.atomikpanda.groundcontrol.ui.settings.canAdoptDirectHostIdentity
 import com.atomikpanda.groundcontrol.ui.settings.classifyFleetRefreshFailure
-import com.atomikpanda.groundcontrol.ui.settings.classifyMalformedFleetDirectoryFailure
 import com.atomikpanda.groundcontrol.ui.settings.directUrlForDiscovery
 import com.atomikpanda.groundcontrol.ui.settings.observeRelayAccountChanges
 import com.atomikpanda.groundcontrol.data.unresolvedLegacyConnections
@@ -25,58 +33,217 @@ import com.atomikpanda.groundcontrol.ui.settings.selectedDiscoveryConnection
 import com.atomikpanda.groundcontrol.ui.settings.verificationForGeneration
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.ui.settings.visibleSettingsResult
-import io.ktor.client.call.NoTransformationFoundException
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
-import java.io.IOException
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.test.runCurrent
-import kotlinx.coroutines.test.runTest
-import io.ktor.serialization.JsonConvertException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsFleetTest {
-    private fun directoryApi(payload: String, contentType: String = "application/json") =
-        SpecApi(HttpClient(MockEngine {
-            respond(
-                payload,
-                HttpStatusCode.OK,
-                headersOf(HttpHeaders.ContentType, contentType),
-            )
-        }) { mshipDefaults() })
+    @get:Rule
+    val temporaryFolder = TemporaryFolder()
 
-    private suspend fun assertInvalidDirectoryKeepsCachedFleet(payload: String) {
-        val relayDomain = "relay.example.com"
-        val cached = HostConnection(
-            hostId = "cached",
-            publicUrl = "https://cached.relay.example.com",
-            relayDomain = relayDomain,
-            state = "online",
-        )
-        var persisted = listOf(cached)
+    private val hostsKey = stringPreferencesKey("hosts")
 
-        val error = runCatching {
-            val entries = directoryApi(payload).listHosts(relayDomain, "fleet-token")
-            persisted = replaceRelayHosts(persisted, relayDomain, hostsFrom(entries, relayDomain))
-        }.exceptionOrNull()
+    private fun dataStore(name: String, scope: CoroutineScope): DataStore<Preferences> =
+        PreferenceDataStoreFactory.create(scope = scope) {
+            temporaryFolder.newFile(name).also { check(it.delete()) }
+        }
 
-        assertTrue(error != null)
-        assertFalse(classifyMalformedFleetDirectoryFailure(error!!).markRelayUnreachable)
-        assertEquals(listOf(cached), persisted)
+    private fun notifications() = object : NotificationsSetting {
+        override val enabled = MutableStateFlow(false)
+        override suspend fun set(value: Boolean) {
+            enabled.value = value
+        }
     }
 
+    private fun viewModel(
+        dataStore: DataStore<Preferences>,
+        response: String,
+        scope: CoroutineScope,
+        transformer: RelayDirectoryTransformer = RelayDirectoryTransformer(),
+    ) = SettingsViewModel(
+        repo = ConnectionsRepository(dataStore),
+        api = SpecApi(HttpClient(MockEngine { request ->
+            if (request.url.encodedPath == "/hosts") {
+                respond(response, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+            } else {
+                throw IOException("host refresh intentionally unavailable in directory replacement tests")
+            }
+        }) { mshipDefaults() }),
+        notifications = notifications(),
+        hosts = HostsRepository(dataStore),
+        transformer = transformer,
+        testScope = scope,
+    )
+
+    @Test fun nested_transformation_failure_preserves_exact_cached_fleet() = runTest {
+        val store = dataStore("nested-invalid.preferences_pb", backgroundScope)
+        val repository = HostsRepository(store)
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val cached = HostConnection(
+            hostId = "cached",
+            publicUrl = "https://cached.relay.example.com/root",
+            relayDomain = account.relayDomain,
+            refresh = "cached-refresh",
+        )
+        repository.setRelayAccount(account)
+        repository.upsert(cached)
+        val emissions = mutableListOf<List<HostConnection>>()
+        backgroundScope.launch { repository.hosts.collect { emissions += it } }
+        runCurrent()
+        val vm = viewModel(
+            store,
+            """{"hosts":[
+                {"host_id":"new","public_url":"https://new.relay.example.com"},
+                {"host_id":"broken","public_url":"https://broken.relay.example.com "}
+            ]}""",
+            backgroundScope,
+        )
+
+        vm.refreshFleetNow().join()
+        runCurrent()
+
+        assertEquals(listOf(cached), repository.snapshot())
+        assertEquals(listOf(listOf(cached)), emissions.distinct())
+        assertEquals(
+            "Relay returned malformed host data — showing last known hosts",
+            vm.testResult.value,
+        )
+    }
+
+    @Test fun valid_authoritative_response_replaces_cache_in_one_observed_snapshot() = runTest {
+        val store = dataStore("valid-directory.preferences_pb", backgroundScope)
+        val repository = HostsRepository(store)
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val oldFleet = listOf(
+            HostConnection(
+                hostId = "old",
+                publicUrl = "https://old.relay.example.com",
+                relayDomain = account.relayDomain,
+            ),
+        )
+        repository.setRelayAccount(account)
+        oldFleet.forEach { host -> repository.upsert(host) }
+        val emissions = mutableListOf<List<HostConnection>>()
+        backgroundScope.launch { repository.hosts.collect { emissions += it } }
+        runCurrent()
+        val vm = viewModel(
+            store,
+            """{"hosts":[{"host_id":"new","state":"online","public_url":"https://new.relay.example.com/root/"}]}""",
+            backgroundScope,
+        )
+
+        vm.refreshFleetNow().join()
+        runCurrent()
+
+        val expected = listOf(
+            HostConnection(
+                hostId = "new",
+                publicUrl = "https://new.relay.example.com/root",
+                state = "online",
+                relayDomain = account.relayDomain,
+            ),
+        )
+        assertEquals(expected, repository.snapshot())
+        assertEquals(listOf(oldFleet, expected), emissions.distinct())
+    }
+
+    @Test fun invalid_refresh_keeps_preexisting_cache_bytes_without_rewrite() = runTest {
+        val store = dataStore("legacy-cache.preferences_pb", backgroundScope)
+        val repository = HostsRepository(store)
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        val encoded = """[{"hostId":"legacy","publicUrl":"https://legacy.relay.example/root/","relayDomain":"relay.example.com"}]"""
+        repository.setRelayAccount(account)
+        store.edit { it[hostsKey] = encoded }
+        val vm = viewModel(
+            store,
+            """{"hosts":[{"host_id":"bad","public_url":"ftp://bad.relay.example"}]}""",
+            backgroundScope,
+        )
+
+        vm.refreshFleetNow().join()
+        runCurrent()
+
+        assertEquals(encoded, store.data.first()[hostsKey])
+        assertEquals("https://legacy.relay.example/root/", repository.snapshot().single().publicUrl)
+    }
+
+    @Test fun absent_or_null_hosts_response_preserves_cached_fleet_without_rewrite() = runTest {
+        for ((name, payload) in listOf(
+            "missing" to "{}",
+            "null" to """{"hosts":null}""",
+        )) {
+            val store = dataStore("$name-hosts.preferences_pb", backgroundScope)
+            val repository = HostsRepository(store)
+            val account = RelayAccount("relay.example.com", "fleet-token")
+            val encoded = """[{"hostId":"legacy-$name","publicUrl":"https://legacy.relay.example/root/","relayDomain":"relay.example.com"}]"""
+            repository.setRelayAccount(account)
+            store.edit { it[hostsKey] = encoded }
+            val vm = viewModel(store, payload, backgroundScope)
+
+            vm.refreshFleetNow().join()
+            runCurrent()
+
+            assertEquals(encoded, store.data.first()[hostsKey])
+            assertEquals(
+                "Relay returned malformed host data — showing last known hosts",
+                vm.testResult.value,
+            )
+        }
+    }
+
+    @Test fun real_refresh_persists_a_transformer_sentinel_without_recanonicalizing_it() = runTest {
+        val store = dataStore("sentinel-directory.preferences_pb", backgroundScope)
+        val repository = HostsRepository(store)
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        repository.setRelayAccount(account)
+        repository.upsert(
+            HostConnection(
+                hostId = "old",
+                publicUrl = "https://old.relay.example",
+                relayDomain = account.relayDomain,
+            ),
+        )
+        val calls = mutableListOf<String>()
+        val vm = viewModel(
+            store,
+            """{"hosts":[{"host_id":"sentinel","public_url":"https://wire.relay.example/root"}]}""",
+            backgroundScope,
+            RelayDirectoryTransformer { route ->
+                calls += route
+                "HTTPS://SENTINEL.RELAY.EXAMPLE/Root"
+            },
+        )
+
+        vm.refreshFleetNow().join()
+        runCurrent()
+
+        assertEquals(listOf("https://wire.relay.example/root"), calls)
+        assertEquals(
+            "HTTPS://SENTINEL.RELAY.EXAMPLE/Root",
+            repository.snapshot().single().publicUrl,
+        )
+    }
     @Test fun an_external_relay_account_update_refreshes_an_existing_settings_screen() = runTest {
         val accounts = MutableStateFlow<RelayAccount?>(null)
         var refreshes = 0
@@ -386,142 +553,19 @@ class SettingsFleetTest {
         assertEquals(listOf(preservedDirect), target.expectedSourceGeneration.sources)
     }
 
-    @Test fun malformed_fleet_directory_preserves_cached_observations() {
-        val malformed = classifyMalformedFleetDirectoryFailure(
-            IllegalStateException("Relay directory contained an unusable host identity"),
-        )
+    @Test fun fleet_failures_distinguish_auth_invalid_data_and_outages() {
         val rejected = classifyFleetRefreshFailure(AuthException("unauthorized"))
+        val malformed = classifyFleetRefreshFailure(InvalidRelayDirectoryException("bad payload"))
         val unreachable = classifyFleetRefreshFailure(IOException("offline"))
 
-        assertFalse(malformed.requiresRePair)
-        assertFalse(malformed.markRelayUnreachable)
-        assertEquals(
-            "Relay returned malformed host data — showing last known hosts",
-            malformed.message,
-        )
         assertTrue(rejected.requiresRePair)
-        assertFalse(rejected.markRelayUnreachable)
         assertEquals("Re-pair needed — scan the relay account again", rejected.message)
+        assertFalse(malformed.requiresRePair)
+        assertTrue(malformed.preservesCachedFleet)
+        assertEquals("Relay returned malformed host data — showing last known hosts", malformed.message)
         assertFalse(unreachable.requiresRePair)
-        assertTrue(unreachable.markRelayUnreachable)
+        assertFalse(unreachable.preservesCachedFleet)
         assertEquals("Couldn't reach the relay — showing last known hosts", unreachable.message)
-    }
-
-    @Test fun malformed_http_directory_response_preserves_cached_observations() = runTest {
-        val api = directoryApi("""{"hosts":[{"last_seen":"not-a-number"}]}""")
-
-        val error = runCatching {
-            api.listHosts("relay.example.com", "fleet-token")
-        }.exceptionOrNull()!!
-        assertTrue(error is JsonConvertException)
-        val failure = classifyFleetRefreshFailure(error)
-
-        assertFalse(failure.requiresRePair)
-        assertFalse(failure.markRelayUnreachable)
-        assertEquals(
-            "Relay returned malformed host data — showing last known hosts",
-            failure.message,
-        )
-    }
-
-    @Test fun missing_hosts_in_http_directory_response_preserve_cached_observations() = runTest {
-        val error = runCatching {
-            directoryApi("{}").listHosts("relay.example.com", "fleet-token")
-        }.exceptionOrNull()!!
-
-        assertTrue(error is JsonConvertException)
-        assertFalse(classifyFleetRefreshFailure(error).markRelayUnreachable)
-    }
-
-    @Test fun null_hosts_in_http_directory_response_preserve_cached_observations() = runTest {
-        val error = runCatching {
-            directoryApi("""{"hosts":null}""").listHosts("relay.example.com", "fleet-token")
-        }.exceptionOrNull()!!
-
-        assertTrue(error is JsonConvertException)
-        assertFalse(classifyFleetRefreshFailure(error).markRelayUnreachable)
-    }
-
-    @Test fun empty_hosts_in_http_directory_response_are_allowed() = runTest {
-        val hosts = directoryApi("""{"hosts":[]}""")
-            .listHosts("relay.example.com", "fleet-token")
-
-        assertTrue(hosts.isEmpty())
-    }
-
-    @Test fun incompatible_content_type_for_http_directory_response_preserves_cached_observations() = runTest {
-        val error = runCatching {
-            directoryApi("""{"hosts":[]}""", contentType = "text/plain")
-                .listHosts("relay.example.com", "fleet-token")
-        }.exceptionOrNull()!!
-
-        assertTrue(error is NoTransformationFoundException)
-        assertFalse(classifyFleetRefreshFailure(error).markRelayUnreachable)
-    }
-
-    @Test fun duplicate_host_identity_in_http_directory_preserves_cached_fleet() = runTest {
-        assertInvalidDirectoryKeepsCachedFleet(
-            """{"hosts":[
-                {"host_id":"host-a","public_url":"https://a.relay.example.com"},
-                {"host_id":"host-a","public_url":"https://b.relay.example.com"}
-            ]}""",
-        )
-    }
-
-    @Test fun duplicate_pending_request_in_http_directory_preserves_cached_fleet() = runTest {
-        assertInvalidDirectoryKeepsCachedFleet(
-            """{"hosts":[
-                {"state":"pending-approval","request_id":"request-a"},
-                {"state":"pending-approval","request_id":"request-a"}
-            ]}""",
-        )
-    }
-
-    @Test fun route_less_approved_host_in_http_directory_preserves_cached_fleet() = runTest {
-        assertInvalidDirectoryKeepsCachedFleet(
-            """{"hosts":[{"host_id":"host-a","state":"online"}]}""",
-        )
-    }
-
-    @Test fun valid_directory_entries_preserve_pending_rows_and_status_count() = runTest {
-        val relayDomain = "relay.example.com"
-        val entries = directoryApi(
-            """{"hosts":[
-                {"host_id":"host-a","public_url":"https://a.relay.example.com"},
-                {"state":"pending-approval","request_id":"request-a"}
-            ]}""",
-        ).listHosts(relayDomain, "fleet-token")
-
-        val stored = replaceRelayHosts(emptyList(), relayDomain, hostsFrom(entries, relayDomain))
-
-        assertEquals(entries.size, stored.size)
-        assertEquals(listOf("host-a", "pending:request-a"), stored.map { it.hostId })
-    }
-
-    @Test fun relay_replacement_canonicalizes_public_direct_and_legacy_routes() = runTest {
-        val relayDomain = "relay.example.com"
-        val existing = HostConnection(
-            hostId = "host-a",
-            publicUrl = " https://old.relay.example.com/ ",
-            directUrl = " https://lan.example:47190/ ",
-            legacyPublicUrls = listOf(" https://legacy.relay.example.com/ "),
-            relayDomain = relayDomain,
-        )
-        val entries = directoryApi(
-            """{"hosts":[{"host_id":"host-a","public_url":" https://new.relay.example.com/ "}]}""",
-        ).listHosts(relayDomain, "fleet-token")
-
-        val stored = replaceRelayHosts(listOf(existing), relayDomain, hostsFrom(entries, relayDomain)).single()
-
-        assertEquals("https://new.relay.example.com", stored.publicUrl)
-        assertEquals("https://lan.example:47190", stored.directUrl)
-        assertEquals(
-            listOf(
-                "https://legacy.relay.example.com",
-                "https://old.relay.example.com",
-            ),
-            stored.legacyPublicUrls,
-        )
     }
 
     @Test fun fleet_refresh_failure_classification_propagates_cancellation() {
