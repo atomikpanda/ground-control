@@ -30,6 +30,12 @@ interface Notifier {
     fun notify(event: NeedsYouEvent)
 }
 
+internal enum class ReplyCapabilityAdoption {
+    ADOPTED,
+    RETIRED_WITHOUT_REPLACEMENT,
+    RETRY,
+}
+
 class NeedsYouReconciler(
     private val store: NotifiedStore,
     private val notifier: Notifier,
@@ -37,8 +43,8 @@ class NeedsYouReconciler(
     /** Production supplies generation-safe Room publication; existing non-Android consumers retain
      * the plain notifier seam. */
     private val publish: suspend (NeedsYouEvent) -> Boolean = { notifier.notify(it); true },
-    private val retire: suspend (String, String, String) -> Unit = { _, _, _ -> },
-    private val adopt: suspend (String, String, NeedsYouEvent) -> Boolean = { _, _, _ -> true },
+    private val retire: suspend (String, String, String) -> Boolean = { _, _, _ -> true },
+    private val adopt: suspend (String, String, NeedsYouEvent) -> ReplyCapabilityAdoption = { _, _, _ -> ReplyCapabilityAdoption.ADOPTED },
     /** The thread currently open+foregrounded (see [OpenThreadRegistry]), or null. Suppresses a
      *  duplicate notification for the thread the user is already viewing (#378). Defaults to
      *  "nothing open" so non-UI callers/tests keep the original always-notify behavior. */
@@ -73,22 +79,29 @@ class NeedsYouReconciler(
             if (retiredNotified) {
                 if (needsAttention) {
                     var adopted = true
+                    var requiresReplacement = false
                     for (retiredId in conn.legacyConnectionIds) {
                         if (store.isNotified(retiredId, t.id)) {
-                            if (adopt(retiredId, conn.id, eventForThread())) {
-                                store.clear(retiredId, t.id)
-                            } else {
-                                adopted = false
+                            when (adopt(retiredId, conn.id, eventForThread())) {
+                                ReplyCapabilityAdoption.ADOPTED -> store.clear(retiredId, t.id)
+                                ReplyCapabilityAdoption.RETIRED_WITHOUT_REPLACEMENT -> {
+                                    store.clear(retiredId, t.id)
+                                    requiresReplacement = true
+                                }
+                                ReplyCapabilityAdoption.RETRY -> adopted = false
                             }
                         }
                     }
-                    if (adopted) store.markNotified(conn.id, t.id)
+                    when {
+                        !adopted -> Unit
+                        requiresReplacement && publish(eventForThread()) -> store.markNotified(conn.id, t.id)
+                        !requiresReplacement -> store.markNotified(conn.id, t.id)
+                    }
                 } else {
                     // A resolved alias must be retired, not adopted: otherwise its capability
                     // remains actionable under the canonical identity after dedupe is cleared.
                     for (retiredId in conn.legacyConnectionIds) {
-                        retire(retiredId, t.id, t.updatedAt.orEmpty())
-                        store.clear(retiredId, t.id)
+                        if (retire(retiredId, t.id, t.updatedAt.orEmpty())) store.clear(retiredId, t.id)
                     }
                 }
             }
@@ -104,8 +117,7 @@ class NeedsYouReconciler(
             } else if (!needsAttention) {
                 // Publication can succeed immediately before a process death prevents the dedupe
                 // write; capability retirement, not the dedupe bit, is authoritative on resolve.
-                retire(conn.id, t.id, t.updatedAt.orEmpty())
-                store.clear(conn.id, t.id)
+                if (retire(conn.id, t.id, t.updatedAt.orEmpty())) store.clear(conn.id, t.id)
             }
         }
     }

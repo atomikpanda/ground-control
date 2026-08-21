@@ -13,10 +13,14 @@ import com.atomikpanda.groundcontrol.notify.ReplyMigrationResetter
 import com.atomikpanda.groundcontrol.notify.ReplyStartupGate
 import com.atomikpanda.groundcontrol.notify.withReplyStartupGate
 import com.atomikpanda.groundcontrol.notify.WorkManagerReplyScheduler
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val REPLY_RESET_RETRY_DELAY_MILLIS = 1_000L
 
 class GroundControlApplication : Application() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -28,14 +32,24 @@ class GroundControlApplication : Application() {
         // must await this exact generation rather than racing mutex acquisition.
         ReplyStartupGate.beginReset()
         scope.launch {
-            val database = withReplyStartupGate {
-                NotifiedDatabase.get(this@GroundControlApplication).also {
-                    ReplyMigrationResetter(it) {
-                        val manager = getSystemService(NotificationManager::class.java)
-                        manager.activeNotifications
-                            .filter { notification -> notification.notification.channelId == NotificationChannels.NEEDS_YOU }
-                            .forEach { notification -> manager.cancel(notification.id) }
-                    }.resetIfRequired()
+            lateinit var database: NotifiedDatabase
+            while (true) {
+                try {
+                    database = withReplyStartupGate {
+                        NotifiedDatabase.get(this@GroundControlApplication).also {
+                            ReplyMigrationResetter(it) {
+                                val manager = getSystemService(NotificationManager::class.java)
+                                manager.activeNotifications
+                                    .filter { notification -> notification.notification.channelId == NotificationChannels.NEEDS_YOU }
+                                    .forEach { notification -> manager.cancel(notification.id) }
+                            }.resetIfRequired()
+                        }
+                    }
+                    break
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Throwable) {
+                    delay(REPLY_RESET_RETRY_DELAY_MILLIS)
                 }
             }
             val renderer = NotificationRenderCoordinator(

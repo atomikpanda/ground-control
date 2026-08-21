@@ -19,9 +19,8 @@ internal object ReplyStartupGate {
     }
 }
 
-internal suspend fun <T> withReplyStartupGate(block: suspend () -> T): T =
-    try {
-        block()
-    } finally {
-        ReplyStartupGate.finishReset()
-    }
+internal suspend fun <T> withReplyStartupGate(block: suspend () -> T): T {
+    val result = block()
+    ReplyStartupGate.finishReset()
+    return result
+}

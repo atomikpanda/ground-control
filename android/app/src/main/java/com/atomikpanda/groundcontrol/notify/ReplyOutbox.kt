@@ -95,7 +95,7 @@ internal class ReplyOutbox(
                 ),
             ) != -1L
         }
-        notificationActionHandler(submission)
+        if (accepted || canonical != null && canonical.id != submission.connectionId) notificationActionHandler(submission)
         if (accepted && canonical != null) scheduler.enqueue(persisted.actionKey)
         return accepted
     }
@@ -107,8 +107,8 @@ internal class ReplyOutbox(
         val connections = currentConnections()
         val resumable = database.withTransaction {
             database.replyOutboxDao().waitingForConnection().mapNotNull { row ->
-                if (connections.findByConnectionId(row.connectionId) == null) return@mapNotNull null
-                val current = database.replyNotificationVersionDao().get(row.connectionId, row.threadId)
+                val canonical = connections.findByConnectionId(row.connectionId) ?: return@mapNotNull null
+                val current = database.replyNotificationVersionDao().get(canonical.id, row.threadId)
                 if (current?.active == true && current.version == row.notificationVersion && current.capabilityKey == row.actionKey) {
                     row.takeIf { database.replyOutboxDao().resumeWaiting(row.actionKey, row.notificationVersion) == 1 }
                 } else {

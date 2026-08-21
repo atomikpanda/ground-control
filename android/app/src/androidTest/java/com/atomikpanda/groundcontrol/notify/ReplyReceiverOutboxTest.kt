@@ -190,7 +190,7 @@ class ReplyReceiverOutboxTest {
         database.close()
     }
 
-    @Test fun stale_version_or_capability_is_cancelled_without_executable_row() = runBlocking {
+    @Test fun stale_canonical_generation_is_rejected_without_cancelling_current_notification() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
         database.replyNotificationVersionDao().insert(ReplyNotificationVersionRecord("canonical", "thread", "source#2", 2, true, "fresh-cap"))
@@ -199,7 +199,7 @@ class ReplyReceiverOutboxTest {
             { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace")) }, { cancelled += it.actionKey })
         val stale = validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A").toReplySubmission()!!
         assertEquals(false, outbox.submit(stale))
-        assertEquals(listOf("opaque-key"), cancelled)
+        assertTrue(cancelled.isEmpty())
         assertNull(database.replyOutboxDao().get("opaque-key"))
         database.close()
     }
@@ -216,6 +216,31 @@ class ReplyReceiverOutboxTest {
             { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace")) }, {})
         assertEquals(false, outbox.submit(validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A").toReplySubmission()!!))
         assertEquals(listOf("canonical|thread"), cancelled)
+        database.close()
+    }
+
+    @Test fun alias_waiting_reply_does_not_resume_against_newer_canonical_generation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "old-cap"),
+        )
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("canonical", "thread", "source#2", 2, true, "new-cap"),
+        )
+        database.replyOutboxDao().insert(
+            ReplyOutboxRecord("old-cap", "alias", "thread", "source#1", ReplyOutboxState.WAITING_FOR_CONNECTION,
+                null, null, null, null, "reply", ReplyInputKind.FREE_TEXT, "", "", "", null, 0, 1),
+        )
+        val scheduled = mutableListOf<String>()
+        ReplyOutbox(
+            database,
+            object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
+            { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace", legacyConnectionIds = listOf("alias"))) },
+            {},
+        ).reconcileEligible()
+        assertEquals(ReplyOutboxState.STALE, database.replyOutboxDao().get("old-cap")!!.state)
+        assertTrue(scheduled.isEmpty())
         database.close()
     }
 

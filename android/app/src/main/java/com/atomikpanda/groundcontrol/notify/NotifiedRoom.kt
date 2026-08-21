@@ -126,7 +126,7 @@ interface ReplyOutboxDao {
     @Query(
         "UPDATE reply_outbox SET connectionId = :targetConnectionId " +
             "WHERE connectionId = :sourceConnectionId AND threadId = :threadId AND state IN " +
-            "('READY', 'WAITING_FOR_CONNECTION', 'SAFE_FAILURE_PENDING_RENDER', " +
+            "('READY', 'WAITING_FOR_CONNECTION', 'IN_FLIGHT', 'SAFE_FAILURE_PENDING_RENDER', " +
             "'DELIVERED_PENDING_RENDER', 'UNCERTAIN_PENDING_RENDER')",
     )
     suspend fun adoptConnection(sourceConnectionId: String, targetConnectionId: String, threadId: String): Int

@@ -20,7 +20,7 @@ class ReplyStartupGateTest {
         assertTrue(watcher.await())
     }
 
-    @Test fun database_open_failure_releases_waiters_from_the_reset_generation() = runTest {
+    @Test fun reset_failure_keeps_waiters_closed_until_a_later_successful_reset() = runTest {
         ReplyStartupGate.beginReset()
         val watcher = async {
             ReplyStartupGate.awaitReset()
@@ -31,6 +31,8 @@ class ReplyStartupGateTest {
             withReplyStartupGate<Nothing> { error("database open failed") }
         }
 
+        assertFalse(watcher.isCompleted)
+        withReplyStartupGate { Unit }
         assertTrue(watcher.await())
     }
 }

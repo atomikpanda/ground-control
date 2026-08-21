@@ -13,8 +13,10 @@ private class FakeReplyRenderer : ReplyNotificationRenderer {
     var succeeds = true
     var throws = false
     val renders = mutableListOf<ReplyCapability?>()
+    val errorLines = mutableListOf<String?>()
     override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?): Boolean {
         renders += capability
+        errorLines += errorLine
         if (throws) throw IllegalStateException("notifier failure")
         return succeeds
     }
@@ -130,6 +132,17 @@ class NotificationRenderCoordinatorTest {
         db.close()
     }
 
+    @Test fun safe_failure_renders_attempted_reply_as_error_line() = runBlocking {
+        val db = database(); val renderer = FakeReplyRenderer()
+        db.replyNotificationVersionDao().insert(ReplyNotificationVersionRecord("c", "t", "source#1", 1, true, "cap"))
+        db.replyOutboxDao().insert(row(ReplyOutboxState.SAFE_FAILURE_PENDING_RENDER))
+
+        NotificationRenderCoordinator(db, renderer) { _, _ -> }.renderPending("cap")
+
+        assertEquals(listOf("reply"), renderer.errorLines)
+        db.close()
+    }
+
     @Test fun failed_publication_remains_eligible_without_duplicate_capability() = runBlocking {
         val db = database()
         val renderer = FakeReplyRenderer().apply { succeeds = false }
@@ -219,6 +232,24 @@ class NotificationRenderCoordinatorTest {
         }
     }
 
+    @Test fun adoption_moves_an_in_flight_reply_to_the_canonical_generation() = runBlocking {
+        val db = database()
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "alias-cap"),
+        )
+        db.replyOutboxDao().insert(
+            row(ReplyOutboxState.IN_FLIGHT, key = "alias-cap", connectionId = "alias", threadId = "thread"),
+        )
+
+        NotificationRenderCoordinator(db, FakeReplyRenderer()) { _, _ -> }
+            .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source"))
+
+        val adopted = db.replyOutboxDao().get("alias-cap")!!
+        assertEquals("canonical", adopted.connectionId)
+        assertEquals(ReplyOutboxState.IN_FLIGHT, adopted.state)
+        db.close()
+    }
+
     @Test fun adoption_renders_canonical_replacement_before_retiring_alias_notification() = runBlocking {
         val db = database()
         val renderer = FakeReplyRenderer()
@@ -227,7 +258,8 @@ class NotificationRenderCoordinatorTest {
             ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "alias-cap"),
         )
 
-        assertTrue(
+        assertEquals(
+            ReplyCapabilityAdoption.ADOPTED,
             NotificationRenderCoordinator(db, renderer) { c, t -> cancelled += "$c|$t" }
                 .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source")),
         )
@@ -290,6 +322,19 @@ class NotificationRenderCoordinatorTest {
         assertFalse(canonical.active)
         assertEquals("new#2", canonical.version)
         assertEquals(ReplyOutboxState.STALE, db.replyOutboxDao().get("alias-cap")!!.state)
+        db.close()
+    }
+
+    @Test fun retired_alias_adoption_without_canonical_capability_does_not_crash() = runBlocking {
+        val db = database()
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "t", "source#1", 1, false, null),
+        )
+
+        NotificationRenderCoordinator(db, FakeReplyRenderer()) { _, _ -> }
+            .adopt("alias", "canonical", NeedsYouEvent("canonical", "https://example", "workspace", "t", "subject", "", "source"))
+
+        assertFalse(db.replyNotificationVersionDao().get("canonical", "t")?.active ?: false)
         db.close()
     }
 }
