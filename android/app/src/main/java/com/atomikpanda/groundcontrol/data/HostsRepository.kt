@@ -146,22 +146,31 @@ internal fun replaceRelayAccountFleet(
     }
     val retainedDirectById = retainedDirectHosts.associateBy { it.hostId }
     val ownedConnections = connections.map { connection ->
-        val legacyOwnershipAmbiguous = knownHostsForLegacyConnection(
+        val legacyUrlOwners = knownHostsForLegacyConnection(
             connection,
             previousHosts,
             useStoredHostId = false,
-        ).size > 1
+        )
+        val storedHostId = connection.hostId?.takeIf {
+            it.isNotBlank() &&
+                !it.startsWith("http://", ignoreCase = true) &&
+                !it.startsWith("https://", ignoreCase = true)
+        }
+        val legacyUrlOwner = legacyUrlOwners.singleOrNull()
+        val legacyOwnershipUnsafe =
+            legacyUrlOwners.size > 1 ||
+                (storedHostId != null && legacyUrlOwner != null && legacyUrlOwner.hostId != storedHostId)
         Triple(
             connection,
             knownHostForLegacyConnection(connection, previousHosts),
-            legacyOwnershipAmbiguous,
+            legacyOwnershipUnsafe,
         )
     }
     val credentialCandidatesByHostId = mutableMapOf<String, MutableSet<String>>()
-    for ((connection, knownHost, legacyOwnershipAmbiguous) in ownedConnections) {
+    for ((connection, knownHost, legacyOwnershipUnsafe) in ownedConnections) {
         val credential = connection.directToken?.takeIf { it.isNotBlank() }
             ?: connection.token?.takeIf { it.isNotBlank() }
-        if (!legacyOwnershipAmbiguous && knownHost != null && credential != null) {
+        if (!legacyOwnershipUnsafe && knownHost != null && credential != null) {
             credentialCandidatesByHostId.getOrPut(knownHost.hostId, ::mutableSetOf).add(credential)
         }
     }
@@ -170,8 +179,8 @@ internal fun replaceRelayAccountFleet(
     }
     return RelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
-        connections = ownedConnections.mapNotNull { (connection, knownHost, legacyOwnershipAmbiguous) ->
-            if (legacyOwnershipAmbiguous) {
+        connections = ownedConnections.mapNotNull { (connection, knownHost, legacyOwnershipUnsafe) ->
+            if (legacyOwnershipUnsafe) {
                 return@mapNotNull if (connection.hasStableIdentityTuple()) {
                     null
                 } else {

@@ -316,6 +316,28 @@ class SettingsFleetTest {
         )
     }
 
+    @Test fun verified_credentialless_legacy_source_does_not_refresh_a_direct_host() {
+        val account = RelayAccount("new.example", "new-token")
+        val directHost = HostConnection(
+            hostId = "retained-host",
+            directUrl = "http://direct.example",
+        )
+        val source = WorkspaceConnection(
+            id = "ambiguous-legacy",
+            baseUrl = "${directHost.directUrl}/workspaces/ws",
+        )
+
+        val selected = fleetWorkspaceRefreshTargets(
+            hosts = listOf(directHost),
+            connections = listOf(source),
+            account = account,
+            identities = listOf(VerifiedIdentity(source.id, directHost.hostId, "ws")),
+            routeOwnershipGeneration = 44L,
+        )
+
+        assertTrue(selected.isEmpty())
+    }
+
     @Test fun a_relay_owned_host_without_refresh_is_not_treated_as_retained_direct() {
         val account = RelayAccount("relay.example", "fleet-token")
         val relayHost = HostConnection(
