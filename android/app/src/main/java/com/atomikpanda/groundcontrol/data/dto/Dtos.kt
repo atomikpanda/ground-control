@@ -46,9 +46,10 @@ data class WorkspacesResponse(
 /**
  * One entry of the relay host directory (#471, GET enroll.<relay>/hosts).
  *
- * `host_id` is null on a `pending-approval` row — a VM that has posted its key
- * but that nobody has approved yet is visible on the phone before it has an
- * identity (AC1). `refresh` is published on this route and nowhere else.
+ * A row may omit `host_id` only while it is in one of the supported pending
+ * states and has a `request_id`. Pending placeholders may also omit
+ * `public_url`; a routable URL is required for every non-pending row.
+ * Semantic validation is deliberately deferred to RelayDirectoryTransformer.
  */
 @Serializable
 data class HostInfo(
@@ -64,8 +65,10 @@ data class HostInfo(
     @SerialName("request_id") val requestId: String? = null,
 )
 
+/** `null` is deliberately distinct from `[]`: only an explicit list may
+ * authoritatively replace a cached relay directory. */
 @Serializable
-data class HostsResponse(val hosts: List<HostInfo> = emptyList())
+data class HostsResponse(val hosts: List<HostInfo>?)
 
 /** The host app's unauthenticated `GET /health`: ids and counts only. */
 @Serializable

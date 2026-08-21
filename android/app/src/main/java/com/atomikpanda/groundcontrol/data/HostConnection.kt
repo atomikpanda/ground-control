@@ -1,6 +1,5 @@
 package com.atomikpanda.groundcontrol.data
 
-import com.atomikpanda.groundcontrol.data.dto.HostInfo
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import java.io.IOException
 import kotlinx.serialization.Serializable
@@ -303,34 +302,3 @@ fun replaceRelayHosts(
     }
 }
 
-/** Project a directory entry into the stored model. Pending-approval rows have
- *  no `host_id` yet and are keyed by their enroll request id instead. */
-fun hostFrom(info: HostInfo, relayDomain: String): HostConnection? {
-    val id = info.hostId?.takeIf { it.isNotBlank() }
-        ?: info.requestId?.takeIf { it.isNotBlank() }?.let { "pending:$it" }
-        ?: return null
-    return HostConnection(
-        hostId = id,
-        label = info.label,
-        subdomain = info.subdomain,
-        publicUrl = info.publicUrl,
-        state = info.state,
-        refresh = info.refresh,
-        relayDomain = relayDomain,
-        lastSeen = info.lastSeen,
-        runnerState = info.runner?.state,
-        requestId = info.requestId,
-    )
-}
-
-/** Project an entire relay directory atomically: an empty response is valid,
- * but every row in a nonempty response must carry a usable stable or pending
- * identity before the caller may authoritatively replace cached hosts. */
-fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> {
-    val hosts = infos.mapNotNull { hostFrom(it, relayDomain) }
-    check(hosts.size == infos.size) {
-        "Relay directory contained an unusable host identity"
-    }
-    validateUniqueHostIds(hosts)
-    return hosts
-}

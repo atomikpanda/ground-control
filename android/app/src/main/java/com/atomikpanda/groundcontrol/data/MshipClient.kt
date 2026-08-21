@@ -8,7 +8,6 @@ import com.atomikpanda.groundcontrol.data.dto.WorkspacesResponse
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
 import com.atomikpanda.groundcontrol.data.dto.HostHealth
-import com.atomikpanda.groundcontrol.data.dto.HostInfo
 import com.atomikpanda.groundcontrol.data.dto.HostTokenBody
 import com.atomikpanda.groundcontrol.data.dto.HostTokenResponse
 import com.atomikpanda.groundcontrol.data.dto.HostsResponse
@@ -37,6 +36,7 @@ import com.atomikpanda.groundcontrol.data.dto.VerdictBody
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
+import io.ktor.client.call.NoTransformationFoundException
 import io.ktor.client.call.body
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.okhttp.OkHttp
@@ -61,6 +61,7 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.http.takeFrom
+import io.ktor.serialization.JsonConvertException
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.util.AttributeKey
 import java.io.IOException
@@ -68,6 +69,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -710,12 +712,21 @@ class SpecApi(private val client: HttpClient) {
         }.bodyAfterHostContact()
 
     /** The fleet (#471): GET enroll.<relay>/hosts with the per-device fleet token.
-     *  The phone holds a relay ACCOUNT — this is the only route that turns it
-     *  into addresses, and the only one that publishes refresh credentials. */
-    suspend fun listHosts(relayDomain: String, fleetToken: String): List<HostInfo> =
-        client.get("${enrollBaseUrl(relayDomain)}$HOSTS_PATH") {
+     *  Decoding stays transport-only; Settings owns validation of the full response. */
+    suspend fun listHosts(relayDomain: String, fleetToken: String): HostsResponse {
+        val response = client.get("${enrollBaseUrl(relayDomain)}$HOSTS_PATH") {
             header(FLEET_TOKEN_HEADER, fleetToken)
-        }.bodyAfterHostContact<HostsResponse>().hosts
+        }
+        return try {
+            response.bodyAfterHostContact()
+        } catch (error: NoTransformationFoundException) {
+            throw InvalidRelayDirectoryException("Relay directory response is malformed")
+        } catch (error: JsonConvertException) {
+            throw InvalidRelayDirectoryException("Relay directory response is malformed")
+        } catch (error: SerializationException) {
+            throw InvalidRelayDirectoryException("Relay directory response is malformed")
+        }
+    }
 
     /** A host's unauthenticated GET /health: ids and counts, the reachability
      * probe and the `host_id` half of an adoption's identity tuple. */

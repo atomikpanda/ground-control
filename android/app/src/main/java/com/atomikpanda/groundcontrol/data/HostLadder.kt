@@ -59,7 +59,7 @@ enum class HostLadderState {
     STALE,
 }
 
-private val PENDING = setOf("pending-approval", "awaiting-enrollment")
+private val SUPPORTED_PENDING_HOST_STATES = setOf("pending-approval", "awaiting-enrollment")
 private val CONTENDED = setOf("contended", "duplicate-identity")
 private const val ONLINE = "online"
 private const val HEALTHY = "healthy"
@@ -96,7 +96,7 @@ fun hostLadder(
 ): HostLadderState {
     val host = hostState?.trim().orEmpty()
     if (host.isEmpty()) return HostLadderState.DIRECTORY_UNREACHABLE
-    if (host in PENDING) return HostLadderState.PENDING_APPROVAL
+    if (isSupportedPendingHostState(host)) return HostLadderState.PENDING_APPROVAL
     if (host in CONTENDED) return HostLadderState.CONTENDED
     if (host != ONLINE) return HostLadderState.HOST_OFFLINE
     if (secondsSincePhoneContact == null || secondsSincePhoneContact >= DIRECTORY_STALE_S) {
@@ -106,6 +106,9 @@ fun hostLadder(
     if (runnerState !in RUNNER_OK) return HostLadderState.RUNNER_DEGRADED
     return HostLadderState.ACTIVE
 }
+
+internal fun isSupportedPendingHostState(state: String?): Boolean =
+    state?.trim() in SUPPORTED_PENDING_HOST_STATES
 
 internal fun HostConnection.projectedHostState(): String? =
     state ?: "online".takeIf {

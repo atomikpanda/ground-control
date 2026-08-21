@@ -49,12 +49,13 @@ private fun routeOwnership(
     account: RelayAccount?,
     hosts: List<HostConnection>,
     connections: List<WorkspaceConnection>,
+    validatedRoutes: Map<String, String> = emptyMap(),
 ): RouteOwnership = RouteOwnership(
     account = account,
     hosts = hosts.map { host ->
         HostRouteOwnership(
             hostId = host.hostId,
-            publicUrl = routeIdentity(host.publicUrl),
+            publicUrl = validatedRoutes[host.hostId] ?: routeIdentity(host.publicUrl),
             refresh = host.refresh,
             directUrl = routeIdentity(host.directUrl),
             relayDomain = host.relayDomain,
@@ -93,10 +94,11 @@ internal fun routeOwnershipGenerationAfter(
     updatedAccount: RelayAccount?,
     updatedHosts: List<HostConnection>,
     updatedConnections: List<WorkspaceConnection>,
+    validatedRoutes: Map<String, String> = emptyMap(),
 ): Long {
     if (
         routeOwnership(previousAccount, previousHosts, previousConnections) ==
-        routeOwnership(updatedAccount, updatedHosts, updatedConnections)
+        routeOwnership(updatedAccount, updatedHosts, updatedConnections, validatedRoutes)
     ) {
         return current
     }
@@ -316,29 +318,37 @@ class HostsRepository internal constructor(private val dataStore: DataStore<Pref
     suspend fun upsertAll(hosts: List<HostConnection>) =
         mutate { current -> hosts.fold(current) { acc, h -> upsertHost(acc, h) } }
 
-    suspend fun replaceFromRelay(
+    internal suspend fun replaceValidatedRelayDirectory(
         expectedAccount: RelayAccount,
+        directory: ValidatedRelayDirectory,
         expectedGeneration: Long,
-        hosts: List<HostConnection>,
     ): Boolean {
-        validateUniqueHostIds(hosts)
+        validateUniqueHostIds(directory.hosts)
         var applied = false
         dataStore.edit {
-            if ((it[ROUTE_OWNERSHIP_GENERATION] ?: 0L) != expectedGeneration) return@edit
+            if (
+                it.relayAccount() != expectedAccount ||
+                (it[ROUTE_OWNERSHIP_GENERATION] ?: 0L) != expectedGeneration
+            ) {
+                return@edit
+            }
             val currentHosts = HostsCodec.decode(it[HOSTS] ?: "")
             val currentConnections = ConnectionsCodec.decode(it[CONNECTIONS] ?: "")
             validateUniqueHostIds(currentHosts)
-            validateUniqueHostIds(hosts)
+            validateUniqueHostIds(directory.hosts)
             val fleet = replaceRelayDirectoryFleet(
                 relayDomain = expectedAccount.relayDomain,
                 existingHosts = currentHosts,
-                replacementHosts = hosts,
+                replacementHosts = directory.hosts,
                 connections = currentConnections,
             )
             it.advanceRouteOwnershipGeneration(
                 updatedAccount = expectedAccount,
                 updatedHosts = fleet.hosts,
                 updatedConnections = fleet.connections,
+                validatedRoutes = directory.hosts.mapNotNull { host ->
+                    host.publicUrl.takeIf(String::isNotBlank)?.let { host.hostId to it }
+                }.toMap(),
             )
             it[HOSTS] = HostsCodec.encode(fleet.hosts)
             it[CONNECTIONS] = ConnectionsCodec.encode(fleet.connections)
@@ -495,6 +505,7 @@ internal fun androidx.datastore.preferences.core.MutablePreferences.advanceRoute
     updatedAccount: RelayAccount?,
     updatedHosts: List<HostConnection>,
     updatedConnections: List<WorkspaceConnection>,
+    validatedRoutes: Map<String, String> = emptyMap(),
 ) {
     val current = this[ROUTE_OWNERSHIP_GENERATION] ?: 0L
     val updated = routeOwnershipGenerationAfter(
@@ -505,6 +516,7 @@ internal fun androidx.datastore.preferences.core.MutablePreferences.advanceRoute
         updatedAccount = updatedAccount,
         updatedHosts = updatedHosts,
         updatedConnections = updatedConnections,
+        validatedRoutes = validatedRoutes,
     )
     if (updated != current) this[ROUTE_OWNERSHIP_GENERATION] = updated
 }
