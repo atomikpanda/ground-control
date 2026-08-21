@@ -74,8 +74,21 @@ class ReplyWorkerIdentityTest {
         )
     }
 
-    @Test fun resolved_completion_cancels_only_the_retired_notification_identity() {
-        assertEquals("retired", retiredReplyConnectionId("retired", canonical))
-        assertEquals(null, retiredReplyConnectionId(canonical.id, canonical))
+    @Test fun successful_completion_cancels_only_the_retired_notification_identity() {
+        assertEquals(
+            "retired",
+            retiredReplyConnectionId("retired", canonical, replySucceeded = true),
+        )
+        assertEquals(
+            null,
+            retiredReplyConnectionId(canonical.id, canonical, replySucceeded = true),
+        )
+    }
+
+    @Test fun failed_completion_preserves_the_retired_notification_for_manual_retry() {
+        assertEquals(
+            null,
+            retiredReplyConnectionId("retired", canonical, replySucceeded = false),
+        )
     }
 }

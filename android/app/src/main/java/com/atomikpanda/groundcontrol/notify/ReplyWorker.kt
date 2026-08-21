@@ -23,7 +23,8 @@ import com.atomikpanda.groundcontrol.data.dto.Thread
 internal fun retiredReplyConnectionId(
     persistedConnectionId: String,
     conn: WorkspaceConnection,
-): String? = persistedConnectionId.takeIf { it != conn.id }
+    replySucceeded: Boolean,
+): String? = persistedConnectionId.takeIf { replySucceeded && it != conn.id }
 
 internal fun buildReplyNotificationEvent(
     conn: WorkspaceConnection,
@@ -78,10 +79,10 @@ class ReplyWorker(appContext: Context, params: WorkerParameters) :
 
         val repo = ThreadsRepository(SpecApi(appHttpClient(applicationContext).client))
         val posted = runCatching { repo.postMessage(conn, threadId, text) }
-        retiredReplyConnectionId(connId, conn)?.let { retiredId ->
-            AndroidNeedsYouCanceller(applicationContext).cancel(retiredId, threadId)
-        }
         return if (posted.isSuccess) {
+            retiredReplyConnectionId(connId, conn, replySucceeded = true)?.let { retiredId ->
+                AndroidNeedsYouCanceller(applicationContext).cancel(retiredId, threadId)
+            }
             val thread = posted.getOrNull()
             notifier.notify(
                 buildReplyNotificationEvent(
