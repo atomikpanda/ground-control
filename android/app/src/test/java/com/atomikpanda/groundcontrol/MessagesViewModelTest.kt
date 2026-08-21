@@ -464,4 +464,32 @@ class MessagesViewModelTest {
         } as MessagesUiState.Content
         assertEquals(listOf(connectionB.id), content.sections.map { it.connectionId })
     }
+
+    @Test fun newer_connection_revision_fences_a_captured_refresh_before_old_state_can_render() = runTest {
+        val a = WorkspaceConnection("A", "http://a:47100")
+        val b = WorkspaceConnection("B", "http://b:47100")
+        val connections = MutableStateFlow(listOf(a))
+        val aStarted = CompletableDeferred<Unit>()
+        val releaseA = CompletableDeferred<Unit>()
+        val vm = MessagesViewModel(repoWith { request ->
+            when (request.url.host) {
+                "a" -> {
+                    aStarted.complete(Unit)
+                    releaseA.await()
+                    respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
+                }
+                else -> respond(waitT1UpdatedJson, HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        val refresh = vm.refresh()
+        aStarted.await()
+        connections.value = listOf(b)
+        runCurrent()
+        releaseA.complete(Unit)
+        refresh.join()
+        val content = vm.state.first { it is MessagesUiState.Content &&
+            (it as MessagesUiState.Content).sections.map { section -> section.connectionId } == listOf("B") } as MessagesUiState.Content
+        assertEquals(listOf("B"), content.sections.map { it.connectionId })
+    }
 }

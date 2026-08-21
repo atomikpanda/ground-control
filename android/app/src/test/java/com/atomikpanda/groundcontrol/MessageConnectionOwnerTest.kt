@@ -54,7 +54,8 @@ class MessageConnectionOwnerTest {
         val second = owner.beginForTest(MessageRequestToken.Kind.REFRESH)
         owner.completeForTest(second, Result.failure(IOException("offline")))
         owner.completeForTest(first, Result.success(MessageFullLoad(listOf(thread("stale")), emptyList())))
-        assertFalse(owner.snapshot.value.threads.getOrThrow().any { it.id == "stale" })
+        assertEquals(MessageConnectionSnapshot.Phase.INITIAL_ERROR, owner.snapshot.value.phase)
+        assertTrue(owner.snapshot.value.threads.isFailure)
     }
 
     @Test fun stale_generation_commits_neither_threads_nor_cursor() = runTest {
@@ -294,5 +295,39 @@ class MessageConnectionOwnerTest {
         assertEquals(0, fullLoads)
         assertEquals(listOf("accepted"), owner.snapshot.value.threads.getOrThrow().map { it.id })
         assertEquals("cursor-7", owner.snapshot.value.cursor)
+    }
+
+    @Test fun refresh_failure_while_initial_loading_publishes_initial_error() = runTest {
+        val owner = owner(backgroundScope)
+        val refresh = owner.beginForTest(MessageRequestToken.Kind.REFRESH)
+        owner.completeForTest(refresh, Result.failure(IOException("offline")))
+        assertEquals(MessageConnectionSnapshot.Phase.INITIAL_ERROR, owner.snapshot.value.phase)
+        assertTrue(owner.snapshot.value.threads.isFailure)
+    }
+
+    @Test fun queued_refresh_completes_when_removal_cancels_the_handoff() = runTest {
+        val release = CompletableDeferred<Unit>()
+        var loads = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                loads += 1
+                if (loads == 1) withContext(NonCancellable) { release.await() }
+                MessageFullLoad(emptyList(), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+        owner.refresh()
+        runCurrent()
+        backgroundScope.async { owner.handoffTo(replacement) }
+        runCurrent()
+        val queued = owner.refresh()
+        val removal = backgroundScope.async { owner.cancel() }
+        release.complete(Unit)
+        runCurrent()
+        removal.await()
+        queued.join()
+        assertEquals(1, loads)
     }
     }

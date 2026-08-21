@@ -204,10 +204,9 @@ internal class MessageConnectionOwner(
             }
         }
     }
-
     private fun acceptFailureLocked(token: MessageRequestToken, failure: Throwable) {
         val current = _snapshot.value
-        _snapshot.value = if (token.kind == MessageRequestToken.Kind.INITIAL) {
+        _snapshot.value = if (current.phase != MessageConnectionSnapshot.Phase.READY) {
             current.copy(
                 threads = Result.failure(failure),
                 phase = MessageConnectionSnapshot.Phase.INITIAL_ERROR,
@@ -325,20 +324,23 @@ internal class MessageConnectionOwner(
     }
 
     suspend fun cancel() {
-        val jobs = mutex.withLock {
+        val (jobs, refreshWaiters) = mutex.withLock {
             if (!cancelled) {
                 cancelled = true
                 generation += 1
                 latestIssuedRevision += 1
             }
             activeToken = null
-            (pendingHandoffJobs + retiredRequestJobs + listOfNotNull(activeRequest, retryJob)).also {
-                pendingHandoffJobs = emptySet()
-                retiredRequestJobs = emptySet()
-                activeRequest = null
-                retryJob = null
-            }
+            val jobs = pendingHandoffJobs + retiredRequestJobs + listOfNotNull(activeRequest, retryJob)
+            pendingHandoffJobs = emptySet()
+            retiredRequestJobs = emptySet()
+            activeRequest = null
+            retryJob = null
+            val waiters = queuedRefreshWaiters
+            queuedRefreshWaiters = emptyList()
+            jobs to waiters
         }
+        refreshWaiters.forEach { it.complete(Unit) }
         jobs.forEach(Job::cancel)
         jobs.joinAll()
     }

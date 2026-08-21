@@ -21,4 +21,16 @@ class HostConnectionRouteMatchTest {
 
         assertEquals(listOf(directOnlyHost), matches)
     }
+
+    @Test fun unique_legacy_public_url_remains_a_known_route_when_no_current_base_matches() {
+        val legacy = "https://retired.relay.example"
+        val host = HostConnection(
+            hostId = "relay",
+            publicUrl = "https://current.relay.example",
+            refresh = "relay-refresh",
+            legacyPublicUrls = listOf(legacy),
+        )
+
+        assertEquals(listOf(host), listOf(host).filter { it.hasKnownBaseIdentity(legacy) })
+    }
 }

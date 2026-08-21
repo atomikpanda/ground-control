@@ -217,12 +217,16 @@ class MessagesViewModel(
     }
 
     fun refresh(): Job = scope().launch {
-        val current = connections.first()
-        val refreshRevision = ++reconcileRevision
-        reconcileConnections(current, refreshRevision)
-        if (current.isEmpty() || latestConnections != current || reconcileRevision != refreshRevision) return@launch
+        val startRevision = reconcileMutex.withLock { reconcileRevision }
+        val captured = connections.first()
+        val (target, refreshRevision) = reconcileMutex.withLock {
+            val target = if (reconcileRevision == startRevision) captured else latestConnections
+            target to ++reconcileRevision
+        }
+        reconcileConnections(target, refreshRevision)
+        if (target.isEmpty() || latestConnections != target || reconcileRevision != refreshRevision) return@launch
         owners.values.map { it.refresh() }.joinAll()
-        if (latestConnections == current && reconcileRevision == refreshRevision) renderOwners()
+        if (latestConnections == target && reconcileRevision == refreshRevision) renderOwners()
     }
 
     fun selectWorkspace(connectionId: String?) {
