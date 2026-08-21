@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import io.ktor.serialization.JsonConvertException
 import java.util.UUID
 
 /** One host row for the Settings fleet list. */
@@ -70,7 +71,9 @@ internal data class FleetRefreshFailure(
 
 internal fun classifyFleetRefreshFailure(error: Throwable): FleetRefreshFailure {
     if (error is CancellationException) throw error
-    return if (error is AuthException) {
+    return if (error is JsonConvertException) {
+        classifyMalformedFleetDirectoryFailure(error)
+    } else if (error is AuthException) {
         FleetRefreshFailure(
             requiresRePair = true,
             markRelayUnreachable = false,

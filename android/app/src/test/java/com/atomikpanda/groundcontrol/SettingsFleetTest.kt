@@ -4,6 +4,8 @@ import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.LegacyIdentityVerification
 import com.atomikpanda.groundcontrol.data.RelayAccount
+import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.data.VerifiedIdentity
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.ui.settings.canAdoptDirectHostIdentity
@@ -21,6 +23,12 @@ import com.atomikpanda.groundcontrol.ui.settings.selectedDiscoveryConnection
 import com.atomikpanda.groundcontrol.ui.settings.verificationForGeneration
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.ui.settings.visibleSettingsResult
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -28,6 +36,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import io.ktor.serialization.JsonConvertException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
@@ -364,6 +373,29 @@ class SettingsFleetTest {
         assertFalse(unreachable.requiresRePair)
         assertTrue(unreachable.markRelayUnreachable)
         assertEquals("Couldn't reach the relay — showing last known hosts", unreachable.message)
+    }
+
+    @Test fun malformed_http_directory_response_preserves_cached_observations() = runTest {
+        val api = SpecApi(HttpClient(MockEngine {
+            respond(
+                """{"hosts":[{"last_seen":"not-a-number"}]}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }) { mshipDefaults() })
+
+        val error = runCatching {
+            api.listHosts("relay.example.com", "fleet-token")
+        }.exceptionOrNull()!!
+        assertTrue(error is JsonConvertException)
+        val failure = classifyFleetRefreshFailure(error)
+
+        assertFalse(failure.requiresRePair)
+        assertFalse(failure.markRelayUnreachable)
+        assertEquals(
+            "Relay returned malformed host data — showing last known hosts",
+            failure.message,
+        )
     }
 
     @Test fun fleet_refresh_failure_classification_propagates_cancellation() {
