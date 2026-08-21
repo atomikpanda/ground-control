@@ -2,9 +2,11 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.fail
 import org.junit.Test
 
 class CanonicalConnectionRoutesTest {
@@ -106,4 +108,27 @@ class CanonicalConnectionRoutesTest {
             ),
         )
     }
+
+    @Test fun colliding_connection_hashes_still_rekey_the_route_binding() {
+        val first = adopted.copy(baseUrl = "https://relay.example/Aa")
+        val replacement = adopted.copy(baseUrl = "https://relay.example/BB")
+        assertEquals(first.hashCode(), replacement.hashCode())
+
+        val firstBinding = connectionRouteBinding(listOf(first), first.id, "detail-spec-1")!!
+        val replacementBinding = connectionRouteBinding(listOf(replacement), replacement.id, "detail-spec-1")!!
+
+        assertNotEquals(firstBinding.viewModelKey, replacementBinding.viewModelKey)
+    }
+
+    @Test fun item_redirect_rethrows_cancelled_fetch() {
+        val cancellation = CancellationException("connection replaced")
+
+        try {
+            runCatching<Unit> { throw cancellation }.getOrNullOrRethrowCancellation()
+            fail("CancellationException must propagate")
+        } catch (actual: CancellationException) {
+            assertEquals(cancellation, actual)
+        }
+    }
+
 }

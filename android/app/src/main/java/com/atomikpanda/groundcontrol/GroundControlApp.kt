@@ -30,6 +30,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.appHttpClient
 import com.atomikpanda.groundcontrol.data.DataStoreCoachMarkStore
@@ -79,6 +80,7 @@ import com.atomikpanda.groundcontrol.ui.tasks.TasksScreen
 import com.atomikpanda.groundcontrol.ui.tasks.TasksViewModel
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceScreen
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 
 internal fun newThreadRoute(connectionId: String?): String =
@@ -113,8 +115,11 @@ internal fun connectionRouteBinding(
     connectionId: String,
     destinationKey: String,
 ): ConnectionRouteBinding? = connections.findByConnectionId(connectionId)?.let { connection ->
-    ConnectionRouteBinding(connection, "$destinationKey-${connection.hashCode()}")
+    ConnectionRouteBinding(connection, "$destinationKey-${ConnectionsCodec.encode(listOf(connection))}")
 }
+
+internal fun <T> Result<T>.getOrNullOrRethrowCancellation(): T? =
+    onFailure { if (it is CancellationException) throw it }.getOrNull()
 
 @Composable
 fun GroundControlApp(
@@ -445,7 +450,8 @@ fun GroundControlApp(
                     if (binding == null) {
                         nav.popBackStack(); return@LaunchedEffect
                     }
-                    val item = runCatching { api.getItem(binding.connection, itemId) }.getOrNull()
+                    val item = runCatching { api.getItem(binding.connection, itemId) }
+                        .getOrNullOrRethrowCancellation()
                     if (item == null) {
                         nav.popBackStack(); return@LaunchedEffect
                     }
