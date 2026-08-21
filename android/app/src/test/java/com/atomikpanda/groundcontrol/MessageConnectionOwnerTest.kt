@@ -48,6 +48,38 @@ class MessageConnectionOwnerTest {
         assertEquals(listOf("new"), owner.snapshot.value.threads.getOrThrow().map { it.id })
     }
 
+    @Test fun initial_load_does_not_supersede_an_active_refresh() = runTest {
+        val refreshStarted = CompletableDeferred<Unit>()
+        val releaseRefresh = CompletableDeferred<Unit>()
+        var loads = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                loads += 1
+                if (loads == 1) {
+                    refreshStarted.complete(Unit)
+                    withContext(NonCancellable) { releaseRefresh.await() }
+                    MessageFullLoad(listOf(thread("refresh")), emptyList())
+                } else {
+                    MessageFullLoad(listOf(thread("initial")), emptyList())
+                }
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+
+        val refresh = owner.refresh()
+        refreshStarted.await()
+        val initial = owner.initialLoad()
+        runCurrent()
+        releaseRefresh.complete(Unit)
+        refresh.join()
+        initial.join()
+
+        assertEquals(1, loads)
+        assertEquals(listOf("refresh"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+    }
+
     @Test fun newer_failure_still_fences_older_completion() = runTest {
         val owner = owner(backgroundScope)
         val first = owner.beginForTest(MessageRequestToken.Kind.REFRESH)
@@ -123,6 +155,25 @@ class MessageConnectionOwnerTest {
         owner.completeForTest(failed, Result.failure(IOException("offline")))
         assertEquals(listOf("accepted"), owner.snapshot.value.threads.getOrThrow().map { it.id })
         assertEquals("accepted-cursor", owner.snapshot.value.cursor)
+    }
+
+    @Test fun one_shot_poll_failure_does_not_start_a_retry_loop() = runTest {
+        var retryStarts = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = { awaitCancellation() },
+            poll = { _, _ -> throw IOException("offline") },
+            scope = backgroundScope,
+            retryDelay = {
+                retryStarts += 1
+                awaitCancellation()
+            },
+        )
+
+        owner.pollOnceForTest("cursor")
+        runCurrent()
+
+        assertEquals(0, retryStarts)
     }
 
     @Test fun initial_empty_snapshot_uses_the_injected_clock_cursor() = runTest {

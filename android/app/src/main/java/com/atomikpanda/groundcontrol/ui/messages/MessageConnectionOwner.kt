@@ -90,7 +90,7 @@ internal class MessageConnectionOwner(
     private var cancelled = false
 
     fun initialLoad(): Job = scope.launch {
-        mutex.withLock { launchRequestLocked(MessageRequestToken.Kind.INITIAL) }?.join()
+        mutex.withLock { activeRequest ?: launchRequestLocked(MessageRequestToken.Kind.INITIAL) }?.join()
     }
     fun refresh(): Job = scope.launch {
         val queued = CompletableDeferred<Unit>()
@@ -234,7 +234,7 @@ internal class MessageConnectionOwner(
         } else {
             current.copy(lastError = failure)
         }
-        scheduleRetryLocked(token.kind)
+        if (token.kind != MessageRequestToken.Kind.POLL || pollingEnabled) scheduleRetryLocked(token.kind)
     }
 
     private fun scheduleRetryLocked(kind: MessageRequestToken.Kind) {
