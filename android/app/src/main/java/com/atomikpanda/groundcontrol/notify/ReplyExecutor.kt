@@ -19,7 +19,9 @@ internal fun classifyReplyFailure(error: Throwable): ReplyDeliveryOutcome = when
     is AuthException,
     is NotFoundException,
     is ApiConflictException -> ReplyDeliveryOutcome.SafePreTransmissionFailure
-    is ApiResponseException -> if (error.status.value in 400..499) ReplyDeliveryOutcome.SafePreTransmissionFailure else ReplyDeliveryOutcome.Uncertain
+    // A status code cannot prove the server rejected before side effects: postMessage has no
+    // idempotency key, so any response that got through is treated as possibly delivered.
+    is ApiResponseException -> ReplyDeliveryOutcome.Uncertain
     else -> ReplyDeliveryOutcome.Uncertain
 }
 
@@ -29,6 +31,8 @@ internal interface ReplyOutboxStore {
     suspend fun moveReadyToWaiting(row: ReplyOutboxRecord): Boolean
     suspend fun claim(row: ReplyOutboxRecord, executionId: String): Boolean
     suspend fun complete(row: ReplyOutboxRecord, executionId: String, next: ReplyOutboxState): Boolean
+    /** Whether the row's notification generation is still the active capability. */
+    suspend fun capabilityActive(row: ReplyOutboxRecord): Boolean
 }
 
 internal class RoomReplyOutboxStore(private val database: NotifiedDatabase) : ReplyOutboxStore {
@@ -71,6 +75,12 @@ internal class RoomReplyOutboxStore(private val database: NotifiedDatabase) : Re
 
     override suspend fun complete(row: ReplyOutboxRecord, executionId: String, next: ReplyOutboxState): Boolean =
         database.replyOutboxDao().completeClaim(row.actionKey, row.notificationVersion, executionId, next) == 1
+
+    override suspend fun capabilityActive(row: ReplyOutboxRecord): Boolean {
+        val version = database.replyNotificationVersionDao().get(row.connectionId, row.threadId)
+        return version?.active == true && version.version == row.notificationVersion &&
+            version.capabilityKey == row.actionKey
+    }
 }
 
 /** Claims an outbox item once, then makes every post-delivery state durable before rendering. */
@@ -101,6 +111,13 @@ internal class ReplyExecutor(
         val current = currentConnections().findByConnectionId(initial.connectionId)
         if (current == null) {
             store.complete(initial, executionId, ReplyOutboxState.WAITING_FOR_CONNECTION)
+            return Result.success()
+        }
+        // A concurrent reconciliation can retire the capability after claim commits IN_FLIGHT;
+        // revalidate so a resolved thread never receives the reply. The residual window between
+        // this check and post is closed only by server-side idempotency, which does not exist.
+        if (!store.capabilityActive(initial)) {
+            store.complete(initial, executionId, ReplyOutboxState.STALE)
             return Result.success()
         }
         val next = try {

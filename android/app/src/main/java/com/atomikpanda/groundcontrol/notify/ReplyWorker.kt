@@ -64,7 +64,15 @@ class ReplyIntakeWorker(appContext: Context, params: WorkerParameters) : Corouti
             return if (runAttemptCount < MAX_RESET_RETRIES) Result.retry() else Result.failure()
         }
         val submission = replySubmission(inputData) ?: return Result.failure()
-        ReplyOutboxIntake(applicationContext).submit(submission)
+        try {
+            ReplyOutboxIntake(applicationContext).submit(submission)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            // A transient database error must not terminally fail the only durable copy of the
+            // validated reply; WorkManager backoff retries until the attempt budget is spent.
+            return if (runAttemptCount < MAX_RESET_RETRIES) Result.retry() else Result.failure()
+        }
         return Result.success()
     }
 

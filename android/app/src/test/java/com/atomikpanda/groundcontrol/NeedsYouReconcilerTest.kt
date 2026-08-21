@@ -246,6 +246,21 @@ class NeedsYouReconcilerTest {
         assertFalse("${conn.id}|t1" in store.marks)
     }
 
+    @Test fun deduped_thread_with_a_retired_capability_republishes_while_still_needy() = runTest {
+        val store = FakeStore(); val notifier = FakeNotifier()
+        store.markNotified(conn.id, "t1")
+
+        NeedsYouReconciler(
+            store,
+            notifier,
+            routedRepo(),
+            retire = { _, _, _ -> false },
+            hasActiveCapability = { _, _ -> false },
+        ).reconcile(conn, listOf(summary("t1", true)))
+
+        assertEquals(1, notifier.events.size)
+    }
+
     @Test fun plain_note_does_not_notify() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
         NeedsYouReconciler(store, notifier, routedRepo()).reconcile(conn, listOf(summary("t1", false)))

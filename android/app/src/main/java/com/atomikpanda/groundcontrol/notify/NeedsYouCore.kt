@@ -49,8 +49,10 @@ class NeedsYouReconciler(
      *  duplicate notification for the thread the user is already viewing (#378). Defaults to
      *  "nothing open" so non-UI callers/tests keep the original always-notify behavior. */
     private val foregroundThreadKey: () -> String? = { null },
-    /** Reply capabilities are authoritative when publication completed before the dedupe mark. */
-    private val hasActiveCapability: suspend (String, String) -> Boolean = { _, _ -> false },
+    /** Reply capabilities are authoritative when publication completed before the dedupe mark.
+     *  Defaults to active so consumers without capability tracking keep pure mark-based dedupe;
+     *  a false answer republishes a still-needy deduped thread whose notification was retired. */
+    private val hasActiveCapability: suspend (String, String) -> Boolean = { _, _ -> true },
 ) {
     suspend fun reconcile(conn: WorkspaceConnection, threads: List<ThreadSummary>) {
         for (t in threads) {
@@ -115,7 +117,7 @@ class NeedsYouReconciler(
                     }
                 }
             }
-            if (needsAttention && !currentNotified && !retiredNotified) {
+            if (needsAttention && !retiredNotified && (!currentNotified || !hasActiveCapability(conn.id, t.id))) {
                 if (shouldSuppressNotification(foregroundThreadKey(), conn.id, t.id)) {
                     // The user is looking at this exact thread right now. Skip the notification and
                     // deliberately do NOT markNotified: if they leave it still-unanswered, a later

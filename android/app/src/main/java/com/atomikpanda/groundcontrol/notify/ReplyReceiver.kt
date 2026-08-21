@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.decodeFromString
 
 interface ReplyIntake {
@@ -36,7 +37,11 @@ internal class ReplyOutboxIntake private constructor(private val outbox: ReplyOu
         return submit(submission)
     }
 
-    internal suspend fun submit(submission: ReplySubmission): Boolean = outbox.submit(submission)
+    /** Holds the render-coordinator lock so a tap during a publish/retire transition resolves
+     * against the final capability generation instead of being rejected and lost mid-swap. */
+    internal suspend fun submit(submission: ReplySubmission): Boolean = replyCoordinatorLock.withLock {
+        outbox.submit(submission)
+    }
 }
 
 /**

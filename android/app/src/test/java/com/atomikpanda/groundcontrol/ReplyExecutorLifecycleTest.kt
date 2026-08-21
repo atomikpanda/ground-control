@@ -24,6 +24,9 @@ import org.junit.Test
 private class FakeOutboxStore(private val current: () -> Boolean = { true }) : ReplyOutboxStore {
     private val lock = Mutex()
     val rows = mutableMapOf<String, ReplyOutboxRecord>()
+    private var capabilityRetired = false
+    fun retireCapability() { capabilityRetired = true }
+    private fun capabilityActive() = !capabilityRetired
     suspend fun seed(row: ReplyOutboxRecord) = lock.withLock { rows[row.actionKey] = row }
     override suspend fun get(actionKey: String) = lock.withLock { rows[actionKey] }
     override suspend fun moveReadyToWaiting(row: ReplyOutboxRecord) = lock.withLock {
@@ -41,6 +44,7 @@ private class FakeOutboxStore(private val current: () -> Boolean = { true }) : R
         if (saved.state != ReplyOutboxState.IN_FLIGHT || saved.executionId != executionId) false
         else { rows[row.actionKey] = saved.copy(state = next, executionId = null); true }
     }
+    override suspend fun capabilityActive(row: ReplyOutboxRecord) = lock.withLock { capabilityActive() }
 }
 
 class ReplyExecutorLifecycleTest {
@@ -113,12 +117,21 @@ class ReplyExecutorLifecycleTest {
         assertEquals(ReplyOutboxState.IN_FLIGHT, store.get("opaque")!!.state)
     }
 
-    @Test fun http_4xx_is_safe_failure_while_server_failure_is_uncertain() = runTest {
+    @Test fun http_4xx_after_transmission_is_uncertain_while_server_failure_stays_uncertain() = runTest {
         val safe = FakeOutboxStore(); safe.seed(ready("safe"))
         ReplyExecutor(safe, { listOf(connection) }, { _, _ -> throw ApiResponseException(HttpStatusCode.BadRequest, "rejected") }, {}).execute("safe", "one")
-        assertEquals(ReplyOutboxState.SAFE_FAILURE_PENDING_RENDER, safe.get("safe")!!.state)
+        assertEquals(ReplyOutboxState.UNCERTAIN_PENDING_RENDER, safe.get("safe")!!.state)
         val uncertain = FakeOutboxStore(); uncertain.seed(ready("uncertain"))
         ReplyExecutor(uncertain, { listOf(connection) }, { _, _ -> throw IllegalStateException("server contacted") }, {}).execute("uncertain", "one")
         assertEquals(ReplyOutboxState.UNCERTAIN_PENDING_RENDER, uncertain.get("uncertain")!!.state)
+    }
+
+    @Test fun capability_retired_between_claim_and_post_never_reaches_the_server() = runTest {
+        val store = FakeOutboxStore(); store.seed(ready())
+        var posted = false
+        store.retireCapability()
+        ReplyExecutor(store, { listOf(connection) }, { _, _ -> posted = true }, {}).execute("opaque", "one")
+        assertTrue(!posted)
+        assertEquals(ReplyOutboxState.STALE, store.get("opaque")!!.state)
     }
 }

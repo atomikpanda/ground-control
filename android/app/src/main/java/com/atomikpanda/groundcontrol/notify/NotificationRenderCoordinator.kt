@@ -217,7 +217,7 @@ internal class NotificationRenderCoordinator(
     }
 
     private suspend fun <T> withThreadLock(connectionId: String, threadId: String, block: suspend () -> T): T =
-        coordinatorLock.withLock { block() }
+        replyCoordinatorLock.withLock { block() }
 
     private fun ReplyOutboxRecord.toEvent(): NeedsYouEvent = NeedsYouEvent(
         connectionId = connectionId,
@@ -230,7 +230,8 @@ internal class NotificationRenderCoordinator(
         decision = decisionJson?.let { runCatching { buildJson().decodeFromString<Decision>(it) }.getOrNull() },
     )
 
-    private companion object {
-        val coordinatorLock = Mutex()
-    }
 }
+
+/** Serializes capability reads (intake taps) against render/retire transitions so a tap either
+ * resolves against a final generation or waits for one, and is never dropped mid-swap. */
+internal val replyCoordinatorLock = Mutex()
