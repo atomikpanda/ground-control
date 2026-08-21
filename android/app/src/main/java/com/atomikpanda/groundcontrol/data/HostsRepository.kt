@@ -146,13 +146,22 @@ internal fun replaceRelayAccountFleet(
     }
     val retainedDirectById = retainedDirectHosts.associateBy { it.hostId }
     val ownedConnections = connections.map { connection ->
-        connection to knownHostForLegacyConnection(connection, previousHosts)
+        val legacyOwnershipAmbiguous = knownHostsForLegacyConnection(
+            connection,
+            previousHosts,
+            useStoredHostId = false,
+        ).size > 1
+        Triple(
+            connection,
+            knownHostForLegacyConnection(connection, previousHosts),
+            legacyOwnershipAmbiguous,
+        )
     }
     val credentialCandidatesByHostId = mutableMapOf<String, MutableSet<String>>()
-    for ((connection, knownHost) in ownedConnections) {
+    for ((connection, knownHost, legacyOwnershipAmbiguous) in ownedConnections) {
         val credential = connection.directToken?.takeIf { it.isNotBlank() }
             ?: connection.token?.takeIf { it.isNotBlank() }
-        if (knownHost != null && credential != null) {
+        if (!legacyOwnershipAmbiguous && knownHost != null && credential != null) {
             credentialCandidatesByHostId.getOrPut(knownHost.hostId, ::mutableSetOf).add(credential)
         }
     }
@@ -161,13 +170,8 @@ internal fun replaceRelayAccountFleet(
     }
     return RelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
-        connections = ownedConnections.mapNotNull { (connection, knownHost) ->
-            if (knownHostsForLegacyConnection(
-                    connection,
-                    previousHosts,
-                    useStoredHostId = false,
-                ).size > 1
-            ) {
+        connections = ownedConnections.mapNotNull { (connection, knownHost, legacyOwnershipAmbiguous) ->
+            if (legacyOwnershipAmbiguous && connection.hasStableIdentityTuple()) {
                 return@mapNotNull null
             }
             if (knownHost == null) {

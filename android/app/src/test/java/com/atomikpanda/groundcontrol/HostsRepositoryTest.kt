@@ -801,6 +801,44 @@ class HostsRepositoryTest {
         assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
     }
 
+    @Test fun replacing_a_relay_account_does_not_transfer_an_ambiguous_direct_credential() {
+        val sharedOldUrl = "https://shared.relay.example.com"
+        val retained = host.copy(
+            hostId = "h-retained",
+            publicUrl = "https://retained.relay.example.com",
+            directUrl = "http://retained.lan:47190",
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val removed = host.copy(
+            hostId = "h-removed",
+            publicUrl = "https://removed.relay.example.com",
+            directUrl = null,
+            legacyPublicUrls = listOf(sharedOldUrl),
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "ambiguous-stable",
+            baseUrl = "$sharedOldUrl/workspaces/ws",
+            hostId = retained.hostId,
+            workspaceId = "ws",
+            directToken = "must-not-transfer",
+        )
+        val credentialless = WorkspaceConnection(
+            id = "credentialless",
+            baseUrl = "${retained.publicUrl}/workspaces/other",
+            hostId = retained.hostId,
+            workspaceId = "other",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(retained, removed),
+            connections = listOf(ambiguous, credentialless),
+        )
+
+        assertEquals(emptyList<WorkspaceConnection>(), replaced.connections)
+    }
+
     @Test fun old_relay_host_removed_from_directory_cannot_survive_account_replacement_but_direct_and_manual_rows_do() {
         val directHost = HostConnection(
             hostId = "direct-host",
