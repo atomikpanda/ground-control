@@ -1,12 +1,15 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.messages.ConversationUiState
 import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
+import com.atomikpanda.groundcontrol.notify.OpenThreadRegistry
+import com.atomikpanda.groundcontrol.notify.threadKey
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -21,8 +24,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -51,7 +57,9 @@ class ConversationViewModelTest {
                     HttpClient(MockEngine(handler)) { mshipDefaults() }
                 )
             ),
-            conn, "t1", testScope = scope,
+            conn.id, "t1",
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = scope,
         )
 
     // GET /threads/t1 response
@@ -270,6 +278,53 @@ class ConversationViewModelTest {
         assertEquals("2026-06-22T10:10:00Z", next)                          // cursor advanced
     }
 
+    @Test fun replacement_load_restarts_live_polling() = runTest {
+        val old = conn.copy(baseUrl = "http://old:47100", token = "old-token")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        var replacementPolls = 0
+        val v = ConversationViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine { request ->
+                when {
+                    request.url.parameters["wait"] == "1" && request.url.host == "new" -> {
+                        replacementPolls += 1
+                        respond(waitMissJson, HttpStatusCode.OK, jsonHdr)
+                    }
+                    request.url.parameters["wait"] == "1" -> respond(waitMissJson, HttpStatusCode.OK, jsonHdr)
+                    else -> respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                }
+            }) { mshipDefaults() })),
+            old.id,
+            "t1",
+            connections,
+            testScope = backgroundScope,
+        )
+        v.load().join()
+        v.startPolling()
+
+        connections.value = ConnectionState.Ready(listOf(replacement))
+        runCurrent()
+
+        assertTrue(replacementPolls > 0)
+    }
+
+    @Test fun load_without_poll_request_does_not_start_polling() = runTest {
+        var polls = 0
+        val v = vm(backgroundScope) { request ->
+            if (request.url.parameters["wait"] == "1") {
+                polls += 1
+                respond(waitMissJson, HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond(threadJson, HttpStatusCode.OK, jsonHdr)
+            }
+        }
+
+        v.load().join()
+        runCurrent()
+
+        assertEquals(0, polls)
+    }
+
     @Test
     fun pollOnce_does_not_refresh_when_this_thread_unchanged() = runTest {
         val handler: MockRequestHandler = { req ->
@@ -343,7 +398,9 @@ class ConversationViewModelTest {
     private fun vmFor(scope: CoroutineScope, threadId: String, handler: MockRequestHandler) =
         ConversationViewModel(
             ThreadsRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() })),
-            conn, threadId, testScope = scope,
+            conn.id, threadId,
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = scope,
         )
 
     @Test fun load_fetches_last_two_journal_entries_when_thread_has_task_slug() = runTest {
@@ -566,6 +623,52 @@ class ConversationViewModelTest {
         }
     }
 
+    @Test fun changed_thread_poll_preserves_a_send_started_during_the_refetch() = runTest {
+        val pollThreadStarted = CompletableDeferred<Unit>()
+        val releasePollThread = CompletableDeferred<Unit>()
+        val releasePost = CompletableDeferred<Unit>()
+        var threadGets = 0
+        val v = vmFor(this, "t2") { req ->
+            when {
+                req.url.parameters["wait"] == "1" ->
+                    respond(
+                        """{"threads":[{"id":"t2","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                req.url.encodedPath.endsWith("/threads/t2/messages") && req.method == HttpMethod.Post -> {
+                    releasePost.await()
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/threads/t2") && req.method == HttpMethod.Get -> {
+                    threadGets++
+                    if (threadGets > 1) {
+                        pollThreadStarted.complete(Unit)
+                        releasePollThread.await()
+                    }
+                    respond(threadWithTaskJson, HttpStatusCode.OK, jsonHdr)
+                }
+                req.url.encodedPath.endsWith("/journal/mos-224") && req.method == HttpMethod.Get ->
+                    respond(journalJson3Entries, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        v.load()?.join()
+
+        withContext(Dispatchers.IO) {
+            val poll = async { v.pollOnce("2026-06-22T10:00:00Z") }
+            assertNotNull("poll should reach the thread refetch", withTimeoutOrNull(3_000) { pollThreadStarted.await() })
+            v.send("first")
+            assertTrue((v.state.value as ConversationUiState.Content).inFlight)
+
+            releasePollThread.complete(Unit)
+            assertNotNull("poll should return", withTimeoutOrNull(3_000) { poll.await() })
+            assertTrue((v.state.value as ConversationUiState.Content).inFlight)
+            assertNull("a second tap during the in-flight send must be a no-op", v.send("duplicate"))
+            releasePost.complete(Unit)
+        }
+    }
+
     @Test fun send_preserves_journal_across_a_successful_send() = runTest {
         val v = vmFor(this, "t2") { req ->
             when {
@@ -601,7 +704,9 @@ class ConversationViewModelTest {
                     respond(threadJson, HttpStatusCode.OK, jsonHdr)
                 else respondError(HttpStatusCode.NotFound)
             }) { mshipDefaults() })),
-            conn, "t1", testScope = this, canceller = canceller,
+            conn.id, "t1",
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = this, canceller = canceller,
         )
         vm.load()?.join()
         assertEquals(listOf("1" to "t1"), canceller.cancelled)   // conn.id == "1"
@@ -611,9 +716,34 @@ class ConversationViewModelTest {
         val canceller = FakeCanceller()
         val vm = ConversationViewModel(
             ThreadsRepository(SpecApi(HttpClient(MockEngine { respondError(HttpStatusCode.InternalServerError) }) { mshipDefaults() })),
-            conn, "t1", testScope = this, canceller = canceller,
+            conn.id, "t1",
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = this, canceller = canceller,
         )
         vm.load()?.join()
         assertTrue(canceller.cancelled.isEmpty())
+    }
+    @Test fun legacy_route_registry_signal_transitions_to_the_canonical_connection_key() = runTest {
+        val legacy = WorkspaceConnection("legacy", "http://legacy:47100", null, "Legacy")
+        val canonical = WorkspaceConnection("canonical", "http://canonical:47100", null, "Canonical", legacyConnectionIds = listOf(legacy.id))
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(legacy)))
+        val vm = ConversationViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine { respondError(HttpStatusCode.NotFound) }) { mshipDefaults() })),
+            legacy.id,
+            "t1",
+            connections,
+            testScope = backgroundScope,
+        )
+
+        val openedId = vm.resolvedConnectionId.value
+        assertEquals(legacy.id, openedId)
+        OpenThreadRegistry.open(openedId!!, vm.threadId)
+        connections.value = ConnectionState.Ready(listOf(canonical))
+        val canonicalId = vm.resolvedConnectionId.first { it == canonical.id }!!
+        OpenThreadRegistry.close(openedId, vm.threadId)
+        OpenThreadRegistry.open(canonicalId, vm.threadId)
+
+        assertEquals(threadKey(canonical.id, vm.threadId), OpenThreadRegistry.snapshot())
+        OpenThreadRegistry.close(canonicalId, vm.threadId)
     }
 }

@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 /** ONE DataStore over the `ground_control` file, shared with [HostsRepository]:
@@ -19,7 +20,9 @@ internal val CONNECTIONS = stringPreferencesKey("connections")
 class ConnectionsRepository internal constructor(private val dataStore: DataStore<Preferences>) {
     constructor(context: Context) : this(context.dataStore)
     val connections: Flow<List<WorkspaceConnection>> =
-        dataStore.data.map { ConnectionsCodec.decode(it[CONNECTIONS] ?: "") }
+        dataStore.data
+            .map { ConnectionsCodec.decode(it[CONNECTIONS] ?: "") }
+            .distinctUntilChanged()
 
     suspend fun snapshot(): List<WorkspaceConnection> =
         ConnectionsCodec.decode(dataStore.data.first()[CONNECTIONS] ?: "")

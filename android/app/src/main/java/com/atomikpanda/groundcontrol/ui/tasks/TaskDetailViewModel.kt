@@ -2,11 +2,13 @@ package com.atomikpanda.groundcontrol.ui.tasks
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.NotFoundException
 import com.atomikpanda.groundcontrol.data.TasksRepository
-import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
+import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.PlanAssumptionsEnvelope
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
@@ -27,6 +29,7 @@ sealed interface ActionRef {
 
 sealed interface TaskDetailUiState {
     data object Loading : TaskDetailUiState
+    data class Unavailable(val message: String) : TaskDetailUiState
     data class Error(val kind: ErrorKind, val message: String) : TaskDetailUiState
     data class Content(
         val task: TaskSummary,
@@ -50,8 +53,9 @@ sealed interface TaskDetailUiState {
 
 class TaskDetailViewModel(
     private val repo: TasksRepository,
-    private val conn: WorkspaceConnection,
+    connectionId: String,
     private val slug: String,
+    connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
@@ -63,56 +67,51 @@ class TaskDetailViewModel(
     private var approveJob: Job? = null
 
     private fun scope() = testScope ?: viewModelScope
+    private var loadJob: Job? = null
+    private val routeConnection = ReactiveRouteConnection(connectionId, connectionState, viewModelScope) { source, snapshot ->
+        loadJob?.cancel()
+        approveJob?.cancel()
+        if (snapshot == null) {
+            _state.value = TaskDetailUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
+        } else {
+            loadJob = load(snapshot)
+        }
+    }
     private fun content() = _state.value as? TaskDetailUiState.Content
 
     /** Task + journal are the core content: fetched in parallel, fatal (Error state) on
      *  failure. Assumptions load in parallel alongside them but in their own runCatching —
      *  a failure there degrades to `assumptions = null` with an inline note, never blanks the
      *  whole screen. */
-    fun load(): Job {
-        return scope().launch {
-            // An approve may be in flight: flipping to Loading now would make approveFlag's
-            // own completion find no Content to update (content() returns null), silently
-            // dropping its result. Defer this refresh until the approve settles — the
-            // approval result lands first, then this fetch runs and picks up the fresh
-            // (already-approved) state, so the operator's refresh is still honored.
-            //
-            // The defer decision is gated on `inFlight`, not on `approveJob` directly:
-            // `inFlight` is set synchronously by approveFlag() before it returns, so reading
-            // it here (inside this coroutine's body, not captured before launch) reliably
-            // detects an in-flight approve regardless of which dispatcher runs this body.
-            // Capturing `approveJob` itself before/outside the coroutine would be a
-            // check-then-act on two fields approveFlag sets in sequence (inFlight, then
-            // approveJob) — safe only because viewModelScope happens to run inline to the
-            // first suspension; gating on the synchronously-set `inFlight` instead removes
-            // that assumption entirely.
-            if (content()?.inFlight is ActionRef.ApproveFlag) {
-                approveJob?.join()
+    fun load(): Job = routeConnection.current()?.let(::load) ?: scope().launch { }
+
+    private fun load(snapshot: RouteConnectionSnapshot): Job = scope().launch {
+        if (content()?.inFlight is ActionRef.ApproveFlag) approveJob?.join()
+        routeConnection.publishIfCurrent(snapshot) { _state.value = TaskDetailUiState.Loading }
+        coroutineScope {
+            val coreDeferred = async {
+                runCatching {
+                    repo.getTask(snapshot.connection, slug) to repo.getJournal(snapshot.connection, slug)
+                }
             }
-            _state.value = TaskDetailUiState.Loading
-            coroutineScope {
-                // Each async wraps its own runCatching: an exception thrown directly inside an
-                // async body would fail the whole coroutineScope (cancelling the sibling) before
-                // either result could be inspected, defeating the "assumptions degrade, core is
-                // fatal" split below.
-                val coreDeferred = async { runCatching { repo.getTask(conn, slug) to repo.getJournal(conn, slug) } }
-                val assumptionsDeferred = async { runCatching { repo.getPlanAssumptions(conn, slug) } }
-
-                val coreResult = coreDeferred.await()
-                val assumptionsResult = assumptionsDeferred.await()
-
-                coreResult
-                    .onSuccess { (task, journal) ->
-                        _state.value = TaskDetailUiState.Content(
-                            task, journal,
+            val assumptionsDeferred = async {
+                runCatching { repo.getPlanAssumptions(snapshot.connection, slug) }
+            }
+            val coreResult = coreDeferred.await()
+            val assumptionsResult = assumptionsDeferred.await()
+            routeConnection.publishIfCurrent(snapshot) {
+                _state.value = coreResult.fold(
+                    onSuccess = { (task, journal) ->
+                        TaskDetailUiState.Content(
+                            task,
+                            journal,
                             assumptions = assumptionsResult.getOrNull(),
                             assumptionsNotice = assumptionsResult.exceptionOrNull()
                                 ?.let { "Couldn't load assumptions — pull to retry." },
                         )
-                    }
-                    .onFailure { t ->
-                        _state.value = TaskDetailUiState.Error(t.toKind(), t.message ?: "error")
-                    }
+                    },
+                    onFailure = { TaskDetailUiState.Error(it.toKind(), it.message ?: "error") },
+                )
             }
         }
     }
@@ -125,36 +124,34 @@ class TaskDetailViewModel(
      *  5xx, decode error) means the approval never happened — it must NOT be presented as
      *  success/refreshed, and the pending flag must stay visible so the operator can retry. */
     fun approveFlag(axis: String): Job? {
+        val snapshot = routeConnection.current() ?: return null
         val c = content() ?: return null
-        // Only one approve may be in flight at a time: approveJob is a single reference (load()
-        // awaits it before refreshing), so a second concurrent approve would silently take over
-        // that slot and let the first approve's in-flight result get clobbered by a refresh.
         if (c.inFlight is ActionRef.ApproveFlag) return null
-        _state.value = c.copy(inFlight = ActionRef.ApproveFlag(axis), banner = null, assumptionsNotice = null)
+        if (!routeConnection.publishIfCurrent(snapshot) {
+                _state.value = c.copy(inFlight = ActionRef.ApproveFlag(axis), banner = null, assumptionsNotice = null)
+            }) return null
         val job = scope().launch {
-            runCatching { repo.approvePlanFlag(conn, slug, axis, null) }
-                .onSuccess { envelope ->
-                    val c2 = content() ?: return@onSuccess
-                    _state.value = c2.copy(assumptions = envelope, inFlight = null)
+            val result = runCatching { repo.approvePlanFlag(snapshot.connection, slug, axis, null) }
+            result.getOrNull()?.let { envelope ->
+                routeConnection.publishIfCurrent(snapshot) {
+                    val current = content() ?: return@publishIfCurrent
+                    _state.value = current.copy(assumptions = envelope, inFlight = null)
                 }
-                .onFailure { t ->
-                    val c2 = content() ?: return@onFailure
-                    when (t) {
-                        is AuthException -> _state.value = TaskDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
-                        is NotFoundException, is ApiConflictException -> {
-                            // Do NOT clear inFlight here: refetchAssumptionsWithNotice() below
-                            // suspends, and releasing the lock before it completes would let a
-                            // second approve start mid-refetch and clobber this one's outcome.
-                            // The lock is released exactly once, in that function's own
-                            // terminal state update.
-                            refetchAssumptionsWithNotice()
-                        }
-                        else -> _state.value = c2.copy(
-                            inFlight = null,
-                            assumptionsNotice = "Approval failed — tap Approve to retry.",
-                        )
+                return@launch
+            }
+            when (val error = result.exceptionOrNull() ?: return@launch) {
+                is NotFoundException, is ApiConflictException -> {
+                    if (routeConnection.isCurrent(snapshot)) refetchAssumptionsWithNotice(snapshot)
+                }
+                else -> routeConnection.publishIfCurrent(snapshot) {
+                    val current = content() ?: return@publishIfCurrent
+                    _state.value = if (error is AuthException) {
+                        TaskDetailUiState.Error(ErrorKind.AUTH, error.message ?: "unauthorized")
+                    } else {
+                        current.copy(inFlight = null, assumptionsNotice = "Approval failed — tap Approve to retry.")
                     }
                 }
+            }
         }
         approveJob = job
         return job
@@ -165,15 +162,26 @@ class TaskDetailViewModel(
      *  stale (404/409) rather than a genuine fatal error. The refetch can itself fail (network,
      *  5xx) — that must never be presented as a successful refresh: the notice must say the
      *  refresh failed, and the prior assumptions/pending state is left visibly intact. */
-    private suspend fun refetchAssumptionsWithNotice() {
-        val result = runCatching { repo.getPlanAssumptions(conn, slug) }
-        val c2 = content() ?: return
-        // Terminal state for the reconcile: this is where the approve serialization lock
-        // (inFlight) is released — exactly once, after the refetch itself has settled.
-        _state.value = result.fold(
-            onSuccess = { fresh -> c2.copy(assumptions = fresh, inFlight = null, assumptionsNotice = "That assumption was already handled — refreshed.") },
-            onFailure = { c2.copy(inFlight = null, assumptionsNotice = "That assumption changed, but refreshing failed — pull to refresh.") },
-        )
+    private suspend fun refetchAssumptionsWithNotice(snapshot: RouteConnectionSnapshot) {
+        val result = runCatching { repo.getPlanAssumptions(snapshot.connection, slug) }
+        routeConnection.publishIfCurrent(snapshot) {
+            val current = content() ?: return@publishIfCurrent
+            _state.value = result.fold(
+                onSuccess = {
+                    current.copy(
+                        assumptions = it,
+                        inFlight = null,
+                        assumptionsNotice = "That assumption was already handled — refreshed.",
+                    )
+                },
+                onFailure = {
+                    current.copy(
+                        inFlight = null,
+                        assumptionsNotice = "That assumption changed, but refreshing failed — pull to refresh.",
+                    )
+                },
+            )
+        }
     }
 
     private fun Throwable.toKind(): ErrorKind = when (this) {

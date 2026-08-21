@@ -84,15 +84,18 @@ fun ConversationScreen(
     onOpenWorkItem: (String) -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val resolvedConnectionId by vm.resolvedConnectionId.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load()?.join(); vm.startPolling() }
 
     // Tell the watcher this thread is on screen + foregrounded so it suppresses a duplicate
     // notification for it, and clear that signal when we leave or the app backgrounds (#378).
-    // RESUMED ⇒ open+foregrounded; PAUSE/dispose ⇒ closed. Thin lifecycle glue over the
-    // OpenThreadRegistry singleton (no ProcessLifecycleOwner dependency required).
-    LifecycleResumeEffect(vm.connectionId, vm.threadId) {
-        OpenThreadRegistry.open(vm.connectionId, vm.threadId)
-        onPauseOrDispose { OpenThreadRegistry.close(vm.connectionId, vm.threadId) }
+    // RESUMED ⇒ open+foregrounded; PAUSE/dispose ⇒ closed. The resolved id is captured by this
+    // effect so an alias-to-canonical transition closes the old key before opening the new one.
+    resolvedConnectionId?.let { connectionId ->
+        LifecycleResumeEffect(connectionId, vm.threadId) {
+            OpenThreadRegistry.open(connectionId, vm.threadId)
+            onPauseOrDispose { OpenThreadRegistry.close(connectionId, vm.threadId) }
+        }
     }
 
     val displayTitle = (state as? ConversationUiState.Content)?.thread?.subject?.takeIf { it.isNotBlank() } ?: title
@@ -116,6 +119,8 @@ fun ConversationScreen(
             when (val s = state) {
                 ConversationUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                is ConversationUiState.Unavailable ->
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { Text(s.message) }
                 is ConversationUiState.Error -> ConversationErrorView(s, vm, onBack)
                 is ConversationUiState.Content -> ConversationContentView(s, vm, onViewSpec, onOpenEntity, onOpenWorkItem)
             }

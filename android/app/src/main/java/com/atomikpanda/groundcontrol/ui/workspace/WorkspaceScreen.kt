@@ -63,8 +63,10 @@ fun WorkspaceScreen(
         },
     ) { padding ->
         when (val s = state) {
-            is WorkspaceUiState.Loading ->
+            WorkspaceUiState.Loading ->
                 Box(Modifier.fillMaxSize().padding(padding), Alignment.Center) { CircularProgressIndicator() }
+            is WorkspaceUiState.Unavailable ->
+                Box(Modifier.fillMaxSize().padding(padding), Alignment.Center) { Text(s.message) }
             is WorkspaceUiState.Content -> LazyColumn(Modifier.fillMaxSize().padding(padding)) {
                 if (s.errored) {
                     item {

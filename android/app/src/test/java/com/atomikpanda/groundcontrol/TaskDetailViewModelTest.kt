@@ -51,7 +51,9 @@ class TaskDetailViewModelTest {
                     HttpClient(MockEngine(handler)) { mshipDefaults() }
                 )
             ),
-            conn, "t1", testScope = scope,
+            conn.id, "t1",
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = scope,
         )
 
     private val assumptionsJsonOnePending =

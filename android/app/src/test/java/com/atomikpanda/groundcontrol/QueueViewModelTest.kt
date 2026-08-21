@@ -6,6 +6,7 @@
 // the spec), and per-item verdicts applied in place.
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.DIRECTORY_STALE_MS
 import com.atomikpanda.groundcontrol.data.QueueRepository
@@ -25,11 +26,13 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -61,7 +64,7 @@ class QueueViewModelTest {
         hosts: List<HostConnection> = emptyList(),
     ): QueueViewModel {
         val repo = QueueRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() }))
-        return QueueViewModel(repo, { conns }, scope, flowOf(hosts))
+        return QueueViewModel(repo, connectionState(conns), scope, flowOf(hosts))
     }
 
     private val connsAB = listOf(
@@ -72,10 +75,10 @@ class QueueViewModelTest {
     private val onlyEmpty = listOf(WorkspaceConnection("b", "http://b:47100", null, "ws-b"))
 
     // ws-a: one needs_review spec (s1) with two prose sections → two prose cards, no threads.
-    private fun proseRepoHandler(): MockRequestHandler = { req ->
+    private fun proseRepoHandler(allHosts: Boolean = false): MockRequestHandler = { req ->
         val path = req.url.encodedPath
         val body = when {
-            path.endsWith("/specs") -> if (req.url.host == "a")
+            path.endsWith("/specs") -> if (allHosts || req.url.host == "a")
                 """[{"id":"s1","title":"S1","status":"needs_review"}]""" else "[]"
             path.endsWith("/threads") -> "[]"
             path.endsWith("/plan-assumptions") -> "[]"
@@ -87,7 +90,7 @@ class QueueViewModelTest {
     }
 
     @Test fun no_connections_yields_empty_config() = runTest {
-        val vm = QueueViewModel(QueueRepository(SpecApi(HttpClient(MockEngine { respond("{}", HttpStatusCode.OK, jsonHdr) }) { mshipDefaults() })), { emptyList() }, this)
+        val vm = QueueViewModel(QueueRepository(SpecApi(HttpClient(MockEngine { respond("{}", HttpStatusCode.OK, jsonHdr) }) { mshipDefaults() })), connectionState(emptyList()), backgroundScope)
         vm.refresh()
         assertEquals(QueueUiState.EmptyConfig, vm.state.value)
     }
@@ -112,7 +115,7 @@ class QueueViewModelTest {
         )
         val host = HostConnection(hostId = "host-1", publicUrl = "https://host.example")
         val vm = vm(
-            this,
+            backgroundScope,
             connections,
             { throw java.io.IOException("offline") },
             hosts = listOf(host),
@@ -160,7 +163,7 @@ class QueueViewModelTest {
         )
         val vm = QueueViewModel(
             repo = repo,
-            connectionsProvider = { listOf(connection) },
+            connectionState = connectionState(listOf(connection)),
             testScope = backgroundScope,
             hosts = hosts,
             nowMillis = { now },
@@ -203,7 +206,7 @@ class QueueViewModelTest {
         )
         val vm = QueueViewModel(
             repo = repo,
-            connectionsProvider = { listOf(connection) },
+            connectionState = connectionState(listOf(connection)),
             testScope = scope,
             hosts = hosts,
             nowMillis = { now },
@@ -226,7 +229,7 @@ class QueueViewModelTest {
     }
 
     @Test fun loads_prose_cards_head_first_with_position() = runTest {
-        val vm = vm(this, connsAB, proseRepoHandler())
+        val vm = vm(backgroundScope, connsAB, proseRepoHandler())
         vm.refresh()?.join()
         val c = vm.state.value as QueueUiState.Content
         val head = c.current as ProseCard
@@ -238,7 +241,7 @@ class QueueViewModelTest {
     }
 
     @Test fun empty_queue_is_caught_up() = runTest {
-        val vm = vm(this, onlyEmpty, proseRepoHandler())
+        val vm = vm(backgroundScope, onlyEmpty, proseRepoHandler())
         vm.refresh()?.join()
         val c = vm.state.value as QueueUiState.Content
         assertTrue(c.caughtUp)
@@ -246,7 +249,7 @@ class QueueViewModelTest {
     }
 
     @Test fun skip_sends_head_to_the_back() = runTest {
-        val vm = vm(this, connsAB, proseRepoHandler())
+        val vm = vm(backgroundScope, connsAB, proseRepoHandler())
         vm.refresh()?.join()
         vm.skip()
         val c = vm.state.value as QueueUiState.Content
@@ -274,7 +277,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertTrue(vm.stateContent().current is CriteriaCard)
         vm.approveAllCurrent()?.join()
@@ -306,7 +309,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         vm.approveAllCurrent()?.join()
         val c = vm.stateContent()
@@ -333,7 +336,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertEquals(2, vm.stateContent().cards.size)
         vm.approveAllCurrent()?.join()
@@ -362,7 +365,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertEquals(2, vm.stateContent().cards.size)       // two prose sections
         vm.approveAllCurrent()?.join()
@@ -403,7 +406,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertTrue(vm.stateContent().current is CriteriaCard)
         vm.approveAllCurrent()?.join()
@@ -433,7 +436,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertTrue(vm.stateContent().current is CriteriaCard)
         vm.approveAllCurrent()?.join()
@@ -473,7 +476,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         vm.setItemVerdict("a", "s1", "ac1", "approved")?.join()
         assertFalse(vm.stateContent().caughtUp)     // one still unreviewed → card stays
@@ -506,7 +509,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         vm.setItemVerdict("a", "s1", "ac1", "approved")?.join()
         val card = vm.stateContent().current as CriteriaCard   // still the head (ac2 unreviewed)
@@ -538,7 +541,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertEquals(2, vm.stateContent().cards.size)          // criteria + questions
         vm.answerQuestion("a", "s1", "q1", "yes")?.join()
@@ -571,7 +574,7 @@ class QueueViewModelTest {
             }
             respond(body, HttpStatusCode.OK, jsonHdr)
         }
-        val vm = vm(this, connsAB, handler)
+        val vm = vm(backgroundScope, connsAB, handler)
         vm.refresh()?.join()
         assertEquals(2, vm.stateContent().cards.size)                       // ws-a/s1 + ws-b/s1
         assertEquals("a", (vm.stateContent().current as CriteriaCard).connectionId)
@@ -601,7 +604,7 @@ class QueueViewModelTest {
             }
             respond(body, HttpStatusCode.OK, jsonHdr)
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertEquals(3, vm.stateContent().cards.size)
         vm.rejectCurrent("needs work")?.join()
@@ -629,7 +632,7 @@ class QueueViewModelTest {
             }
             respond(body, HttpStatusCode.OK, jsonHdr)
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         vm.setItemVerdict("a", "s1", "ac1", "approved")?.join()
         val c = vm.stateContent()
@@ -659,7 +662,7 @@ class QueueViewModelTest {
                 else -> respond("{}", HttpStatusCode.OK, jsonHdr)
             }
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         vm.setItemVerdict("a", "s1", "ac1", "approved")?.join()
         val c = vm.stateContent()
@@ -695,7 +698,7 @@ class QueueViewModelTest {
             }
             respond(body, HttpStatusCode.OK, jsonHdr)
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertEquals(2, (vm.stateContent().current as PlanAssumptionCard).pending)
 
@@ -731,7 +734,7 @@ class QueueViewModelTest {
             }
             respond(body, HttpStatusCode.OK, jsonHdr)
         }
-        val vm = vm(this, connsA, handler)
+        val vm = vm(backgroundScope, connsA, handler)
         vm.refresh()?.join()
         assertTrue(vm.stateContent().current is PlanAssumptionCard)
 
@@ -743,4 +746,351 @@ class QueueViewModelTest {
     }
 
     private fun QueueViewModel.stateContent(): QueueUiState.Content = state.value as QueueUiState.Content
+    @Test fun connection_state_loading_error_empty_add_and_remove_reuse_one_owner() = runTest {
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Loading)
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine(proseRepoHandler(allHosts = true))) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+        assertTrue(vm.state.value is QueueUiState.Loading)
+
+        source.value = ConnectionState.Error(IllegalStateException("disk"))
+        assertTrue(vm.state.first { it is QueueUiState.ConnectionsUnavailable } is QueueUiState.ConnectionsUnavailable)
+
+        source.value = ConnectionState.Ready(emptyList())
+        assertEquals(QueueUiState.EmptyConfig, vm.state.first { it is QueueUiState.EmptyConfig })
+
+        source.value = ConnectionState.Ready(connsA)
+        assertEquals(
+            listOf("a"),
+            (vm.state.first { (it as? QueueUiState.Content)?.cards?.map { card -> card.connectionId }?.distinct() == listOf("a") }
+                as QueueUiState.Content).cards.map { it.connectionId }.distinct(),
+        )
+
+        source.value = ConnectionState.Ready(connsAB)
+        assertEquals(
+            listOf("a", "b"),
+            (vm.state.first { (it as? QueueUiState.Content)?.cards?.map { card -> card.connectionId }?.distinct() == listOf("a", "b") }
+                as QueueUiState.Content).cards.map { it.connectionId }.distinct(),
+        )
+
+        source.value = ConnectionState.Ready(listOf(connsAB[1]))
+        assertEquals(
+            listOf("b"),
+            (vm.state.first { (it as? QueueUiState.Content)?.cards?.map { card -> card.connectionId }?.distinct() == listOf("b") }
+                as QueueUiState.Content).cards.map { it.connectionId }.distinct(),
+        )
+    }
+
+    @Test fun same_id_route_and_token_replacement_starts_one_new_authoritative_queue_load() = runTest {
+        val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "Old")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val newRequestStarted = CompletableDeferred<Unit>()
+        val requests = mutableListOf<Pair<String, String?>>()
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("/specs")) {
+                    requests += request.url.host to request.headers[HttpHeaders.Authorization]
+                    if (request.url.host == "new") newRequestStarted.complete(Unit)
+                }
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+
+        vm.state.first { it is QueueUiState.Content }
+        source.value = ConnectionState.Ready(listOf(replacement))
+        newRequestStarted.await()
+
+        assertEquals(
+            listOf("old" to "Bearer old-token", "new" to "Bearer new-token"),
+            requests,
+        )
+        vm.state.first { it is QueueUiState.Content }
+    }
+
+    @Test fun two_repeated_manual_queue_refreshes_publish_only_newest_after_delayed_old_completion() = runTest {
+        val firstManualStarted = CompletableDeferred<Unit>()
+        val firstManualCancelled = CompletableDeferred<Unit>()
+        var specLists = 0
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(connsA))
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine { request ->
+                val path = request.url.encodedPath
+                when {
+                    path.endsWith("/specs") -> {
+                        specLists += 1
+                        when (specLists) {
+                            2 -> {
+                                firstManualStarted.complete(Unit)
+                                try {
+                                    CompletableDeferred<Unit>().await()
+                                    respond("""[{"id":"old","title":"Old","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                                } finally {
+                                    firstManualCancelled.complete(Unit)
+                                }
+                            }
+                            3 -> respond("""[{"id":"new","title":"New","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                            else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                        }
+                    }
+                    path.contains("/specs/") -> {
+                        val specId = path.substringAfterLast("/")
+                        respond(
+                            """{"id":"$specId","title":"$specId","status":"needs_review","body":"## Problem\n\nP"}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+
+        vm.state.first { it is QueueUiState.Content }
+        vm.refresh()
+        firstManualStarted.await()
+        val secondManual = vm.refresh()
+        firstManualCancelled.await()
+        secondManual?.join()
+        assertEquals(listOf("new"), vm.stateContent().cards.map { (it as ProseCard).specId })
+    }
+    @Test fun same_id_replacement_clears_old_cards_until_the_new_generation_loads() = runTest {
+        val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "Old")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val newLoadStarted = CompletableDeferred<Unit>()
+        val releaseNewLoad = CompletableDeferred<Unit>()
+        var mutationRequests = 0
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine { request ->
+                val path = request.url.encodedPath
+                when {
+                    path.endsWith("/specs") && request.url.host == "old" ->
+                        respond("""[{"id":"old","title":"Old","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                    path.endsWith("/specs") -> {
+                        newLoadStarted.complete(Unit)
+                        releaseNewLoad.await()
+                        respond("""[{"id":"new","title":"New","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                    }
+                    path.contains("/specs/") -> {
+                        val specId = path.substringAfterLast("/")
+                        respond(
+                            """{"id":"$specId","title":"$specId","status":"needs_review","body":"## Problem\n\nP"}""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                    path.endsWith("/threads") || path.endsWith("/plan-assumptions") ->
+                        respond("[]", HttpStatusCode.OK, jsonHdr)
+                    else -> {
+                        mutationRequests += 1
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                }
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+
+        vm.state.first { (it as? QueueUiState.Content)?.cards?.any { card -> (card as? ProseCard)?.specId == "old" } == true }
+        source.value = ConnectionState.Ready(listOf(replacement))
+        newLoadStarted.await()
+
+        assertEquals(QueueUiState.Loading, vm.state.value)
+        assertNull(vm.approveAllCurrent())
+        assertEquals(0, mutationRequests)
+
+        releaseNewLoad.complete(Unit)
+        val content = vm.state.first {
+            (it as? QueueUiState.Content)?.cards?.mapNotNull { card -> (card as? ProseCard)?.specId } == listOf("new")
+        } as QueueUiState.Content
+        assertEquals(listOf("new"), content.cards.map { (it as ProseCard).specId })
+        assertNotNull(vm.approveAllCurrent())
+    }
+    @Test fun approval_conflict_reconcile_does_not_resolve_replacement_generation() = runTest {
+        val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "Old")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val reconcileStarted = CompletableDeferred<Unit>()
+        val releaseReconcile = CompletableDeferred<Unit>()
+        var oldSpecLoads = 0
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine { request ->
+                val path = request.url.encodedPath
+                when {
+                    path.endsWith("/approve") ->
+                        respond("""{"detail":"already approved"}""", HttpStatusCode.Conflict, jsonHdr)
+                    path.endsWith("/verdict") ->
+                        respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                    path.endsWith("/specs") && request.url.host == "old" -> {
+                        oldSpecLoads++
+                        if (oldSpecLoads == 2) {
+                            reconcileStarted.complete(Unit)
+                            releaseReconcile.await()
+                            respond("[]", HttpStatusCode.OK, jsonHdr)
+                        } else {
+                            respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                        }
+                    }
+                    path.endsWith("/specs") ->
+                        respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                    path.endsWith("/threads") || path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                    path.contains("/specs/") ->
+                        respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                    else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+                }
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+
+        vm.state.first { (it as? QueueUiState.Content)?.current is CriteriaCard }
+        val approval = vm.approveAllCurrent()!!
+        reconcileStarted.await()
+        releaseReconcile.complete(Unit)
+        source.value = ConnectionState.Ready(listOf(replacement))
+        approval.join()
+
+        vm.refresh()?.join()
+        val content = vm.state.value as QueueUiState.Content
+        assertTrue(content.current is CriteriaCard)
+        assertFalse(content.caughtUp)
+    }
+
+    @Test fun final_approval_does_not_resolve_replacement_generation_after_request() = runTest {
+        val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "Old")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val approveStarted = CompletableDeferred<Unit>()
+        val releaseApprove = CompletableDeferred<Unit>()
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine { request ->
+                val path = request.url.encodedPath
+                when {
+                    path.endsWith("/approve") -> {
+                        approveStarted.complete(Unit)
+                        releaseApprove.await()
+                        respond("{}", HttpStatusCode.OK, jsonHdr)
+                    }
+                    path.endsWith("/verdict") ->
+                        respond("""{"id":"s1","status":"needs_review","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"approved"}],"open_questions":[]}""", HttpStatusCode.OK, jsonHdr)
+                    path.endsWith("/specs") ->
+                        respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                    path.endsWith("/threads") || path.endsWith("/plan-assumptions") -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                    path.contains("/specs/") ->
+                        respond("""{"id":"s1","title":"S1","status":"needs_review","body":"","acceptance_criteria":[{"id":"ac1","text":"a","verdict":"unreviewed"}],"open_questions":[],"updated_at":"2026-01-01T00:00:00Z"}""", HttpStatusCode.OK, jsonHdr)
+                    else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+                }
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+
+        vm.state.first { (it as? QueueUiState.Content)?.current is CriteriaCard }
+        val approval = vm.setItemVerdict(old.id, "s1", "ac1", "approved")!!
+        approveStarted.await()
+        releaseApprove.complete(Unit)
+        source.value = ConnectionState.Ready(listOf(replacement))
+        approval.join()
+
+        vm.refresh()?.join()
+        val content = vm.state.value as QueueUiState.Content
+        assertTrue(content.current is CriteriaCard)
+        assertFalse(content.caughtUp)
+    }
+
+    @Test fun queued_mutation_rechecks_the_connection_before_its_first_request() = runTest {
+        val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "Old")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        var mutationRequests = 0
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("/prose-verdict") || request.url.encodedPath.endsWith("/verdict")) {
+                    mutationRequests += 1
+                }
+                val body = when {
+                    request.url.encodedPath.endsWith("/specs") ->
+                        """[{"id":"s1","title":"S1","status":"needs_review"}]"""
+                    request.url.encodedPath.endsWith("/threads") ||
+                        request.url.encodedPath.endsWith("/plan-assumptions") -> "[]"
+                    request.url.encodedPath.contains("/specs/") ->
+                        """{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","updated_at":"2026-01-01T00:00:00Z"}"""
+                    else -> "{}"
+                }
+                respond(body, HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+        vm.state.first { it is QueueUiState.Content }
+
+        assertNotNull(vm.approveAllCurrent())
+        source.value = ConnectionState.Ready(listOf(replacement))
+        runCurrent()
+
+        assertEquals(0, mutationRequests)
+    }
+
+    @Test fun removing_the_mutating_workspace_reenables_remaining_queue_cards() = runTest {
+        val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(connsAB))
+        val mutationStarted = CompletableDeferred<Unit>()
+        val holdMutation = CompletableDeferred<Unit>()
+        val vm = QueueViewModel(
+            QueueRepository(SpecApi(HttpClient(MockEngine { request ->
+                if (
+                    request.url.encodedPath.endsWith("/prose-verdict") ||
+                    request.url.encodedPath.endsWith("/verdict")
+                ) {
+                    mutationStarted.complete(Unit)
+                    holdMutation.await()
+                }
+                val body = when {
+                    request.url.encodedPath.endsWith("/specs") ->
+                        """[{"id":"s1","title":"S1","status":"needs_review"}]"""
+                    request.url.encodedPath.endsWith("/threads") ||
+                        request.url.encodedPath.endsWith("/plan-assumptions") -> "[]"
+                    request.url.encodedPath.contains("/specs/") ->
+                        """{"id":"s1","title":"S1","status":"needs_review","body":"## Problem\n\nP1\n\n## Approach\n\nA1","updated_at":"2026-01-01T00:00:00Z"}"""
+                    else -> "{}"
+                }
+                respond(body, HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            source,
+            backgroundScope,
+            flowOf(emptyList()),
+        )
+        val initial = vm.state.first {
+            (it as? QueueUiState.Content)?.cards?.map { card -> card.connectionId }?.distinct() == listOf("a", "b")
+        } as QueueUiState.Content
+        val actingConnectionId = initial.current!!.connectionId
+        val remainingConnection = connsAB.single { it.id != actingConnectionId }
+        val mutation = vm.approveAllCurrent()
+        assertNotNull(mutation)
+        runCurrent()
+        mutationStarted.await()
+
+        source.value = ConnectionState.Ready(listOf(remainingConnection))
+        runCurrent()
+        holdMutation.complete(Unit)
+        runCurrent()
+
+        val content = vm.state.value as QueueUiState.Content
+        assertTrue(content.cards.isNotEmpty())
+        assertTrue(content.cards.all { it.connectionId == remainingConnection.id })
+        assertFalse(content.inFlight)
+    }
 }

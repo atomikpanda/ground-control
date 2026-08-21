@@ -2,12 +2,15 @@ package com.atomikpanda.groundcontrol.ui.specdetail
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.ApiConflictException
 import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.NotFoundException
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.Summary
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
+import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewQuestion
@@ -66,6 +69,7 @@ data class DispatchInfo(val taskSlug: String, val spawned: Boolean, val handoff:
 
 sealed interface SpecDetailUiState {
     data object Loading : SpecDetailUiState
+    data class Unavailable(val message: String) : SpecDetailUiState
     data class Error(val kind: ErrorKind, val message: String) : SpecDetailUiState
     data class Content(
         val detail: SpecDetail,
@@ -84,8 +88,9 @@ private fun SpecRecord.toDetail() = SpecDetail(
 
 class SpecDetailViewModel(
     private val repo: SpecDetailRepository,
-    private val conn: WorkspaceConnection,
+    connectionId: String,
     private val specId: String,
+    connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
@@ -93,8 +98,19 @@ class SpecDetailViewModel(
     val state: StateFlow<SpecDetailUiState> = _state.asStateFlow()
 
     private fun scope() = testScope ?: viewModelScope
-    suspend fun loadEvidence(ref: String): ByteArray =
-        repo.loadEvidence(conn, specId, ref)
+    private var loadJob: Job? = null
+    private val routeConnection = ReactiveRouteConnection(connectionId, connectionState, viewModelScope) { source, snapshot ->
+        loadJob?.cancel()
+        if (snapshot == null) {
+            _state.value = SpecDetailUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
+        } else {
+            loadJob = load(snapshot)
+        }
+    }
+    suspend fun loadEvidence(ref: String): ByteArray {
+        val snapshot = routeConnection.current() ?: error("Connection unavailable")
+        return repo.loadEvidence(snapshot.connection, specId, ref)
+    }
     private fun content() = _state.value as? SpecDetailUiState.Content
 
     // Unsent free-text drafts kept OUTSIDE the load lifecycle so they survive a leave+return (ac9).
@@ -121,12 +137,16 @@ class SpecDetailViewModel(
     val requestChangesDraft: StateFlow<String> = _requestChangesDraft.asStateFlow()
     fun setRequestChangesDraft(text: String) { _requestChangesDraft.value = text }
 
-    fun load(): Job? {
-        _state.value = SpecDetailUiState.Loading
-        return scope().launch {
-            runCatching { repo.load(conn, specId) }
-                .onSuccess { _state.value = SpecDetailUiState.Content(it.toDetail()) }
-                .onFailure { _state.value = SpecDetailUiState.Error(it.toKind(), it.message ?: "error") }
+    fun load(): Job = routeConnection.current()?.let(::load) ?: scope().launch { }
+
+    private fun load(snapshot: RouteConnectionSnapshot): Job = scope().launch {
+        routeConnection.publishIfCurrent(snapshot) { _state.value = SpecDetailUiState.Loading }
+        val result = runCatching { repo.load(snapshot.connection, specId) }
+        routeConnection.publishIfCurrent(snapshot) {
+            _state.value = result.fold(
+                onSuccess = { SpecDetailUiState.Content(it.toDetail()) },
+                onFailure = { SpecDetailUiState.Error(it.toKind(), it.message ?: "error") },
+            )
         }
     }
 
@@ -157,22 +177,25 @@ class SpecDetailViewModel(
      *  Returns true to keep polling. Transient fetch failures keep polling; a missing task slug
      *  or missing content stops it. */
     private suspend fun refreshActivityOnce(): Boolean {
+        val snapshot = routeConnection.current() ?: return false
         val slug = content()?.detail?.taskSlug ?: return false
-        val spec = runCatching { repo.load(conn, specId) }.getOrNull() ?: return true
-        val task = runCatching { repo.loadTask(conn, spec.taskSlug ?: slug) }.getOrNull()
-        val c = content() ?: return false
-        _state.value = c.copy(
-            detail = c.detail.copy(
-                status = spec.status,
-                taskSlug = spec.taskSlug ?: c.detail.taskSlug,
-                taskPhase = task?.phase ?: c.detail.taskPhase,
-                taskLastActivityAt = task?.lastActivityAt ?: c.detail.taskLastActivityAt,
-                // Preserve the prior value on a transient task-fetch miss (task == null)
-                // rather than silently reverting a recorded "finished" back to false.
-                taskFinished = if (task != null) task.finishedAt != null else c.detail.taskFinished,
-            ),
-        )
-        return isSpecInFlight(spec.status)
+        val spec = runCatching { repo.load(snapshot.connection, specId) }.getOrNull() ?: return true
+        val task = runCatching { repo.loadTask(snapshot.connection, spec.taskSlug ?: slug) }.getOrNull()
+        var keepPolling = false
+        val published = routeConnection.publishIfCurrent(snapshot) {
+            val c = content() ?: return@publishIfCurrent
+            _state.value = c.copy(
+                detail = c.detail.copy(
+                    status = spec.status,
+                    taskSlug = spec.taskSlug ?: c.detail.taskSlug,
+                    taskPhase = task?.phase ?: c.detail.taskPhase,
+                    taskLastActivityAt = task?.lastActivityAt ?: c.detail.taskLastActivityAt,
+                    taskFinished = if (task != null) task.finishedAt != null else c.detail.taskFinished,
+                ),
+            )
+            keepPolling = isSpecInFlight(spec.status)
+        }
+        return published && keepPolling
     }
 
     /** Apply a write's returned review payload over the current detail (body unchanged). */
@@ -184,78 +207,109 @@ class SpecDetailViewModel(
         )
     }
 
-    private suspend fun refetchWithBanner(banner: String) {
-        load()?.join()
-        content()?.let { _state.value = it.copy(banner = banner) }
+    private suspend fun refetchWithBanner(snapshot: RouteConnectionSnapshot, banner: String) {
+        load(snapshot).join()
+        routeConnection.publishIfCurrent(snapshot) {
+            content()?.let { _state.value = it.copy(banner = banner) }
+        }
     }
 
     /** Run a write that returns a review; on success patch state, else surface a banner. */
-    private fun write(ref: ActionRef, onSuccess: () -> Unit = {}, block: suspend () -> SpecReview): Job? {
+    private fun write(
+        ref: ActionRef,
+        onSuccess: () -> Unit = {},
+        block: suspend (WorkspaceConnection) -> SpecReview,
+    ): Job? {
+        val snapshot = routeConnection.current() ?: return null
         val c = content() ?: return null
-        _state.value = c.copy(inFlight = ref, banner = null, blockers = null)
+        if (!routeConnection.publishIfCurrent(snapshot) {
+                _state.value = c.copy(inFlight = ref, banner = null, blockers = null)
+            }) return null
         return scope().launch {
-            runCatching { block() }
-                .onSuccess { applyReview(it); onSuccess() }
-                .onFailure { t ->
-                    val c2 = content() ?: return@onFailure
-                    when (t) {
-                        is ApiConflictException ->
-                            if (t.detail.contains("cannot approve"))
-                                _state.value = c2.copy(inFlight = null, blockers = parseApproveBlockers(t.detail))
-                            else { _state.value = c2.copy(inFlight = null); refetchWithBanner("Spec changed since you opened it.") }
-                        is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
-                        is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, t.message ?: "gone")
-                        else -> _state.value = c2.copy(inFlight = null, banner = "Couldn't reach workspace — retry.")
-                    }
+            val result = runCatching { block(snapshot.connection) }
+            result.getOrNull()?.let { review ->
+                routeConnection.publishIfCurrent(snapshot) {
+                    applyReview(review)
+                    onSuccess()
                 }
+                return@launch
+            }
+            val error = result.exceptionOrNull() ?: return@launch
+            var refetch = false
+            val published = routeConnection.publishIfCurrent(snapshot) {
+                val current = content() ?: return@publishIfCurrent
+                when (error) {
+                    is ApiConflictException ->
+                        if (error.detail.contains("cannot approve")) {
+                            _state.value = current.copy(inFlight = null, blockers = parseApproveBlockers(error.detail))
+                        } else {
+                            _state.value = current.copy(inFlight = null)
+                            refetch = true
+                        }
+                    is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, error.message ?: "unauthorized")
+                    is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, error.message ?: "gone")
+                    else -> _state.value = current.copy(inFlight = null, banner = "Couldn't reach workspace — retry.")
+                }
+            }
+            if (published && refetch) refetchWithBanner(snapshot, "Spec changed since you opened it.")
         }
     }
 
     fun setVerdict(criterionId: String, verdict: String): Job? =
-        write(ActionRef.Verdict(criterionId)) { repo.setVerdict(conn, specId, criterionId, verdict) }
+        write(ActionRef.Verdict(criterionId)) { conn -> repo.setVerdict(conn, specId, criterionId, verdict) }
 
     fun answer(questionId: String, answer: String): Job? =
-        write(ActionRef.Answer(questionId), onSuccess = { clearAnswerDraft(questionId) }) {
+        write(ActionRef.Answer(questionId), onSuccess = { clearAnswerDraft(questionId) }) { conn ->
             repo.answer(conn, specId, questionId, answer)
         }
 
     fun ask(text: String): Job? =
-        write(ActionRef.Ask, onSuccess = { _askDraft.value = "" }) { repo.ask(conn, specId, text) }
+        write(ActionRef.Ask, onSuccess = { _askDraft.value = "" }) { conn -> repo.ask(conn, specId, text) }
 
-    fun approve(bypass: Boolean): Job? = write(ActionRef.Approve) { repo.approve(conn, specId, bypass) }
+    fun approve(bypass: Boolean): Job? = write(ActionRef.Approve) { conn -> repo.approve(conn, specId, bypass) }
 
     fun requestChanges(reason: String): Job? =
-        write(ActionRef.RequestChanges, onSuccess = { _requestChangesDraft.value = "" }) {
+        write(ActionRef.RequestChanges, onSuccess = { _requestChangesDraft.value = "" }) { conn ->
             repo.requestChanges(conn, specId, reason)
         }
 
     fun dispatch(): Job? {
+        val snapshot = routeConnection.current() ?: return null
         val c = content() ?: return null
-        _state.value = c.copy(inFlight = ActionRef.Dispatch, banner = null, blockers = null)
+        if (!routeConnection.publishIfCurrent(snapshot) {
+                _state.value = c.copy(inFlight = ActionRef.Dispatch, banner = null, blockers = null)
+            }) return null
         return scope().launch {
-            runCatching { repo.dispatch(conn, specId) }
-                .onSuccess { applyDispatch(it) }
-                .onFailure { t ->
-                    val snapshot = content() ?: return@onFailure
-                    when (t) {
-                        is ApiConflictException -> {
-                            if (t.detail.contains("auto-spawn", ignoreCase = true) || t.detail.contains("worktree", ignoreCase = true)) {
-                                // auto-spawn-unavailable: surface actionable message without refetching so status stays as-is
-                                _state.value = snapshot.copy(
-                                    inFlight = null,
-                                    banner = "Auto-spawn unavailable on this host. Spawn/bind the task from a terminal, then dispatch.",
-                                )
-                            } else {
-                                // stale 409 (not an approve gate): refetch and then set banner on the fresh content
-                                _state.value = snapshot.copy(inFlight = null)
-                                refetchWithBanner("Spec changed since you opened it.")
-                            }
+            val result = runCatching { repo.dispatch(snapshot.connection, specId) }
+            result.getOrNull()?.let { dispatch ->
+                routeConnection.publishIfCurrent(snapshot) { applyDispatch(dispatch) }
+                return@launch
+            }
+            val error = result.exceptionOrNull() ?: return@launch
+            var refetch = false
+            val published = routeConnection.publishIfCurrent(snapshot) {
+                val current = content() ?: return@publishIfCurrent
+                when (error) {
+                    is ApiConflictException -> {
+                        if (
+                            error.detail.contains("auto-spawn", ignoreCase = true) ||
+                            error.detail.contains("worktree", ignoreCase = true)
+                        ) {
+                            _state.value = current.copy(
+                                inFlight = null,
+                                banner = "Auto-spawn unavailable on this host. Spawn/bind the task from a terminal, then dispatch.",
+                            )
+                        } else {
+                            _state.value = current.copy(inFlight = null)
+                            refetch = true
                         }
-                        is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, t.message ?: "unauthorized")
-                        is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, t.message ?: "gone")
-                        else -> _state.value = snapshot.copy(inFlight = null, banner = "Couldn't reach workspace — retry.")
                     }
+                    is AuthException -> _state.value = SpecDetailUiState.Error(ErrorKind.AUTH, error.message ?: "unauthorized")
+                    is NotFoundException -> _state.value = SpecDetailUiState.Error(ErrorKind.NOT_FOUND, error.message ?: "gone")
+                    else -> _state.value = current.copy(inFlight = null, banner = "Couldn't reach workspace — retry.")
                 }
+            }
+            if (published && refetch) refetchWithBanner(snapshot, "Spec changed since you opened it.")
         }
     }
 

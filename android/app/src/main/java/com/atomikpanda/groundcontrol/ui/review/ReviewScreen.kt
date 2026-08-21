@@ -74,6 +74,8 @@ fun ReviewScreen(vm: ReviewViewModel, title: String, onBack: () -> Unit) {
             when (val s = state) {
                 ReviewUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                is ReviewUiState.Unavailable ->
+                    Text(s.message, modifier = Modifier.padding(24.dp))
                 is ReviewUiState.Failed ->
                     Text(
                         s.reason,

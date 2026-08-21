@@ -45,7 +45,11 @@ class WorkspaceViewModelTest {
                 else -> respond("[]", HttpStatusCode.OK, jsonHdr)
             }
         }) { mshipDefaults() })
-        return WorkspaceViewModel(api, conn, testScope = scope)
+        return WorkspaceViewModel(
+            api, conn.id,
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = scope,
+        )
     }
 
     @Test fun loads_all_three_lists_for_one_workspace() = runTest {
@@ -90,7 +94,11 @@ class WorkspaceViewModelTest {
             hostId = "h-1",
             workspaceId = "ws-1",
         )
-        val vm = WorkspaceViewModel(SpecApi(client.client), connection, testScope = this)
+        val vm = WorkspaceViewModel(
+            SpecApi(client.client), connection.id,
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(connection))),
+            testScope = this,
+        )
 
         vm.refresh().join()
 

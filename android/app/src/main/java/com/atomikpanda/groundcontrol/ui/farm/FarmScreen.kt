@@ -65,8 +65,11 @@ fun FarmScreen(
         },
     ) { pad ->
         when (val s = state) {
-            is FarmUiState.Loading -> Box(Modifier.fillMaxSize().padding(pad)) {
+            FarmUiState.Loading -> Box(Modifier.fillMaxSize().padding(pad)) {
                 Text("Loading…", Modifier.padding(24.dp))
+            }
+            is FarmUiState.Unavailable -> Box(Modifier.fillMaxSize().padding(pad)) {
+                Text(s.message, Modifier.padding(24.dp))
             }
             is FarmUiState.Content -> {
                 if (s.errored && s.groups.isEmpty()) {

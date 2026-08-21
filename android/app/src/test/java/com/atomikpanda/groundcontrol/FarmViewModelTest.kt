@@ -20,6 +20,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -45,7 +46,9 @@ class FarmViewModelTest {
                 HttpStatusCode.OK, jsonHdr,
             )
         }) { mshipDefaults() }),
-        conn, testScope = scope,
+        conn.id,
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     @Test fun loads_and_groups_items() = runTest {
@@ -77,7 +80,9 @@ class FarmViewModelTest {
                 )
             }
         }) { mshipDefaults() }),
-        conn, testScope = scope,
+        conn.id,
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     /** /unattended throws CancellationException directly (standing in for the scope being
@@ -93,7 +98,9 @@ class FarmViewModelTest {
                 )
             }
         }) { mshipDefaults() }),
-        conn, testScope = scope,
+        conn.id,
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     @Test fun toggle_unattended_optimistically_updates() = runTest {
@@ -164,7 +171,9 @@ class FarmViewModelTest {
                 )
             }
         }) { mshipDefaults() }),
-        conn, testScope = scope,
+        conn.id,
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     /** /phase throws CancellationException directly (standing in for the scope being cancelled
@@ -180,7 +189,9 @@ class FarmViewModelTest {
                 )
             }
         }) { mshipDefaults() }),
-        conn, testScope = scope,
+        conn.id,
+        kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+        testScope = scope,
     )
 
     @Test fun mark_done_optimistically_updates_phase_override() = runTest {
@@ -291,7 +302,9 @@ class FarmViewModelTest {
                     )
                 }
             }) { mshipDefaults() }),
-            conn, testScope = this,
+            conn.id,
+            kotlinx.coroutines.flow.MutableStateFlow(com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn))),
+            testScope = this,
         )
         vm.refresh().join()
         val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
@@ -313,5 +326,71 @@ class FarmViewModelTest {
 
         val after = (vm.state.value as FarmUiState.Content).groups.first().items.first()
         assertEquals(null, after.phaseOverride)
+    }
+    @Test fun mutation_queued_before_replacement_does_not_post_or_publish_optimistic_state() = runTest {
+        val replacement = conn.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val source = kotlinx.coroutines.flow.MutableStateFlow<com.atomikpanda.groundcontrol.data.ConnectionState>(
+            com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn)),
+        )
+        var unattendedCalls = 0
+        val vm = FarmViewModel(
+            SpecApi(HttpClient(MockEngine { req ->
+                if (req.url.encodedPath.endsWith("/unattended")) {
+                    unattendedCalls++
+                    respond("""{"id":"a","unattended":true}""", HttpStatusCode.OK, jsonHdr)
+                } else {
+                    respond(
+                        """[{"id":"a","kind":"feature","title":"A","phase":"inbox","unattended":false}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+            }) { mshipDefaults() }),
+            conn.id,
+            source,
+            testScope = this,
+        )
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+
+        val mutation = vm.setUnattended(item, true)
+        source.value = com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(replacement))
+        runCurrent()
+        mutation.join()
+
+        assertEquals(0, unattendedCalls)
+    }
+    @Test fun phase_mutation_queued_before_replacement_does_not_post_or_publish_optimistic_state() = runTest {
+        val replacement = conn.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
+        val source = kotlinx.coroutines.flow.MutableStateFlow<com.atomikpanda.groundcontrol.data.ConnectionState>(
+            com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(conn)),
+        )
+        var phaseCalls = 0
+        val vm = FarmViewModel(
+            SpecApi(HttpClient(MockEngine { req ->
+                if (req.url.encodedPath.endsWith("/phase")) {
+                    phaseCalls++
+                    respond("""{"id":"a","phase_override":"done"}""", HttpStatusCode.OK, jsonHdr)
+                } else {
+                    respond(
+                        """[{"id":"a","kind":"feature","title":"A","phase":"inbox","phase_override":null}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+            }) { mshipDefaults() }),
+            conn.id,
+            source,
+            testScope = this,
+        )
+        vm.refresh().join()
+        val item = (vm.state.value as FarmUiState.Content).groups.first().items.first()
+
+        val mutation = vm.setItemPhase(item, "done")
+        source.value = com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(replacement))
+        runCurrent()
+        mutation.join()
+
+        assertEquals(0, phaseCalls)
     }
 }

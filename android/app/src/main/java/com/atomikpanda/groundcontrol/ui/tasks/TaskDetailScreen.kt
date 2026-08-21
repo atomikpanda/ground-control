@@ -65,6 +65,8 @@ fun TaskDetailScreen(vm: TaskDetailViewModel, title: String, onBack: () -> Unit)
             when (val s = state) {
                 TaskDetailUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                is TaskDetailUiState.Unavailable ->
+                    Text(s.message, Modifier.padding(24.dp))
                 is TaskDetailUiState.Error -> ErrorView(s, vm, onBack)
                 is TaskDetailUiState.Content -> ContentView(s, vm)
             }

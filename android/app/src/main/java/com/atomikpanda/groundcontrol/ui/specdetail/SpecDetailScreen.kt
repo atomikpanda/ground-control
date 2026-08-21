@@ -107,6 +107,8 @@ fun SpecDetailScreen(vm: SpecDetailViewModel, title: String, identity: Workspace
             when (val s = state) {
                 SpecDetailUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                is SpecDetailUiState.Unavailable ->
+                    Text(s.message, Modifier.padding(24.dp))
                 is SpecDetailUiState.Error -> ErrorView(s, vm, onBack)
                 is SpecDetailUiState.Content -> ContentView(s, vm)
             }

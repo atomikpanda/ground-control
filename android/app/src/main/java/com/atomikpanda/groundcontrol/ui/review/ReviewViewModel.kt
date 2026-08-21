@@ -2,8 +2,10 @@ package com.atomikpanda.groundcontrol.ui.review
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
-import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
+import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +30,7 @@ data class ReviewContent(
 
 sealed interface ReviewUiState {
     data object Loading : ReviewUiState
+    data class Unavailable(val message: String) : ReviewUiState
     data class Content(val c: ReviewContent) : ReviewUiState
     data class Failed(val reason: String) : ReviewUiState
 }
@@ -38,14 +41,25 @@ sealed interface ReviewUiState {
  *  (same defensive-refetch pattern as ConsoleViewModel.steer). */
 class ReviewViewModel(
     private val api: SpecApi,
-    private val conn: WorkspaceConnection,
+    connectionId: String,
     private val itemId: String,
+    connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReviewUiState>(ReviewUiState.Loading)
     val state: StateFlow<ReviewUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
+    private var loadJob: Job? = null
+    private val routeConnection = ReactiveRouteConnection(connectionId, connectionState, viewModelScope) { source, snapshot ->
+        loadJob?.cancel()
+        _sending.value = false
+        if (snapshot == null) {
+            _state.value = ReviewUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
+        } else {
+            loadJob = load(snapshot)
+        }
+    }
 
     /** True while a `requestChanges` POST is in flight; the UI disables the button on this to
      *  prevent a double-submit. */
@@ -59,9 +73,15 @@ class ReviewViewModel(
 
     fun clearSendError() { _sendError.value = null }
 
-    fun load(): Job = scope.launch { _state.value = fetch() }
+    fun load(): Job = routeConnection.current()?.let(::load) ?: scope.launch { }
 
-    private suspend fun fetch(): ReviewUiState = try {
+    private fun load(snapshot: RouteConnectionSnapshot): Job = scope.launch {
+        val next = fetch(snapshot)
+        routeConnection.publishIfCurrent(snapshot) { _state.value = next }
+    }
+
+    private suspend fun fetch(snapshot: RouteConnectionSnapshot): ReviewUiState = try {
+        val conn = snapshot.connection
         val item = api.getItem(conn, itemId)
         coroutineScope {
             val tasks = item.taskSlugs
@@ -91,18 +111,24 @@ class ReviewViewModel(
         ReviewUiState.Failed(e.message ?: "failed to load")
     }
 
-    fun requestChanges(reason: String): Job = scope.launch {
-        val tid = (state.value as? ReviewUiState.Content)?.c?.threadId ?: return@launch
-        _sending.value = true
-        _sendError.value = null
-        try {
-            val ok = runCatching { api.postMessage(conn, tid, "**Requested changes:** $reason") }.isSuccess
-            if (!ok) _sendError.value = "Couldn't send — check your connection and try again."
-            // defensive refetch (mirror ConsoleViewModel.steer): don't drop to Failed on a transient error
-            val next = runCatching { fetch() }.getOrNull()
-            if (next is ReviewUiState.Content) _state.value = next
-        } finally {
-            _sending.value = false
+    fun requestChanges(reason: String): Job {
+        val snapshot = routeConnection.current() ?: return scope.launch { }
+        return scope.launch {
+            val tid = (state.value as? ReviewUiState.Content)?.c?.threadId ?: return@launch
+            if (!routeConnection.publishIfCurrent(snapshot) {
+                _sending.value = true
+                _sendError.value = null
+            }) return@launch
+            try {
+                val ok = runCatching { api.postMessage(snapshot.connection, tid, "**Requested changes:** $reason") }.isSuccess
+                if (!routeConnection.publishIfCurrent(snapshot) {
+                    if (!ok) _sendError.value = "Couldn't send — check your connection and try again."
+                }) return@launch
+                val next = runCatching { fetch(snapshot) }.getOrNull()
+                if (next is ReviewUiState.Content) routeConnection.publishIfCurrent(snapshot) { _state.value = next }
+            } finally {
+                routeConnection.publishIfCurrent(snapshot) { _sending.value = false }
+            }
         }
     }
 }

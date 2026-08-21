@@ -2,22 +2,27 @@ package com.atomikpanda.groundcontrol.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.ConnectionStatePublicationFence
 import com.atomikpanda.groundcontrol.data.HomeFeed
 import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
+import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.applyHostLadder
-import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.dedupeHostErrors
+import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /** A chip in the workspace rail. connectionId == null is the pinned "All" chip. */
@@ -26,18 +31,19 @@ data class WorkspaceChip(val connectionId: String?, val label: String, val count
 sealed interface HomeUiState {
     data object Loading : HomeUiState
     data object EmptyConfig : HomeUiState
+    data class ConnectionsUnavailable(val cause: Throwable) : HomeUiState
     data class Content(
         val rail: List<WorkspaceChip>,
-        val selectedConnectionId: String?,   // null == All
-        val items: List<NeedsYouItem>,        // already filtered by selection
-        val notes: List<NewMessageNote>,      // already filtered by selection
+        val selectedConnectionId: String?,
+        val items: List<NeedsYouItem>,
+        val notes: List<NewMessageNote>,
         val errors: List<WorkspaceError>,
     ) : HomeUiState
 }
 
 class HomeViewModel(
     private val repo: HomeFeedRepository,
-    private val connectionsProvider: () -> List<WorkspaceConnection>,
+    private val connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
     private val hosts: Flow<List<HostConnection>>? = null,
     private val nowMillis: () -> Long = System::currentTimeMillis,
@@ -49,10 +55,32 @@ class HomeViewModel(
     private var selected: String? = null
     private var lastConnections: List<WorkspaceConnection> = emptyList()
     private var lastHosts: List<HostConnection> = emptyList()
+    private var refreshJob: Job? = null
+    private var refreshConnections: List<WorkspaceConnection>? = null
+    private var refreshGeneration = 0L
 
     init {
+        scope().launch {
+            connectionState.collectLatest { connections ->
+                val ready = connections as? ConnectionState.Ready
+                if (ready != null && refreshConnections == ready.connections && refreshJob?.isActive == true) {
+                    refreshJob?.join()
+                    return@collectLatest
+                }
+                refreshJob?.cancelAndJoin()
+                refreshConnections = ready?.connections
+                when (connections) {
+                    ConnectionState.Loading -> _state.value = HomeUiState.Loading
+                    is ConnectionState.Error -> _state.value = HomeUiState.ConnectionsUnavailable(connections.cause)
+                    is ConnectionState.Ready -> {
+                        refreshJob = startReload(connections.connections)
+                        refreshJob?.join()
+                    }
+                }
+            }
+        }
         hosts?.let { source ->
-            (testScope ?: viewModelScope).launch {
+            scope().launch {
                 source.emitAtStaleDeadlines(nowMillis).collect { current ->
                     lastHosts = current
                     if (_state.value is HomeUiState.Content) render(lastConnections)
@@ -61,17 +89,42 @@ class HomeViewModel(
         }
     }
 
-    fun refresh(): Job? {
-        val connections = connectionsProvider()
-        if (connections.isEmpty()) { _state.value = HomeUiState.EmptyConfig; return null }
+    private fun scope(): CoroutineScope = testScope ?: viewModelScope
+
+    fun refresh(): Job? = when (val connections = connectionState.value) {
+        is ConnectionState.Ready -> startReload(connections.connections)
+        ConnectionState.Loading -> { _state.value = HomeUiState.Loading; null }
+        is ConnectionState.Error -> { _state.value = HomeUiState.ConnectionsUnavailable(connections.cause); null }
+    }
+
+    private fun startReload(connections: List<WorkspaceConnection>): Job? {
+        refreshJob?.cancel()
+        refreshConnections = connections
+        val generation = ++refreshGeneration
+        return reload(connections, generation).also { refreshJob = it }
+    }
+
+    private fun reload(connections: List<WorkspaceConnection>, generation: Long): Job? {
+        if (connections.isEmpty()) {
+            selected = null
+            _state.value = HomeUiState.EmptyConfig
+            return null
+        }
         _state.value = HomeUiState.Loading
-        return (testScope ?: viewModelScope).launch {
+        return scope().launch {
             val loaded = repo.load(connections)
             val currentHosts = hosts?.first() ?: emptyList()
-            feed = loaded
-            lastConnections = connections
-            lastHosts = currentHosts
-            render(connections)
+            synchronized(ConnectionStatePublicationFence.lock) {
+                if (
+                    refreshGeneration != generation ||
+                    (connectionState.value as? ConnectionState.Ready)?.connections != connections
+                ) return@launch
+                feed = loaded
+                lastConnections = connections
+                selected = selected?.let { connections.findByConnectionId(it)?.id }
+                lastHosts = currentHosts
+                render(connections)
+            }
         }
     }
 

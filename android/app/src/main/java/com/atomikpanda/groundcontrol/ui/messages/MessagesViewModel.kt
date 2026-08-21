@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import kotlin.coroutines.coroutineContext
 data class ThreadsSection(
     val workspaceName: String,
@@ -42,6 +43,8 @@ enum class ThreadStateFilter { ALL, UNREAD, NEEDS_YOU }
 sealed interface MessagesUiState {
     data object Loading : MessagesUiState
     data object EmptyConfig : MessagesUiState
+    /** The persisted connection stream itself failed; distinct from an empty fleet. */
+    data class ConnectionsUnavailable(val cause: Throwable) : MessagesUiState
     data class Content(
         val sections: List<ThreadsSection>,
         val selectedConnectionId: String? = null,
@@ -71,7 +74,7 @@ fun MessagesUiState.Content.unreadCountFor(connectionId: String?): Int =
 
 class MessagesViewModel(
     private val repo: ThreadsRepository,
-    private val connections: Flow<List<WorkspaceConnection>>,
+    private val connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow<MessagesUiState>(MessagesUiState.Loading)
@@ -90,10 +93,25 @@ class MessagesViewModel(
 
     init {
         scope().launch {
-            connections.distinctUntilChanged().collectLatest { current ->
-                reconcileConnections(current, publishConnections(current))
+            connectionState.collectLatest { source ->
+                when (source) {
+                    ConnectionState.Loading -> {
+                        stopAllOwners()
+                        _state.value = MessagesUiState.Loading
+                    }
+                    is ConnectionState.Error -> {
+                        stopAllOwners()
+                        _state.value = MessagesUiState.ConnectionsUnavailable(source.cause)
+                    }
+                    is ConnectionState.Ready ->
+                        reconcileConnections(source.connections, publishConnections(source.connections))
+                }
             }
         }
+    }
+
+    private suspend fun stopAllOwners() {
+        owners.values.toList().forEach { removeAndCancelOwner(it) }
     }
 
     private suspend fun publishConnections(current: List<WorkspaceConnection>): Long = reconcileMutex.withLock {
@@ -246,7 +264,7 @@ class MessagesViewModel(
 
     fun refresh(): Job = scope().launch {
         val startRevision = reconcileMutex.withLock { reconcileRevision }
-        val captured = connections.first()
+        val captured = (connectionState.value as? ConnectionState.Ready)?.connections ?: return@launch
         val (target, refreshRevision) = reconcileMutex.withLock {
             if (reconcileRevision != startRevision) return@launch
             latestConnections = captured

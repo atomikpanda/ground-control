@@ -73,6 +73,8 @@ fun DoneScreen(vm: DoneViewModel, title: String, onBack: () -> Unit) {
             when (val s = state) {
                 DoneUiState.Loading ->
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                is DoneUiState.Unavailable ->
+                    Text(s.message, modifier = Modifier.padding(24.dp))
                 is DoneUiState.Failed ->
                     Text(
                         s.reason,
