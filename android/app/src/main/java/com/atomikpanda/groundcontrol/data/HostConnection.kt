@@ -277,6 +277,14 @@ fun markRelayUnreachable(
     if (host.relayDomain == relayDomain) host.copy(state = null) else host
 }
 
+/** Route ownership requires one nonblank identity per host snapshot. */
+internal fun validateUniqueHostIds(hosts: List<HostConnection>) {
+    require(hosts.all { it.hostId.isNotBlank() }) { "Host identity is required" }
+    require(hosts.map(HostConnection::hostId).distinct().size == hosts.size) {
+        "Duplicate host identities cannot establish route ownership"
+    }
+}
+
 /** A successful directory response is authoritative for one relay. Entries no
  * longer present (notably an approved pending request) disappear, while
  * [upsertHost] carries local overrides and direct URLs onto the fresh rows. */
@@ -285,6 +293,8 @@ fun replaceRelayHosts(
     relayDomain: String,
     hosts: List<HostConnection>,
 ): List<HostConnection> {
+    validateUniqueHostIds(existing)
+    validateUniqueHostIds(hosts)
     val retained = existing.filterNot { it.relayDomain == relayDomain }
     return hosts.fold(retained) { current, host ->
         val prior = existing.firstOrNull { it.hostId == host.hostId }
@@ -321,5 +331,6 @@ fun hostsFrom(infos: List<HostInfo>, relayDomain: String): List<HostConnection> 
     check(hosts.size == infos.size) {
         "Relay directory contained an unusable host identity"
     }
+    validateUniqueHostIds(hosts)
     return hosts
 }
