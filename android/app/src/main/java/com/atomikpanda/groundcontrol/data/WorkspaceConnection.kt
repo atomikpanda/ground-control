@@ -328,8 +328,8 @@ internal fun legacyRouteOwnership(
 }
 
 /** A stored identity is corroboration, never a substitute for route evidence.
- * URL-valued pre-ownership handles are accepted only when they cannot resolve
- * to a different host in this complete candidate snapshot. */
+ * URL-valued pre-ownership handles, including workspace routes, are accepted
+ * only when they cannot resolve to a different host in this complete candidate snapshot. */
 internal fun WorkspaceConnection.agreesWith(
     evidence: LegacyRouteOwnership.Owned,
     candidateHosts: List<HostConnection>,
@@ -338,11 +338,14 @@ internal fun WorkspaceConnection.agreesWith(
         hostId.isNullOrBlank() -> true
         hostId.startsWith("http://", ignoreCase = true) ||
             hostId.startsWith("https://", ignoreCase = true) -> {
-            val identity = normalizedBaseUrl(hostId)
-            val owners = identity?.let { storedBase ->
-                candidateHosts.filter { host -> host.hasKnownBaseIdentity(storedBase) }
-            }.orEmpty()
-            owners.isEmpty() || owners.singleOrNull()?.hostId == evidence.hostId
+            val storedRouteOwnership = normalizedBaseUrl(hostId)?.let { storedBase ->
+                legacyRouteOwnership(copy(baseUrl = storedBase), candidateHosts)
+            }
+            when (storedRouteOwnership) {
+                is LegacyRouteOwnership.Owned -> storedRouteOwnership.hostId == evidence.hostId
+                LegacyRouteOwnership.Ambiguous -> false
+                LegacyRouteOwnership.Unknown, null -> true
+            }
         }
         else -> hostId == evidence.hostId
     }

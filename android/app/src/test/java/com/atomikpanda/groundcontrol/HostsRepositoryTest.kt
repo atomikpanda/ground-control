@@ -634,6 +634,33 @@ class HostsRepositoryTest {
         assertEquals("standing-token", restored.directToken)
     }
 
+    @Test fun replacing_a_relay_account_preserves_same_host_rows_when_credentials_disagree() {
+        val directBase = "http://lan:47190"
+        val first = WorkspaceConnection(
+            id = "first",
+            baseUrl = "${host.publicUrl}/workspaces/first",
+            hostId = host.hostId,
+            workspaceId = "first",
+            directToken = "first-token",
+        )
+        val second = WorkspaceConnection(
+            id = "second",
+            baseUrl = "${host.publicUrl}/workspaces/second",
+            hostId = host.hostId,
+            workspaceId = "second",
+            directToken = "second-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(host.copy(directUrl = directBase)),
+            connections = listOf(first, second),
+        )
+
+        assertEquals(listOf(first, second), replaced.connections)
+    }
+
     @Test fun replacing_a_relay_account_removes_an_owned_route_without_a_direct_credential() {
         val unrestorable = WorkspaceConnection(
             id = "unrestorable",
@@ -699,7 +726,7 @@ class HostsRepositoryTest {
             id = "null-host",
             baseUrl = "${host.publicUrl}/workspaces/ws-null",
             hostId = null,
-            directToken = "null-token",
+            directToken = "url-token",
         )
 
         val replaced = replaceRelayAccountFleet(
@@ -719,8 +746,8 @@ class HostsRepositoryTest {
         assertEquals(host.hostId, restoredById.getValue("null-host").hostId)
         assertEquals("ws-null", restoredById.getValue("null-host").workspaceId)
         assertEquals("$directBase/workspaces/ws-null", restoredById.getValue("null-host").baseUrl)
-        assertEquals("null-token", restoredById.getValue("null-host").token)
-        assertEquals("null-token", restoredById.getValue("null-host").directToken)
+        assertEquals("url-token", restoredById.getValue("null-host").token)
+        assertEquals("url-token", restoredById.getValue("null-host").directToken)
         assertEquals(listOf(nullHost.baseUrl), restoredById.getValue("null-host").legacyBaseUrls)
     }
 
@@ -801,6 +828,36 @@ class HostsRepositoryTest {
             previous = RelayAccount("relay.example.com", "old-token"),
             replacement = RelayAccount("new.example.com", "new-token"),
             hosts = listOf(retained, removed),
+            connections = listOf(ambiguous),
+        )
+
+        assertEquals(listOf(ambiguous), replaced.connections)
+    }
+
+    @Test fun replacing_a_relay_account_preserves_cross_relay_base_collision() {
+        val sharedBase = "https://shared.relay.example.com"
+        val previousHost = host.copy(
+            hostId = "previous-host",
+            publicUrl = "https://previous.relay.example.com",
+            directUrl = "http://previous.lan:47190",
+            legacyPublicUrls = listOf(sharedBase),
+        )
+        val otherRelayHost = host.copy(
+            hostId = "other-host",
+            publicUrl = "https://other.relay.example.com",
+            relayDomain = "other.example.com",
+            legacyPublicUrls = listOf(sharedBase),
+        )
+        val ambiguous = WorkspaceConnection(
+            id = "ambiguous",
+            baseUrl = "$sharedBase/workspaces/ws",
+            directToken = "standing-token",
+        )
+
+        val replaced = replaceRelayAccountFleet(
+            previous = RelayAccount("relay.example.com", "old-token"),
+            replacement = RelayAccount("new.example.com", "new-token"),
+            hosts = listOf(previousHost, otherRelayHost),
             connections = listOf(ambiguous),
         )
 
@@ -1031,6 +1088,29 @@ class HostsRepositoryTest {
                 emptyList(),
             ).hosts.map { it.hostId },
         )
+    }
+
+    @Test fun replacement_directory_rejects_a_host_id_owned_by_a_different_relay() = runTest {
+        assertIllegalArgument {
+            replaceRelayDirectoryFleet(
+                relayDomain = "replacement.example",
+                existingHosts = listOf(
+                    HostConnection(
+                        hostId = "shared-host",
+                        publicUrl = "https://other.example/host",
+                        relayDomain = "other.example",
+                    ),
+                ),
+                replacementHosts = listOf(
+                    HostConnection(
+                        hostId = "shared-host",
+                        publicUrl = "https://replacement.example/host",
+                        relayDomain = "replacement.example",
+                    ),
+                ),
+                connections = emptyList(),
+            )
+        }
     }
 
     @Test fun duplicate_host_ingress_keeps_persisted_bytes_unchanged() = runTest {

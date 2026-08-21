@@ -147,15 +147,17 @@ internal fun replaceRelayAccountFleet(
         )
     }
     val retainedDirectById = retainedDirectHosts.associateBy { it.hostId }
+    val previousHostIds = previousHosts.mapTo(mutableSetOf()) { it.hostId }
     val ownershipByConnection = connections.associateWith { connection ->
-        legacyRouteOwnership(connection, previousHosts) as? LegacyRouteOwnership.Owned
+        (legacyRouteOwnership(connection, hosts) as? LegacyRouteOwnership.Owned)
+            ?.takeIf { it.hostId in previousHostIds }
     }
     val directCredentialByHostId = connections
         .mapNotNull { connection ->
             val evidence = ownershipByConnection[connection]
             val credential = connection.directToken?.takeIf { it.isNotBlank() }
                 ?: connection.token?.takeIf { it.isNotBlank() }
-            evidence?.takeIf { connection.agreesWith(it, previousHosts) }?.hostId?.let { it to credential }
+            evidence?.takeIf { connection.agreesWith(it, hosts) }?.hostId?.let { it to credential }
         }
         .filter { (_, credential) -> credential != null }
         .groupBy({ it.first }, { it.second!! })
@@ -164,12 +166,13 @@ internal fun replaceRelayAccountFleet(
         hosts = hosts.filterNot { it.relayDomain == previous.relayDomain } + retainedDirectHosts,
         connections = connections.mapNotNull { connection ->
             val evidence = ownershipByConnection[connection]
-            if (evidence == null || !connection.agreesWith(evidence, previousHosts)) return@mapNotNull connection
+            if (evidence == null || !connection.agreesWith(evidence, hosts)) return@mapNotNull connection
             val directHost = retainedDirectById[evidence.hostId] ?: return@mapNotNull null
-            val directCredential = connection.directToken?.takeIf { it.isNotBlank() }
-                ?: connection.token?.takeIf { it.isNotBlank() }
-                ?: directCredentialByHostId[directHost.hostId]
-                ?: return@mapNotNull null
+            val directCredential = directCredentialByHostId[directHost.hostId]
+            if (directCredential == null && directCredentialByHostId.containsKey(directHost.hostId)) {
+                return@mapNotNull connection
+            }
+            if (directCredential == null) return@mapNotNull null
             val directBase = evidence.workspaceId?.let {
                 workspaceBaseUrl(directHost.directUrl!!, it)
             } ?: directHost.directUrl!!
@@ -198,6 +201,9 @@ internal fun replaceRelayDirectoryFleet(
     validateUniqueHostIds(existingHosts)
     validateUniqueHostIds(replacementHosts)
     val replacementIds = replacementHosts.mapTo(mutableSetOf()) { it.hostId }
+    require(
+        existingHosts.none { it.hostId in replacementIds && it.relayDomain != relayDomain },
+    ) { "Incoming host identity belongs to a different relay" }
     val removedHostIds = existingHosts
         .filter { it.relayDomain == relayDomain && it.hostId !in replacementIds }
         .mapTo(mutableSetOf()) { it.hostId }

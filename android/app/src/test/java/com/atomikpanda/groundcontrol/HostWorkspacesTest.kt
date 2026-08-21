@@ -1192,6 +1192,46 @@ class HostWorkspacesTest {
         assertEquals(listOf<String?>(null), authorizations)
     }
 
+    @Test fun explicit_route_rejects_duplicate_persisted_host_ids() = runTest {
+        val base = "https://first.relay.example.com"
+        val duplicateId = "duplicate-host"
+        val first = host.copy(
+            hostId = duplicateId,
+            publicUrl = base,
+            refresh = "first-refresh",
+        )
+        val second = host.copy(
+            hostId = duplicateId,
+            publicUrl = "https://second.relay.example.com",
+            refresh = "second-refresh",
+        )
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                when (request.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += (request.body as OutgoingContent.ByteArrayContent)
+                            .bytes()
+                            .decodeToString()
+                        respond("""{"token":"unexpected","expires_in":300}""", HttpStatusCode.OK, jsonHdr)
+                    }
+                    "/workspaces" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(first, second) },
+        )
+
+        SpecApi(client.client).listWorkspaces(base, "caller-token", hostId = duplicateId)
+
+        assertTrue(exchanges.isEmpty())
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
     @Test fun a_legacy_url_host_handle_follows_a_recorded_public_url_rotation() = runTest {
         val oldBase = "https://old.relay.example.com"
         val current = host.copy(

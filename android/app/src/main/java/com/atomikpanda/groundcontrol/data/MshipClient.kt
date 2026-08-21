@@ -343,13 +343,16 @@ fun hostAwareClient(
             if (cache == null) return@on proceed(request)
             val host = when {
                 workspaceRoute != null -> workspaceHost
-                routedHostId != null && normalizedRoutedHostId == null ->
-                    knownHosts.firstOrNull { it.hostId == routedHostId }
-                routedHostId != null ->
-                    knownHosts.firstOrNull { it.hostId == routedHostId }
-                        ?: knownHosts.filter {
+                routedHostId != null -> {
+                    val matchingIds = knownHosts.filter { it.hostId == routedHostId }
+                    when (matchingIds.size) {
+                        0 -> knownHosts.filter {
                             normalizedRoutedHostId?.let(it::hasKnownBaseIdentity) == true
                         }.singleOrNull()
+                        1 -> matchingIds.single()
+                        else -> null
+                    }
+                }
                 base != null -> matchingHosts.singleOrNull()
                 else -> null
             }
