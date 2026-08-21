@@ -141,8 +141,8 @@ internal class ReplyOutbox(
     }
 }
 
-/** Fixed policy matches WorkManager's historical input boundary without putting input in WorkData. */
-internal const val MAX_REPLY_CONTEXT_BYTES = 10_240
+/** Leaves headroom for WorkManager's Data keys and serialization metadata under its 10 KiB cap. */
+internal const val MAX_REPLY_CONTEXT_BYTES = 9_000
 
 internal fun validReplyContext(vararg fields: String): Boolean =
     fields.sumOf { it.toByteArray(Charsets.UTF_8).size } <= MAX_REPLY_CONTEXT_BYTES

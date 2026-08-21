@@ -510,7 +510,7 @@ class ReplyReceiverOutboxTest {
         releaseEnqueue.countDown()
         database.close()
     }
-    @Test fun receiver_waits_for_migration_reset_before_submitting_an_action() = runBlocking {
+    @Test fun receiver_enqueues_durable_intake_without_waiting_for_migration_reset() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val submitted = CompletableDeferred<Unit>()
         val receiver = ReplyReceiver(
@@ -529,9 +529,8 @@ class ReplyReceiverOutboxTest {
             receiver.onReceive(context, validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A"))
         }
 
-        assertFalse(submitted.isCompleted)
-        ReplyStartupGate.finishReset()
         submitted.await()
+        ReplyStartupGate.finishReset()
     }
 
     private fun validIntent() = Intent().apply {

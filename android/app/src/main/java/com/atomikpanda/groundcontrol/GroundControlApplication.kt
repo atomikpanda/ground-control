@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol
 
 import android.app.Application
 import android.app.NotificationManager
+import android.util.Log
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller
 import com.atomikpanda.groundcontrol.notify.NotificationChannels
@@ -21,6 +22,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val REPLY_RESET_RETRY_DELAY_MILLIS = 1_000L
+private const val REPLY_RESET_MAX_ATTEMPTS = 3
+private const val TAG = "GroundControlApplication"
 
 class GroundControlApplication : Application() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -32,10 +35,12 @@ class GroundControlApplication : Application() {
         // must await this exact generation rather than racing mutex acquisition.
         ReplyStartupGate.beginReset()
         scope.launch {
-            lateinit var database: NotifiedDatabase
-            while (true) {
-                try {
-                    database = withReplyStartupGate {
+            val database = try {
+                retryReplyReset(
+                    maxAttempts = REPLY_RESET_MAX_ATTEMPTS,
+                    retryDelay = { delay(REPLY_RESET_RETRY_DELAY_MILLIS) },
+                ) {
+                    withReplyStartupGate {
                         NotifiedDatabase.get(this@GroundControlApplication).also {
                             ReplyMigrationResetter(it) {
                                 val manager = getSystemService(NotificationManager::class.java)
@@ -45,12 +50,13 @@ class GroundControlApplication : Application() {
                             }.resetIfRequired()
                         }
                     }
-                    break
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Throwable) {
-                    delay(REPLY_RESET_RETRY_DELAY_MILLIS)
                 }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Log.e(TAG, "Reply database reset failed", error)
+                ReplyStartupGate.failReset(error)
+                return@launch
             }
             val renderer = NotificationRenderCoordinator(
                 database,
@@ -66,4 +72,22 @@ class GroundControlApplication : Application() {
             renderer.reconcilePending()
         }
     }
+}
+
+internal suspend fun <T> retryReplyReset(
+    maxAttempts: Int,
+    retryDelay: suspend () -> Unit,
+    reset: suspend () -> T,
+): T {
+    require(maxAttempts > 0)
+    repeat(maxAttempts - 1) {
+        try {
+            return reset()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            retryDelay()
+        }
+    }
+    return reset()
 }

@@ -101,6 +101,7 @@ class WatchService : Service() {
         runCatching {
             reconciler.fetchAndReconcile(conn)
             replyOutbox.reconcileEligible()
+            notificationCoordinator.reconcilePending()
         }.onFailure { android.util.Log.w("WatchService", "initial reconcile failed for ${conn.id}", it) }
         var cursor = Instant.now().toString()
         var backoffMs = 1000L
@@ -112,10 +113,13 @@ class WatchService : Service() {
                 continue
             }
             backoffMs = 1000L
-            reconciler.reconcile(conn, resp.threads)
-            // Adoption can make an alias-held reply eligible; do not defer its wake-up to backstop.
-            runCatching { replyOutbox.reconcileEligible() }
-                .onFailure { android.util.Log.w("WatchService", "outbox reconcile failed for ${conn.id}", it) }
+            runCatching {
+                reconciler.reconcile(conn, resp.threads)
+                // Adoption can make an alias-held reply eligible; complete the durable handoff
+                // through terminal rendering before waiting on another connection snapshot.
+                replyOutbox.reconcileEligible()
+                notificationCoordinator.reconcilePending()
+            }.onFailure { android.util.Log.w("WatchService", "reply reconcile failed for ${conn.id}", it) }
             if (resp.cursor.isNotEmpty()) cursor = resp.cursor
         }
     }

@@ -14,6 +14,10 @@ internal object ReplyStartupGate {
         resetComplete.complete(Unit)
     }
 
+    fun failReset(error: Throwable) {
+        resetComplete.completeExceptionally(error)
+    }
+
     suspend fun awaitReset() {
         resetComplete.await()
     }

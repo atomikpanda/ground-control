@@ -175,6 +175,27 @@ class NotificationRenderCoordinatorTest {
         db.close()
     }
 
+    @Test fun failed_newer_publication_restores_the_previous_actionable_generation() = runBlocking {
+        val db = database()
+        val renderer = FakeReplyRenderer().apply { succeeds = false }
+        val coordinator = NotificationRenderCoordinator(db, renderer) { _, _ -> }
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("c", "t", "old#1", 1, true, "old-cap"),
+        )
+
+        assertFalse(
+            coordinator.publish(
+                NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "new"),
+            ),
+        )
+
+        val restored = db.replyNotificationVersionDao().get("c", "t")!!
+        assertTrue(restored.active)
+        assertEquals("old#1", restored.version)
+        assertEquals("old-cap", restored.capabilityKey)
+        db.close()
+    }
+
     @Test fun stale_resolution_cannot_retire_a_newer_publication() = runBlocking {
         val db = database()
         val renderer = FakeReplyRenderer()
@@ -314,6 +335,33 @@ class NotificationRenderCoordinatorTest {
             assertFalse(db.replyNotificationVersionDao().get("alias", thread)!!.active)
             db.close()
         }
+    }
+
+    @Test fun canonical_collision_retries_while_the_alias_reply_is_in_flight() = runBlocking {
+        val db = database()
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "alias-cap"),
+        )
+        db.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("canonical", "thread", "source#2", 2, true, "canonical-cap"),
+        )
+        db.replyOutboxDao().insert(
+            row(ReplyOutboxState.IN_FLIGHT, key = "alias-cap", connectionId = "alias", threadId = "thread"),
+        )
+
+        assertEquals(
+            ReplyCapabilityAdoption.RETRY,
+            NotificationRenderCoordinator(db, FakeReplyRenderer()) { _, _ -> }
+                .adopt(
+                    "alias",
+                    "canonical",
+                    NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source"),
+                ),
+        )
+
+        assertEquals("alias", db.replyOutboxDao().get("alias-cap")!!.connectionId)
+        assertTrue(db.replyNotificationVersionDao().get("alias", "thread")!!.active)
+        db.close()
     }
 
     @Test fun adoption_cannot_resurrect_an_inactive_canonical_tombstone() = runBlocking {

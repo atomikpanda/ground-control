@@ -33,23 +33,33 @@ internal class ReplyOutboxIntake private constructor(private val outbox: ReplyOu
 
     override suspend fun submit(intent: Intent): Boolean {
         val submission = intent.toReplySubmission() ?: return false
-        return outbox.submit(submission)
+        return submit(submission)
     }
+
+    internal suspend fun submit(submission: ReplySubmission): Boolean = outbox.submit(submission)
 }
 
 /**
- * Receives actions without doing database or WorkManager I/O on the broadcast/main thread. The
- * durable commit occurs before scheduling, and [PendingResult.finish] is always released.
+ * Converts the tap to bounded WorkData and waits only for WorkManager's durable enqueue. Room
+ * migration/reset and network delivery happen in [ReplyIntakeWorker], after the broadcast ends.
  */
+internal class WorkManagerReplyIntake(private val context: Context) : ReplyIntake {
+    override suspend fun submit(intent: Intent): Boolean {
+        val submission = intent.toReplySubmission() ?: return false
+        ReplyIntakeWorker.enqueue(context, submission).result.get()
+        return true
+    }
+}
+
+/** Receives actions off the broadcast/main thread and releases [PendingResult] after durable enqueue. */
 class ReplyReceiver @JvmOverloads constructor(
-    private val intakeFactory: (Context) -> ReplyIntake = { ReplyOutboxIntake(it) },
+    private val intakeFactory: (Context) -> ReplyIntake = { WorkManagerReplyIntake(it) },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
         scope.launch {
             try {
-                ReplyStartupGate.awaitReset()
                 intakeFactory(context.applicationContext).submit(intent)
             } finally {
                 pending.finish()

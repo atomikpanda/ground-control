@@ -25,6 +25,7 @@ internal class NotificationRenderCoordinator(
     private val cancel: (String, String) -> Unit,
 ) {
     suspend fun publish(event: NeedsYouEvent): Boolean = withThreadLock(event.connectionId, event.threadId) {
+        var previousActionable: ReplyNotificationVersionRecord? = null
         val capability = database.withTransaction {
             val versions = database.replyNotificationVersionDao()
             val current = versions.get(event.connectionId, event.threadId)
@@ -43,6 +44,7 @@ internal class NotificationRenderCoordinator(
                     event.updatedAt.isBlank() || (!currentSource.isNullOrBlank() && event.updatedAt < currentSource) ->
                         return@withTransaction null
                 }
+                previousActionable = current
             }
             val generation = (current?.generation ?: 0L) + 1L
             current?.takeIf { it.active }?.let { versions.deactivate(event.connectionId, event.threadId, it.version) }
@@ -51,6 +53,7 @@ internal class NotificationRenderCoordinator(
             next
         } ?: return@withThreadLock false
         val rendered = runCatching { notifier.renderCurrent(event, capability) }.getOrDefault(false)
+        if (!rendered) previousActionable?.let { database.replyNotificationVersionDao().insert(it) }
         rendered
     }
 
@@ -98,6 +101,7 @@ internal class NotificationRenderCoordinator(
     ): ReplyCapabilityAdoption {
         if (sourceConnectionId == targetConnectionId) return ReplyCapabilityAdoption.ADOPTED
         return withThreadLock(sourceConnectionId, event.threadId) {
+            var retry = false
             val target = database.withTransaction {
                 val versions = database.replyNotificationVersionDao()
                 val source = versions.get(sourceConnectionId, event.threadId)
@@ -106,6 +110,17 @@ internal class NotificationRenderCoordinator(
                     return@withTransaction null
                 }
                 val current = versions.get(targetConnectionId, event.threadId)
+                val collision = current != null && (
+                    current.version != source.version ||
+                        current.capabilityKey != source.capabilityKey
+                )
+                if (
+                    collision &&
+                    database.replyOutboxDao().get(source.capabilityKey)?.state == ReplyOutboxState.IN_FLIGHT
+                ) {
+                    retry = true
+                    return@withTransaction null
+                }
                 when {
                     current?.active == false -> {
                         database.replyOutboxDao().terminalizeConnectionActions(sourceConnectionId, event.threadId)
@@ -119,6 +134,7 @@ internal class NotificationRenderCoordinator(
                     else -> ReplyCapability(current.version, requireNotNull(current.capabilityKey))
                 }
             }
+            if (retry) return@withThreadLock ReplyCapabilityAdoption.RETRY
             if (target == null) {
                 cancel(sourceConnectionId, event.threadId)
                 return@withThreadLock ReplyCapabilityAdoption.RETIRED_WITHOUT_REPLACEMENT

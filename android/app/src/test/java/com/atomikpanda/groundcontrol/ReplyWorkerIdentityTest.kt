@@ -8,6 +8,9 @@ import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
 import com.atomikpanda.groundcontrol.notify.notificationThreadUri
 import com.atomikpanda.groundcontrol.notify.retiredReplyConnectionId
 import com.atomikpanda.groundcontrol.notify.ReplyWorker
+import com.atomikpanda.groundcontrol.notify.ReplyInputKind
+import com.atomikpanda.groundcontrol.notify.ReplyIntakeWorker
+import com.atomikpanda.groundcontrol.notify.ReplySubmission
 import com.atomikpanda.groundcontrol.notify.LegacyReplyInput
 import com.atomikpanda.groundcontrol.notify.MAX_REPLY_CONTEXT_BYTES
 import com.atomikpanda.groundcontrol.notify.ReplyDeliveryOutcome
@@ -106,6 +109,27 @@ class ReplyWorkerIdentityTest {
             legacy,
         )
         assertEquals(null, ReplyWorker.legacyReplyInput(ReplyWorker.workData("opaque-capability")))
+    }
+
+    @Test fun durable_intake_work_round_trips_the_validated_reply_submission() {
+        val submission = ReplySubmission(
+            actionKey = "opaque-capability",
+            connectionId = "canonical",
+            threadId = "thread",
+            notificationVersion = "source#1",
+            replyText = "exact reply",
+            inputKind = ReplyInputKind.FREE_TEXT,
+            subject = "subject",
+            workspace = "workspace",
+            baseUrl = "https://example",
+            decision = null,
+            retryAttempt = 2,
+        )
+
+        assertEquals(
+            submission,
+            ReplyIntakeWorker.replySubmission(ReplyIntakeWorker.workData(submission)),
+        )
     }
 
     @Test fun bounded_context_uses_bytes_not_characters() {

@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.Data
 import androidx.work.workDataOf
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
@@ -51,6 +52,81 @@ internal data class LegacyReplyInput(
     val baseUrl: String,
 )
 
+
+/** Durable first hop for notification actions received while the reply database reset is pending. */
+class ReplyIntakeWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        try {
+            ReplyStartupGate.awaitReset()
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            return if (runAttemptCount < MAX_RESET_RETRIES) Result.retry() else Result.failure()
+        }
+        val submission = replySubmission(inputData) ?: return Result.failure()
+        ReplyOutboxIntake(applicationContext).submit(submission)
+        return Result.success()
+    }
+
+    companion object {
+        private const val MAX_RESET_RETRIES = 3
+        private const val K_CONNECTION_ID = "connection_id"
+        private const val K_THREAD_ID = "thread_id"
+        private const val K_NOTIFICATION_VERSION = "notification_version"
+        private const val K_CAPABILITY = "capability"
+        private const val K_REPLY_TEXT = "reply_text"
+        private const val K_INPUT_KIND = "input_kind"
+        private const val K_SUBJECT = "subject"
+        private const val K_WORKSPACE = "workspace"
+        private const val K_BASE_URL = "base_url"
+        private const val K_DECISION = "decision"
+        private const val K_RETRY_ATTEMPT = "retry_attempt"
+
+        internal fun workData(submission: ReplySubmission): Data = workDataOf(
+            K_CONNECTION_ID to submission.connectionId,
+            K_THREAD_ID to submission.threadId,
+            K_NOTIFICATION_VERSION to submission.notificationVersion,
+            K_CAPABILITY to submission.actionKey,
+            K_REPLY_TEXT to submission.replyText,
+            K_INPUT_KIND to submission.inputKind.name,
+            K_SUBJECT to submission.subject,
+            K_WORKSPACE to submission.workspace,
+            K_BASE_URL to submission.baseUrl,
+            K_DECISION to submission.decisionJson,
+            K_RETRY_ATTEMPT to submission.retryAttempt,
+        )
+
+        internal fun replySubmission(data: Data): ReplySubmission? {
+            val inputKind = data.getString(K_INPUT_KIND)
+                ?.let { runCatching { ReplyInputKind.valueOf(it) }.getOrNull() }
+                ?: return null
+            return ReplySubmission(
+                actionKey = data.getString(K_CAPABILITY) ?: return null,
+                connectionId = data.getString(K_CONNECTION_ID) ?: return null,
+                threadId = data.getString(K_THREAD_ID) ?: return null,
+                notificationVersion = data.getString(K_NOTIFICATION_VERSION) ?: return null,
+                replyText = data.getString(K_REPLY_TEXT) ?: return null,
+                inputKind = inputKind,
+                subject = data.getString(K_SUBJECT).orEmpty(),
+                workspace = data.getString(K_WORKSPACE).orEmpty(),
+                baseUrl = data.getString(K_BASE_URL).orEmpty(),
+                decision = null,
+                decisionJson = data.getString(K_DECISION),
+                retryAttempt = data.getInt(K_RETRY_ATTEMPT, 0),
+            )
+        }
+
+        internal fun enqueue(context: Context, submission: ReplySubmission) =
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "reply_intake_${submission.actionKey}",
+                ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<ReplyIntakeWorker>()
+                    .setInputData(workData(submission))
+                    .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    .build(),
+            )
+    }
+}
 /** WorkManager adapter. Current work carries only an opaque outbox capability. */
 class ReplyWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {

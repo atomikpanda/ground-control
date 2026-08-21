@@ -106,7 +106,12 @@ class NeedsYouReconciler(
                     // A resolved alias must be retired, not adopted: otherwise its capability
                     // remains actionable under the canonical identity after dedupe is cleared.
                     for (retiredId in conn.legacyConnectionIds) {
-                        if (retire(retiredId, t.id, t.updatedAt.orEmpty())) store.clear(retiredId, t.id)
+                        if (
+                            retire(retiredId, t.id, t.updatedAt.orEmpty()) ||
+                            !hasActiveCapability(retiredId, t.id)
+                        ) {
+                            store.clear(retiredId, t.id)
+                        }
                     }
                 }
             }
@@ -122,7 +127,12 @@ class NeedsYouReconciler(
             } else if (!needsAttention) {
                 // Publication can succeed immediately before a process death prevents the dedupe
                 // write; capability retirement, not the dedupe bit, is authoritative on resolve.
-                if (retire(conn.id, t.id, t.updatedAt.orEmpty())) store.clear(conn.id, t.id)
+                if (
+                    retire(conn.id, t.id, t.updatedAt.orEmpty()) ||
+                    !hasActiveCapability(conn.id, t.id)
+                ) {
+                    store.clear(conn.id, t.id)
+                }
             }
         }
     }

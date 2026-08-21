@@ -225,10 +225,27 @@ class NeedsYouReconcilerTest {
             FakeNotifier(),
             routedRepo(),
             retire = { _, _, _ -> false },
+            hasActiveCapability = { _, _ -> true },
         ).reconcile(conn, listOf(summary("t1", false)))
 
         assertTrue("${conn.id}|t1" in store.marks)
     }
+
+    @Test fun resolved_thread_clears_dedupe_after_a_prior_reply_retired_the_capability() = runTest {
+        val store = FakeStore()
+        store.markNotified(conn.id, "t1")
+
+        NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            retire = { _, _, _ -> false },
+            hasActiveCapability = { _, _ -> false },
+        ).reconcile(conn, listOf(summary("t1", false)))
+
+        assertFalse("${conn.id}|t1" in store.marks)
+    }
+
     @Test fun plain_note_does_not_notify() = runTest {
         val store = FakeStore(); val notifier = FakeNotifier()
         NeedsYouReconciler(store, notifier, routedRepo()).reconcile(conn, listOf(summary("t1", false)))
