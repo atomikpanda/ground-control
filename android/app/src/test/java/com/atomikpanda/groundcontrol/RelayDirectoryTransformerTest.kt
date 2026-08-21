@@ -60,7 +60,7 @@ class RelayDirectoryTransformerTest {
         }
     }
 
-    @Test fun supported_pending_states_require_request_id_and_route_but_not_host_id() {
+    @Test fun supported_pending_states_require_request_id_but_may_omit_route_and_host_id() {
         listOf("pending-approval", "awaiting-enrollment").forEach { state ->
             val pending = hostInfo(
                 hostId = null,
@@ -73,6 +73,17 @@ class RelayDirectoryTransformerTest {
                 transformer.transform(HostsResponse(listOf(pending)), "relay.test").hosts.single().hostId,
             )
         }
+        val placeholder = transformer.transform(
+            HostsResponse(listOf(hostInfo(
+                hostId = null,
+                state = "pending-approval",
+                requestId = "request-empty-route",
+                publicUrl = "",
+            ))),
+            "relay.test",
+        ).hosts.single()
+        assertEquals("pending:request-empty-route", placeholder.hostId)
+        assertEquals("", placeholder.publicUrl)
         invalid {
             transformer.transform(
                 HostsResponse(listOf(hostInfo(hostId = null, state = "pending-approval", publicUrl = "https://pending.test"))),
@@ -135,10 +146,13 @@ class RelayDirectoryTransformerTest {
         assertEquals("https://pending.relay.test", actual[2].publicUrl)
     }
 
-    @Test fun frozen_pending_wire_row_without_route_remains_an_invalid_boundary_fixture() {
+    @Test fun frozen_pending_wire_row_without_route_remains_a_valid_placeholder() {
         val response = buildJson().decodeFromString<HostsResponse>(FROZEN_PENDING_WITHOUT_ROUTE_JSON)
 
-        invalid { transformer.transform(response, "relay.test") }
+        val placeholder = transformer.transform(response, "relay.test").hosts.single()
+
+        assertEquals("pending:request-1", placeholder.hostId)
+        assertEquals("", placeholder.publicUrl)
     }
 
     private companion object {

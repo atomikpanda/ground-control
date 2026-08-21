@@ -168,6 +168,51 @@ class SettingsFleetTest {
         assertEquals(listOf(oldFleet, expected), emissions.distinct())
     }
 
+    @Test fun active_hosts_refresh_with_pending_placeholders_that_have_no_route() = runTest {
+        val store = dataStore("active-and-pending.preferences_pb", backgroundScope)
+        val repository = HostsRepository(store)
+        val account = RelayAccount("relay.example.com", "fleet-token")
+        repository.setRelayAccount(account)
+        repository.upsert(
+            HostConnection(
+                hostId = "old",
+                publicUrl = "https://old.relay.example.com",
+                relayDomain = account.relayDomain,
+            ),
+        )
+        val vm = viewModel(
+            store,
+            """{"hosts":[
+                {"host_id":"active","state":"online","public_url":"https://active.relay.example.com"},
+                {"state":"pending-approval","request_id":"request-1"}
+            ]}""",
+            backgroundScope,
+        )
+
+        vm.refreshFleetNow().join()
+        runCurrent()
+
+        assertEquals(
+            listOf(
+                HostConnection(
+                    hostId = "active",
+                    publicUrl = "https://active.relay.example.com",
+                    state = "online",
+                    relayDomain = account.relayDomain,
+                ),
+                HostConnection(
+                    hostId = "pending:request-1",
+                    publicUrl = "",
+                    state = "pending-approval",
+                    relayDomain = account.relayDomain,
+                    requestId = "request-1",
+                ),
+            ),
+            repository.snapshot(),
+        )
+        assertEquals("Fleet: 2 host(s)", vm.testResult.value)
+    }
+
     @Test fun invalid_refresh_keeps_preexisting_cache_bytes_without_rewrite() = runTest {
         val store = dataStore("legacy-cache.preferences_pb", backgroundScope)
         val repository = HostsRepository(store)
