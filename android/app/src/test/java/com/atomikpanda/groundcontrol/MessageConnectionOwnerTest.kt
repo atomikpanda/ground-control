@@ -8,12 +8,17 @@ import com.atomikpanda.groundcontrol.ui.messages.MessageConnectionSnapshot
 import com.atomikpanda.groundcontrol.ui.messages.MessagePollDelta
 import com.atomikpanda.groundcontrol.ui.messages.MessageRequestToken
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.runCurrent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
@@ -83,7 +88,7 @@ class MessageConnectionOwnerTest {
         assertEquals(setOf("old", "changed", "changed-again"), owner.snapshot.value.threads.getOrThrow().map { it.id }.toSet())
     }
 
-    @Test fun handoff_preserves_accepted_state_and_rejects_old_poll() = runTest {
+    @Test fun handoff_clears_replaced_workspace_state_and_rejects_old_poll() = runTest {
         val owner = owner(backgroundScope)
         val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
         owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("accepted")), emptyList())))
@@ -92,8 +97,8 @@ class MessageConnectionOwnerTest {
         val stale = owner.beginForTest(MessageRequestToken.Kind.POLL)
         val receipt = requireNotNull(owner.handoffTo(replacement))
         owner.completeForTest(stale, Result.success(MessagePollDelta(listOf(thread("stale")), "cursor-8")))
-        assertEquals("cursor-7", owner.snapshot.value.cursor)
-        assertEquals(listOf("accepted"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+        assertEquals("", owner.snapshot.value.cursor)
+        assertEquals(emptyList<ThreadSummary>(), owner.snapshot.value.threads.getOrThrow())
         assertEquals(replacement, owner.snapshot.value.connection)
         owner.resumeAfterHandoff(receipt)
     }
@@ -165,4 +170,129 @@ class MessageConnectionOwnerTest {
         runCurrent()
         assertEquals(1, failedStarts)
     }
-}
+
+    @Test fun same_id_replacement_clears_old_payload_and_reloads_the_new_connection() = runTest {
+        var replacementLoads = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                replacementLoads += 1
+                MessageFullLoad(listOf(thread("replacement")), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+        val accepted = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
+        owner.completeForTest(accepted, Result.success(MessageFullLoad(listOf(thread("old")), emptyList())))
+        val receipt = requireNotNull(owner.handoffTo(replacement))
+        assertEquals(emptyList<ThreadSummary>(), owner.snapshot.value.threads.getOrThrow())
+        assertEquals("", owner.snapshot.value.cursor)
+        assertEquals(MessageConnectionSnapshot.Phase.INITIAL_LOADING, owner.snapshot.value.phase)
+        owner.resumeAfterHandoff(receipt)
+        runCurrent()
+        assertEquals(1, replacementLoads)
+        assertEquals(listOf("replacement"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+    }
+
+    @Test fun unchanged_poll_cursor_waits_for_retry_before_issuing_another_poll() = runTest {
+        val retryGate = Channel<Unit>(Channel.UNLIMITED)
+        var polls = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = { MessageFullLoad(emptyList(), emptyList()) },
+            poll = { _, _ ->
+                polls += 1
+                MessagePollDelta(emptyList(), "")
+            },
+            scope = backgroundScope,
+            retryDelay = { retryGate.receive() },
+        )
+        owner.initialLoad()
+        runCurrent()
+        owner.startPolling()
+        runCurrent()
+        assertEquals(1, polls)
+        retryGate.trySend(Unit)
+        runCurrent()
+        assertEquals(2, polls)
+    }
+
+    @Test fun handoff_waits_for_a_cancelled_noncooperative_request_before_returning() = runTest {
+        val release = CompletableDeferred<Unit>()
+        var attempts = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                attempts += 1
+                if (attempts == 1) withContext(NonCancellable) { release.await() }
+                MessageFullLoad(emptyList(), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+        owner.initialLoad()
+        runCurrent()
+        owner.refresh()
+        runCurrent()
+        val handoff = backgroundScope.async { owner.handoffTo(replacement) }
+        runCurrent()
+        assertFalse(handoff.isCompleted)
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(handoff.isCompleted)
+    }
+
+    @Test fun refresh_queued_during_handoff_runs_as_the_replacement_full_load() = runTest {
+        val release = CompletableDeferred<Unit>()
+        var loads = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                loads += 1
+                if (loads == 1) withContext(NonCancellable) { release.await() }
+                MessageFullLoad(listOf(thread("load-$loads")), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+        val accepted = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
+        owner.completeForTest(accepted, Result.success(MessageFullLoad(listOf(thread("accepted")), emptyList())))
+        owner.refresh()
+        runCurrent()
+        val handoff = backgroundScope.async { requireNotNull(owner.handoffTo(replacement)) }
+        runCurrent()
+        val queuedRefresh = owner.refresh()
+        release.complete(Unit)
+        runCurrent()
+        owner.resumeAfterHandoff(handoff.await())
+        runCurrent()
+        queuedRefresh.join()
+        assertEquals(2, loads)
+        assertEquals(listOf("load-2"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+
+    }
+
+    @Test fun idle_alias_handoff_retains_ready_state_without_starting_an_initial_load() = runTest {
+        var fullLoads = 0
+        val adopted = WorkspaceConnection("canonical", "http://canonical")
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                fullLoads += 1
+                MessageFullLoad(emptyList(), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+        val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
+        owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("accepted")), emptyList())))
+        val cursor = owner.beginForTest(MessageRequestToken.Kind.POLL)
+        owner.completeForTest(cursor, Result.success(MessagePollDelta(emptyList(), "cursor-7")))
+        val receipt = requireNotNull(owner.handoffTo(adopted))
+        owner.resumeAfterHandoff(receipt)
+        runCurrent()
+        assertEquals(0, fullLoads)
+        assertEquals(listOf("accepted"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+        assertEquals("cursor-7", owner.snapshot.value.cursor)
+    }
+    }

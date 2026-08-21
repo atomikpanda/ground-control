@@ -74,10 +74,11 @@ fun HostConnection.hostBases(): List<String> =
 fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
 
 
-/** Whether [identity] is any current or recorded base for this stable host. */
+/** Whether [identity] is a route that remains eligible for this host. Stale
+ * relay-direct aliases are intentionally excluded: only current routable bases
+ * and persisted public aliases participate in request-route disambiguation. */
 internal fun HostConnection.hasKnownBaseIdentity(identity: String): Boolean =
-    directUrl?.let(::normalizedBaseUrl) == identity ||
-        normalizedBaseUrl(publicUrl) == identity ||
+    hostBases().any { normalizedBaseUrl(it) == identity } ||
         legacyPublicUrls.any { normalizedBaseUrl(it) == identity }
 
 /** Probe candidates in order and retain the base that answered. Authentication

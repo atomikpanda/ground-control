@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -82,16 +83,26 @@ internal class MessageConnectionOwner(
     private var activeToken: MessageRequestToken? = null
     private var activeRequest: Job? = null
     private var retryJob: Job? = null
+    private var retiredRequestJobs = emptySet<Job>()
     private var pendingHandoffJobs = emptySet<Job>()
+    private var queuedRefreshWaiters = emptyList<CompletableDeferred<Unit>>()
     private var pollingEnabled = false
     private var cancelled = false
 
     fun initialLoad(): Job = scope.launch {
         mutex.withLock { launchRequestLocked(MessageRequestToken.Kind.INITIAL) }?.join()
     }
-
     fun refresh(): Job = scope.launch {
-        mutex.withLock { launchRequestLocked(MessageRequestToken.Kind.REFRESH) }?.join()
+        val queued = CompletableDeferred<Unit>()
+        val request = mutex.withLock {
+            if (pendingHandoffJobs.isNotEmpty()) {
+                queuedRefreshWaiters = queuedRefreshWaiters + queued
+                null
+            } else {
+                launchRequestLocked(MessageRequestToken.Kind.REFRESH)
+            }
+        }
+        if (request != null) request.join() else queued.await()
     }
 
     fun startPolling(): Job = scope.launch {
@@ -107,7 +118,7 @@ internal class MessageConnectionOwner(
 
     private fun launchRequestLocked(kind: MessageRequestToken.Kind): Job? {
         if (cancelled || pendingHandoffJobs.isNotEmpty()) return null
-        activeRequest?.cancel()
+        activeRequest?.let(::retireRequestLocked)
         retryJob?.cancel()
         retryJob = null
         val token = issueLocked(kind)
@@ -134,6 +145,15 @@ internal class MessageConnectionOwner(
         if (activeToken == token) _snapshot.value.cursor else ""
     }
 
+    private fun retireRequestLocked(request: Job) {
+        retiredRequestJobs = retiredRequestJobs + request
+        request.cancel()
+        scope.launch {
+            request.join()
+            mutex.withLock { retiredRequestJobs = retiredRequestJobs - request }
+        }
+    }
+
     private fun issueLocked(kind: MessageRequestToken.Kind): MessageRequestToken {
         latestIssuedRevision += 1
         return MessageRequestToken(generation, latestIssuedRevision, kind).also { activeToken = it }
@@ -157,6 +177,8 @@ internal class MessageConnectionOwner(
 
     private fun acceptSuccessLocked(token: MessageRequestToken, payload: MessageLoadResult) {
         val current = _snapshot.value
+        val pollMadeProgress = payload !is MessagePollDelta ||
+            (payload.cursor.isNotBlank() && payload.cursor != current.cursor)
         _snapshot.value = when (payload) {
             is MessageFullLoad -> current.copy(
                 threads = Result.success(payload.threads),
@@ -174,7 +196,13 @@ internal class MessageConnectionOwner(
                 lastError = null,
             )
         }
-        if (pollingEnabled) launchRequestLocked(MessageRequestToken.Kind.POLL)
+        if (pollingEnabled) {
+            if (payload is MessagePollDelta && !pollMadeProgress) {
+                scheduleRetryLocked(MessageRequestToken.Kind.POLL)
+            } else {
+                launchRequestLocked(MessageRequestToken.Kind.POLL)
+            }
+        }
     }
 
     private fun acceptFailureLocked(token: MessageRequestToken, failure: Throwable) {
@@ -239,11 +267,23 @@ internal class MessageConnectionOwner(
                 generation += 1
                 latestIssuedRevision += 1
                 activeToken = null
-                val jobs = listOfNotNull(activeRequest, retryJob)
+                val jobs = (retiredRequestJobs + listOfNotNull(activeRequest, retryJob)).toList()
+                retiredRequestJobs = emptySet()
                 pendingHandoffJobs = pendingHandoffJobs + jobs
                 activeRequest = null
                 retryJob = null
-                _snapshot.value = _snapshot.value.copy(connection = replacement)
+                _snapshot.value = if (_snapshot.value.connection.id == replacement.id) {
+                    MessageConnectionSnapshot(
+                        connection = replacement,
+                        threads = Result.success(emptyList()),
+                        items = emptyList(),
+                        cursor = "",
+                        phase = MessageConnectionSnapshot.Phase.INITIAL_LOADING,
+                        lastError = null,
+                    )
+                } else {
+                    _snapshot.value.copy(connection = replacement)
+                }
                 Handoff(generation, jobs)
             }
         } ?: return null
@@ -263,10 +303,23 @@ internal class MessageConnectionOwner(
             if (generation != receipt.generation || cancelled || pendingHandoffJobs.isNotEmpty() ||
                 activeToken != null || retryJob != null
             ) return
-            if (_snapshot.value.phase == MessageConnectionSnapshot.Phase.READY) {
-                if (pollingEnabled) launchRequestLocked(MessageRequestToken.Kind.POLL)
-            } else {
-                launchRequestLocked(MessageRequestToken.Kind.INITIAL)
+            val kind = when {
+                queuedRefreshWaiters.isNotEmpty() -> MessageRequestToken.Kind.REFRESH
+                _snapshot.value.phase != MessageConnectionSnapshot.Phase.READY ->
+                    MessageRequestToken.Kind.INITIAL
+                pollingEnabled -> MessageRequestToken.Kind.POLL
+                else -> null
+            }
+            val request = kind?.let(::launchRequestLocked)
+            if (kind == MessageRequestToken.Kind.REFRESH) {
+                val waiters = queuedRefreshWaiters
+                queuedRefreshWaiters = emptyList()
+                request?.let { launched ->
+                    scope.launch {
+                        launched.join()
+                        waiters.forEach { it.complete(Unit) }
+                    }
+                }
             }
         }
     }
@@ -279,8 +332,9 @@ internal class MessageConnectionOwner(
                 latestIssuedRevision += 1
             }
             activeToken = null
-            (pendingHandoffJobs + listOfNotNull(activeRequest, retryJob)).also {
+            (pendingHandoffJobs + retiredRequestJobs + listOfNotNull(activeRequest, retryJob)).also {
                 pendingHandoffJobs = emptySet()
+                retiredRequestJobs = emptySet()
                 activeRequest = null
                 retryJob = null
             }

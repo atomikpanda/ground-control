@@ -218,11 +218,11 @@ class MessagesViewModel(
 
     fun refresh(): Job = scope().launch {
         val current = connections.first()
-        reconcileRevision += 1
-        reconcileConnections(current, reconcileRevision)
-        if (current.isEmpty()) return@launch
+        val refreshRevision = ++reconcileRevision
+        reconcileConnections(current, refreshRevision)
+        if (current.isEmpty() || latestConnections != current || reconcileRevision != refreshRevision) return@launch
         owners.values.map { it.refresh() }.joinAll()
-        renderOwners()
+        if (latestConnections == current && reconcileRevision == refreshRevision) renderOwners()
     }
 
     fun selectWorkspace(connectionId: String?) {
