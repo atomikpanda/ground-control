@@ -56,9 +56,12 @@ class NeedsYouReconciler(
         for (t in threads) {
             val needsAttention = t.needsYou || t.needsDecision
             val currentNotified = store.isNotified(conn.id, t.id)
+            suspend fun hasRetiredCapability(retiredId: String): Boolean =
+                store.isNotified(retiredId, t.id) || hasActiveCapability(retiredId, t.id)
+
             var retiredNotified = false
             for (retiredId in conn.legacyConnectionIds) {
-                if (store.isNotified(retiredId, t.id) || hasActiveCapability(retiredId, t.id)) {
+                if (hasRetiredCapability(retiredId)) {
                     retiredNotified = true
                     break
                 }
@@ -83,7 +86,7 @@ class NeedsYouReconciler(
                     var adopted = true
                     var requiresReplacement = false
                     for (retiredId in conn.legacyConnectionIds) {
-                        if (store.isNotified(retiredId, t.id)) {
+                        if (hasRetiredCapability(retiredId)) {
                             when (adopt(retiredId, conn.id, eventForThread())) {
                                 ReplyCapabilityAdoption.ADOPTED -> store.clear(retiredId, t.id)
                                 ReplyCapabilityAdoption.RETIRED_WITHOUT_REPLACEMENT -> {
