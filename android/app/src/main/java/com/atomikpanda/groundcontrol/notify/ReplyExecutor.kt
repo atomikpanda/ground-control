@@ -11,6 +11,7 @@ import com.atomikpanda.groundcontrol.data.findByConnectionId
 import io.ktor.client.network.sockets.ConnectTimeoutException
 import java.nio.channels.UnresolvedAddressException
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 
 internal fun classifyReplyFailure(error: Throwable): ReplyDeliveryOutcome = when (error) {
     is UnresolvedAddressException,
@@ -105,6 +106,8 @@ internal class ReplyExecutor(
         val next = try {
             post(initial, current)
             ReplyOutboxState.DELIVERED_PENDING_RENDER
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             when (classifyReplyFailure(error)) {
                 ReplyDeliveryOutcome.SafePreTransmissionFailure -> ReplyOutboxState.SAFE_FAILURE_PENDING_RENDER

@@ -32,6 +32,9 @@ class WatchBackstopWorker(appContext: Context, params: WorkerParameters) :
             adopt = renderer::adopt,
             publish = renderer::publish,
             foregroundThreadKey = { OpenThreadRegistry.snapshot() },
+            hasActiveCapability = { connectionId, threadId ->
+                database.replyNotificationVersionDao().get(connectionId, threadId)?.active == true
+            },
         )
         val conns = ConnectionsRepository(applicationContext).snapshot()
         ReplyOutbox(

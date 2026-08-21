@@ -49,6 +49,8 @@ class NeedsYouReconciler(
      *  duplicate notification for the thread the user is already viewing (#378). Defaults to
      *  "nothing open" so non-UI callers/tests keep the original always-notify behavior. */
     private val foregroundThreadKey: () -> String? = { null },
+    /** Reply capabilities are authoritative when publication completed before the dedupe mark. */
+    private val hasActiveCapability: suspend (String, String) -> Boolean = { _, _ -> false },
 ) {
     suspend fun reconcile(conn: WorkspaceConnection, threads: List<ThreadSummary>) {
         for (t in threads) {
@@ -56,7 +58,7 @@ class NeedsYouReconciler(
             val currentNotified = store.isNotified(conn.id, t.id)
             var retiredNotified = false
             for (retiredId in conn.legacyConnectionIds) {
-                if (store.isNotified(retiredId, t.id)) {
+                if (store.isNotified(retiredId, t.id) || hasActiveCapability(retiredId, t.id)) {
                     retiredNotified = true
                     break
                 }

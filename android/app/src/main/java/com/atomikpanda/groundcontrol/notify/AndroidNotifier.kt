@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.notify
 
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,10 @@ import androidx.core.content.LocusIdCompat
 import com.atomikpanda.groundcontrol.MainActivity
 import com.atomikpanda.groundcontrol.data.buildJson
 import kotlinx.serialization.encodeToString
+
+internal fun needsYouChannelAllowsNotifications(sdkInt: Int, channelImportance: Int?): Boolean =
+    sdkInt < Build.VERSION_CODES.O ||
+        channelImportance != null && channelImportance != NotificationManager.IMPORTANCE_NONE
 
 /**
  * Renders a needs-you notification as a `NotificationCompat.MessagingStyle` conversation: a "me"
@@ -31,7 +36,14 @@ internal class AndroidNotifier(private val context: Context) : Notifier, ReplyNo
         render(event, capability, errorLine)
 
     private fun render(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?): Boolean {
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+        val channelImportance = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.getSystemService(NotificationManager::class.java)
+                ?.getNotificationChannel(NotificationChannels.NEEDS_YOU)
+                ?.importance
+        } else null
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled() ||
+            !needsYouChannelAllowsNotifications(Build.VERSION.SDK_INT, channelImportance)
+        ) return false
         val notifId = needsYouNotificationId(event.connectionId, event.threadId)
         val agentName = event.workspaceName.ifBlank { "Ground Control" }
         val title = event.subject.ifBlank { agentName }

@@ -51,6 +51,9 @@ class WatchService : Service() {
             retire = renderer::retire,
             adopt = renderer::adopt,
             foregroundThreadKey = { OpenThreadRegistry.snapshot() },
+            hasActiveCapability = { connectionId, threadId ->
+                database.replyNotificationVersionDao().get(connectionId, threadId)?.active == true
+            },
         )
     }
 

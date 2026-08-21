@@ -1,5 +1,7 @@
 package com.atomikpanda.groundcontrol
 
+import android.app.NotificationManager
+import android.os.Build
 import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.notify.activeDecision
@@ -8,6 +10,7 @@ import com.atomikpanda.groundcontrol.notify.decisionOptionsBody
 import com.atomikpanda.groundcontrol.notify.messageTimestamps
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
+import com.atomikpanda.groundcontrol.notify.needsYouChannelAllowsNotifications
 import com.atomikpanda.groundcontrol.notify.optionButtonLabel
 import com.atomikpanda.groundcontrol.notify.recentMessages
 import com.atomikpanda.groundcontrol.notify.replyText
@@ -190,6 +193,13 @@ class NotificationFormatTest {
     @Test fun needs_you_notification_id_is_distinct_per_thread_and_connection() {
         assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c1", "t2"))
         assertNotEquals(needsYouNotificationId("c1", "t1"), needsYouNotificationId("c2", "t1"))
+    }
+
+    @Test fun blocked_needs_you_channel_is_not_eligible_for_publication() {
+        assertFalse(needsYouChannelAllowsNotifications(Build.VERSION_CODES.O, NotificationManager.IMPORTANCE_NONE))
+        assertFalse(needsYouChannelAllowsNotifications(Build.VERSION_CODES.O, null))
+        assertTrue(needsYouChannelAllowsNotifications(Build.VERSION_CODES.O, NotificationManager.IMPORTANCE_DEFAULT))
+        assertTrue(needsYouChannelAllowsNotifications(Build.VERSION_CODES.O - 1, null))
     }
 
     // --- option button short label (#379) -----------------------------------

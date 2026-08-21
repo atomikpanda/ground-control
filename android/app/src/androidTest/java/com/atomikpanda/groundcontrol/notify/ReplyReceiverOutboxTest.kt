@@ -92,6 +92,9 @@ class ReplyReceiverOutboxTest {
         val scheduled = mutableListOf<String>()
         val cancelled = mutableListOf<String>()
         var connections = emptyList<WorkspaceConnection>()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("restored", "thread", "source#1", 1, true, "opaque-key"),
+        )
         val outbox = ReplyOutbox(
             database,
             object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
@@ -109,9 +112,6 @@ class ReplyReceiverOutboxTest {
         assertTrue(scheduled.isEmpty())
 
         connections = listOf(WorkspaceConnection("restored", "https://example", "token", "workspace"))
-        database.replyNotificationVersionDao().insert(
-            ReplyNotificationVersionRecord("restored", "thread", "source#1", 1, true, "opaque-key"),
-        )
         outbox.reconcileEligible()
 
         assertEquals(ReplyOutboxState.READY, database.replyOutboxDao().get("opaque-key")!!.state)
@@ -119,10 +119,34 @@ class ReplyReceiverOutboxTest {
         database.close()
     }
 
+    @Test fun snapshot_failure_persists_valid_reply_as_waiting() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("canonical", "thread", "source#1", 1, true, "opaque-key"),
+        )
+        val scheduled = mutableListOf<String>()
+        val outbox = ReplyOutbox(
+            database,
+            object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
+            { throw java.io.IOException("connections unavailable") },
+            {},
+        )
+
+        assertTrue(outbox.submit(validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "exact reply").toReplySubmission()!!))
+        assertEquals(ReplyOutboxState.WAITING_FOR_CONNECTION, database.replyOutboxDao().get("opaque-key")!!.state)
+        assertEquals("exact reply", database.replyOutboxDao().get("opaque-key")!!.replyText)
+        assertTrue(scheduled.isEmpty())
+        database.close()
+    }
+
     @Test fun stale_waiting_reply_terminalizes_after_connection_restores_a_newer_generation() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
         var connections = emptyList<WorkspaceConnection>()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("canonical", "thread", "source#1", 1, true, "opaque-key"),
+        )
         val outbox = ReplyOutbox(
             database,
             object : ReplyWorkScheduler { override fun enqueue(actionKey: String) = error("stale reply must not run") },
@@ -241,6 +265,44 @@ class ReplyReceiverOutboxTest {
         ).reconcileEligible()
         assertEquals(ReplyOutboxState.STALE, database.replyOutboxDao().get("old-cap")!!.state)
         assertTrue(scheduled.isEmpty())
+        database.close()
+    }
+
+    @Test fun alias_waiting_reply_survives_reconciliation_before_capability_adoption() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, NotifiedDatabase::class.java).build()
+        database.replyNotificationVersionDao().insert(
+            ReplyNotificationVersionRecord("alias", "thread", "source#1", 1, true, "opaque-key"),
+        )
+        database.replyOutboxDao().insert(
+            ReplyOutboxRecord(
+                "opaque-key", "alias", "thread", "source#1", ReplyOutboxState.WAITING_FOR_CONNECTION,
+                null, null, null, null, "exact reply", ReplyInputKind.FREE_TEXT, "", "", "", null, 0, 1,
+            ),
+        )
+        val scheduled = mutableListOf<String>()
+        val outbox = ReplyOutbox(
+            database,
+            object : ReplyWorkScheduler { override fun enqueue(actionKey: String) { scheduled += actionKey } },
+            { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace", legacyConnectionIds = listOf("alias"))) },
+            {},
+        )
+
+        outbox.reconcileEligible()
+        assertEquals(ReplyOutboxState.WAITING_FOR_CONNECTION, database.replyOutboxDao().get("opaque-key")!!.state)
+        assertTrue(scheduled.isEmpty())
+
+        NotificationRenderCoordinator(database, object : ReplyNotificationRenderer {
+            override fun renderCurrent(event: NeedsYouEvent, capability: ReplyCapability?, errorLine: String?) = true
+        }) { _, _ -> }.adopt(
+            "alias",
+            "canonical",
+            NeedsYouEvent("canonical", "https://example", "workspace", "thread", "subject", "", "source"),
+        )
+        outbox.reconcileEligible()
+
+        assertEquals(ReplyOutboxState.READY, database.replyOutboxDao().get("opaque-key")!!.state)
+        assertEquals(listOf("opaque-key"), scheduled)
         database.close()
     }
 

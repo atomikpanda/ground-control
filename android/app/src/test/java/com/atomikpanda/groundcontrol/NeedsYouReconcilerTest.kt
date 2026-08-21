@@ -108,6 +108,29 @@ class NeedsYouReconcilerTest {
         assertTrue("other|t1" in store.marks)
     }
 
+    @Test fun active_alias_capability_without_dedupe_mark_is_adopted_before_canonical_publication() = runTest {
+        val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("alias"))
+        val store = FakeStore()
+        val transferred = mutableListOf<String>()
+        var publications = 0
+
+        NeedsYouReconciler(
+            store,
+            FakeNotifier(),
+            routedRepo(),
+            publish = { publications += 1; true },
+            adopt = { source, target, event ->
+                transferred += "$source|$target|${event.threadId}"
+                ReplyCapabilityAdoption.ADOPTED
+            },
+            hasActiveCapability = { connectionId, threadId -> connectionId == "alias" && threadId == "t1" },
+        ).reconcile(adopted, listOf(summary("t1", true)))
+
+        assertEquals(listOf("alias|canonical|t1"), transferred)
+        assertEquals(0, publications)
+        assertTrue("canonical|t1" in store.marks)
+    }
+
     @Test fun resolved_thread_clears_retired_notification_state_without_creating_canonical_mark() = runTest {
         val adopted = conn.copy(id = "canonical", legacyConnectionIds = listOf("retired"))
         val store = FakeStore(); val notifier = FakeNotifier()

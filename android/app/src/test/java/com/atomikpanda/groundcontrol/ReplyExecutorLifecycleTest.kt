@@ -12,6 +12,7 @@ import java.nio.channels.UnresolvedAddressException
 import java.util.concurrent.atomic.AtomicInteger
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -69,6 +70,23 @@ class ReplyExecutorLifecycleTest {
         executor.execute("opaque", "one"); executor.execute("opaque", "two")
         assertEquals(1, posts.get())
         assertEquals(ReplyOutboxState.UNCERTAIN_PENDING_RENDER, store.get("opaque")!!.state)
+    }
+
+    @Test fun cancellation_during_post_propagates_without_terminalizing_the_reply() = runTest {
+        val store = FakeOutboxStore(); store.seed(ready())
+        val rendered = mutableListOf<String>()
+        val outcome = runCatching {
+            ReplyExecutor(
+                store,
+                { listOf(connection) },
+                { _, _ -> throw CancellationException("worker stopped") },
+                { rendered += it },
+            ).execute("opaque", "one")
+        }
+
+        assertTrue(outcome.exceptionOrNull() is CancellationException)
+        assertEquals(ReplyOutboxState.IN_FLIGHT, store.get("opaque")!!.state)
+        assertTrue(rendered.isEmpty())
     }
 
     @Test fun unresolved_address_is_safe_failure_and_immediately_requests_render() = runTest {

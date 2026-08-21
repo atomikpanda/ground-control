@@ -10,6 +10,7 @@ import com.atomikpanda.groundcontrol.data.dto.Decision
 import java.util.UUID
 import com.atomikpanda.groundcontrol.data.buildJson
 import kotlinx.serialization.encodeToString
+import kotlinx.coroutines.CancellationException
 
 /** Complete bounded context accepted from a notification action. */
 internal data class ReplySubmission(
@@ -53,26 +54,32 @@ internal class ReplyOutbox(
     private val notificationActionHandler: suspend (ReplySubmission) -> Unit,
 ) {
     suspend fun submit(submission: ReplySubmission): Boolean {
-        val canonical = currentConnections().findByConnectionId(submission.connectionId)
+        val canonical = try {
+            currentConnections().findByConnectionId(submission.connectionId)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            null
+        }
         val persisted = submission.copy(connectionId = canonical?.id ?: submission.connectionId)
         val accepted = database.withTransaction {
             if (database.replyActionTombstoneDao().get(persisted.actionKey) != null ||
                 database.replyOutboxDao().get(persisted.actionKey) != null
             ) return@withTransaction false
-            if (canonical != null) {
-                val current = database.replyNotificationVersionDao().get(persisted.connectionId, persisted.threadId)
-                val capability = if (submission.connectionId == persisted.connectionId || current == null) {
-                    database.replyNotificationVersionDao().get(submission.connectionId, persisted.threadId)
-                } else {
-                    current
-                }
-                if (
-                    capability == null ||
-                    !capability.active ||
-                    capability.version != persisted.notificationVersion ||
-                    capability.capabilityKey != persisted.actionKey
-                ) return@withTransaction false
+            val versions = database.replyNotificationVersionDao()
+            val current = canonical?.let { versions.get(it.id, persisted.threadId) }
+            val source = versions.get(submission.connectionId, persisted.threadId)
+            val capability = if (canonical == null || submission.connectionId == persisted.connectionId || current == null) {
+                source
+            } else {
+                current
             }
+            if (
+                capability == null ||
+                !capability.active ||
+                capability.version != persisted.notificationVersion ||
+                capability.capabilityKey != persisted.actionKey
+            ) return@withTransaction false
             database.replyOutboxDao().insert(
                 ReplyOutboxRecord(
                     actionKey = persisted.actionKey,
@@ -109,11 +116,14 @@ internal class ReplyOutbox(
             database.replyOutboxDao().waitingForConnection().mapNotNull { row ->
                 val canonical = connections.findByConnectionId(row.connectionId) ?: return@mapNotNull null
                 val current = database.replyNotificationVersionDao().get(canonical.id, row.threadId)
-                if (current?.active == true && current.version == row.notificationVersion && current.capabilityKey == row.actionKey) {
-                    row.takeIf { database.replyOutboxDao().resumeWaiting(row.actionKey, row.notificationVersion) == 1 }
-                } else {
-                    database.replyOutboxDao().terminalizeWaiting(row.actionKey, row.notificationVersion)
-                    null
+                when {
+                    current == null -> null
+                    current.active && current.version == row.notificationVersion && current.capabilityKey == row.actionKey ->
+                        row.takeIf { database.replyOutboxDao().resumeWaiting(row.actionKey, row.notificationVersion) == 1 }
+                    else -> {
+                        database.replyOutboxDao().terminalizeWaiting(row.actionKey, row.notificationVersion)
+                        null
+                    }
                 }
             }
         }
