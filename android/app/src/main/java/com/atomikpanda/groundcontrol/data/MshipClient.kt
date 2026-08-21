@@ -348,12 +348,16 @@ fun hostAwareClient(
                 workspaceRoute != null -> workspaceHost
                 routedHostId != null -> {
                     val matchingIds = knownHosts.filter { it.hostId == routedHostId }
-                    when (matchingIds.size) {
+                    val explicitlyRoutedHost = when (matchingIds.size) {
                         0 -> knownHosts.filter {
                             normalizedRoutedHostId?.let(it::hasKnownBaseIdentity) == true
                         }.singleOrNull()
                         1 -> matchingIds.single()
                         else -> null
+                    }
+                    explicitlyRoutedHost?.takeIf { explicitHost ->
+                        base == null ||
+                            matchingHosts.singleOrNull()?.hostId == explicitHost.hostId
                     }
                 }
                 base != null && hostSnapshotHasUniqueIds -> matchingHosts.singleOrNull()

@@ -1255,6 +1255,35 @@ class HostWorkspacesTest {
         assertTrue(exchanges.isEmpty())
         assertEquals(listOf<String?>(null), authorizations)
     }
+    @Test fun explicit_host_probe_with_ambiguous_shared_base_never_exchanges_or_sends_authorization() = runTest {
+        val sharedBase = "https://contended.relay.example.com"
+        val first = host.copy(hostId = "host-a", publicUrl = sharedBase, refresh = "refresh-a")
+        val second = host.copy(hostId = "host-b", publicUrl = sharedBase, refresh = "refresh-b")
+        val exchanges = mutableListOf<String>()
+        val authorizations = mutableListOf<String?>()
+        val client = hostAwareClient(
+            engine = MockEngine { request ->
+                when (request.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += "unexpected"
+                        respond("""{"token":"unexpected","expires_in":300}""", HttpStatusCode.OK, jsonHdr)
+                    }
+                    "/workspaces" -> {
+                        authorizations += request.headers[HttpHeaders.Authorization]
+                        respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            hosts = { listOf(first, second) },
+        )
+
+        SpecApi(client.client).listWorkspaces(sharedBase, "caller-token", hostId = first.hostId)
+
+        assertTrue(exchanges.isEmpty())
+        assertEquals(listOf<String?>(null), authorizations)
+    }
+
 
     @Test fun unscoped_route_rejects_duplicate_persisted_host_ids() = runTest {
         val base = "https://first.relay.example.com"
