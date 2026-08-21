@@ -74,29 +74,11 @@ fun HostConnection.hostBases(): List<String> =
 fun HostConnection.hostBase(): String = hostBases().firstOrNull().orEmpty()
 
 
-/** Whether [identity] is a route that remains eligible for this host. Stale
- * relay-direct aliases are intentionally excluded: only current routable bases
- * and persisted public aliases participate in request-route disambiguation. */
+/** Whether [identity] is any current or recorded base for this stable host. */
 internal fun HostConnection.hasKnownBaseIdentity(identity: String): Boolean =
-    hostBases().any { normalizedBaseUrl(it) == identity } ||
+    directUrl?.let(::normalizedBaseUrl) == identity ||
+        normalizedBaseUrl(publicUrl) == identity ||
         legacyPublicUrls.any { normalizedBaseUrl(it) == identity }
-
-/** Current routable bases take precedence over persisted aliases. This lets a
- * direct-only host reclaim an address that a relay host previously exposed as
- * an identity-only alias, without discarding unique legacy public routes. */
-internal fun knownHostsForBaseIdentities(
-    identities: Set<String>,
-    hosts: List<HostConnection>,
-): List<HostConnection> {
-    val current = hosts.filter { host ->
-        host.hostBases().any { normalizedBaseUrl(it) in identities }
-    }
-    return current.ifEmpty {
-        hosts.filter { host ->
-            host.legacyPublicUrls.any { normalizedBaseUrl(it) in identities }
-        }
-    }
-}
 
 /** Probe candidates in order and retain the base that answered. Authentication
  * failures requiring operator action and cancellation are not reachability
@@ -133,9 +115,11 @@ suspend fun reachableHostWorkspaces(
 ): Pair<String, List<WorkspaceInfo>> {
     val base = requestedBase.trimEnd('/')
     val baseIdentity = normalizedBaseUrl(base)
-    val matchingHosts = baseIdentity?.let { identity ->
-        knownHostsForBaseIdentities(setOf(identity), hosts)
-    }.orEmpty()
+    val matchingHosts = if (baseIdentity == null) {
+        emptyList()
+    } else {
+        hosts.filter { it.hasKnownBaseIdentity(baseIdentity) }
+    }
     val knownHost = when (matchingHosts.size) {
         0 -> return base to api.listWorkspaces(
             base,

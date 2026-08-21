@@ -1,29 +1,14 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.LegacyRouteOwnership
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
-import com.atomikpanda.groundcontrol.data.knownHostsForLegacyConnection
 import com.atomikpanda.groundcontrol.data.hasKnownBaseIdentity
+import com.atomikpanda.groundcontrol.data.legacyRouteOwnership
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class HostConnectionRouteMatchTest {
-    @Test fun stale_relay_direct_url_does_not_make_a_direct_only_host_ambiguous() {
-        val direct = "http://shared.lan:47190"
-        val relayHostWithStaleDirect = HostConnection(
-            hostId = "relay",
-            publicUrl = "https://relay.example",
-            refresh = "relay-refresh",
-            directUrl = direct,
-        )
-        val directOnlyHost = HostConnection(hostId = "direct", directUrl = direct)
-
-        val matches = listOf(relayHostWithStaleDirect, directOnlyHost)
-            .filter { it.hasKnownBaseIdentity(direct) }
-
-        assertEquals(listOf(directOnlyHost), matches)
-    }
-
     @Test fun unique_legacy_public_url_remains_a_known_route_when_no_current_base_matches() {
         val legacy = "https://retired.relay.example"
         val host = HostConnection(
@@ -36,7 +21,7 @@ class HostConnectionRouteMatchTest {
         assertEquals(listOf(host), listOf(host).filter { it.hasKnownBaseIdentity(legacy) })
     }
 
-    @Test fun legacy_workspace_route_prefers_a_current_direct_host_over_a_relay_alias() {
+    @Test fun shared_base_claimed_by_relay_alias_and_direct_host_is_ambiguous() {
         val retiredDirect = "http://shared.lan:47190"
         val relayHost = HostConnection(
             hostId = "relay",
@@ -53,8 +38,8 @@ class HostConnectionRouteMatchTest {
         )
 
         assertEquals(
-            listOf(directOnlyHost),
-            knownHostsForLegacyConnection(legacyWorkspace, listOf(relayHost, directOnlyHost)),
+            LegacyRouteOwnership.Ambiguous,
+            legacyRouteOwnership(legacyWorkspace, listOf(relayHost, directOnlyHost)),
         )
     }
 }
