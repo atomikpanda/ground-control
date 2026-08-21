@@ -6,7 +6,7 @@ import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.notify.buildReplyNotificationEvent
 import com.atomikpanda.groundcontrol.notify.needsYouNotificationId
 import com.atomikpanda.groundcontrol.notify.notificationThreadUri
-import com.atomikpanda.groundcontrol.notify.retiredReplyConnectionId
+import com.atomikpanda.groundcontrol.notify.retiredReplyConnectionIds
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -74,21 +74,21 @@ class ReplyWorkerIdentityTest {
         )
     }
 
-    @Test fun successful_completion_cancels_only_the_retired_notification_identity() {
-        assertEquals(
-            "retired",
-            retiredReplyConnectionId("retired", canonical, replySucceeded = true),
+    @Test fun successful_canonical_retry_cancels_all_retired_notification_identities() {
+        val canonicalWithMultipleRetiredIds = canonical.copy(
+            legacyConnectionIds = listOf("retired", "older-retired", canonical.id),
         )
+
         assertEquals(
-            null,
-            retiredReplyConnectionId(canonical.id, canonical, replySucceeded = true),
+            listOf("retired", "older-retired"),
+            retiredReplyConnectionIds(canonicalWithMultipleRetiredIds, replySucceeded = true),
         )
     }
 
-    @Test fun failed_completion_preserves_the_retired_notification_for_manual_retry() {
+    @Test fun failed_completion_preserves_retired_notification_identities_for_manual_retry() {
         assertEquals(
-            null,
-            retiredReplyConnectionId("retired", canonical, replySucceeded = false),
+            emptyList<String>(),
+            retiredReplyConnectionIds(canonical, replySucceeded = false),
         )
     }
 }
