@@ -8,9 +8,11 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 sealed interface NewThreadMessage {
@@ -40,7 +42,7 @@ fun canCreate(state: NewThreadUiState): Boolean =
 
 class NewThreadViewModel(
     private val repo: ThreadsRepository,
-    private val connectionsProvider: () -> List<WorkspaceConnection>,
+    private val connections: StateFlow<List<WorkspaceConnection>>,
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
@@ -48,9 +50,22 @@ class NewThreadViewModel(
     val state: StateFlow<NewThreadUiState> = _state.asStateFlow()
 
     private fun scope() = testScope ?: viewModelScope
+    private val connectionScope = testScope?.let {
+        CoroutineScope(it.coroutineContext + SupervisorJob())
+    } ?: viewModelScope
+
+    init {
+        connectionScope.launch { connections.collect(::applyConnections) }
+    }
 
     fun load() {
-        val conns = connectionsProvider()
+        applyConnections(connections.value, clearMessage = true)
+    }
+
+    private fun applyConnections(
+        conns: List<WorkspaceConnection>,
+        clearMessage: Boolean = false,
+    ) {
         _state.value = _state.value.copy(
             connections = conns,
             selectedConnectionId = _state.value.selectedConnectionId
@@ -58,7 +73,7 @@ class NewThreadViewModel(
                 ?.id
                 ?: defaultSelection(conns),
             isLoading = false,
-            message = null,
+            message = if (clearMessage) null else _state.value.message,
         )
     }
 
@@ -74,7 +89,7 @@ class NewThreadViewModel(
     fun create(): Job? {
         val s = _state.value
         if (!canCreate(s)) return null
-        val currentConnections = connectionsProvider()
+        val currentConnections = connections.value
         val selectedConnectionId = s.selectedConnectionId ?: return null
         val conn = currentConnections.findByConnectionId(selectedConnectionId) ?: return null
         _state.value = s.copy(

@@ -13,18 +13,16 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -88,6 +86,13 @@ import com.atomikpanda.groundcontrol.ui.tasks.TasksViewModel
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceScreen
 import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 internal fun newThreadRoute(connectionId: String?): String =
     if (connectionId != null) "newThread?connectionId=$connectionId" else "newThread"
@@ -162,10 +167,30 @@ internal fun connectionRouteResolution(
 internal fun hasConnectionSnapshot(connections: List<WorkspaceConnection>?): Boolean =
     connections != null
 
-/** Supplies the latest asynchronous connection snapshot to ViewModels with sync refresh APIs. */
+/** Supplies the latest app-owned connection snapshot to ViewModels with sync refresh APIs. */
 internal fun connectionSnapshotProvider(
-    connections: State<List<WorkspaceConnection>>,
+    connections: StateFlow<List<WorkspaceConnection>>,
 ): () -> List<WorkspaceConnection> = { connections.value }
+
+/** Activity-scoped connection state, stable across composition and Activity recreation. */
+internal class ConnectionSnapshotViewModel(
+    source: Flow<List<WorkspaceConnection>>,
+    testScope: CoroutineScope? = null,
+) : ViewModel() {
+    private val _snapshot = MutableStateFlow<List<WorkspaceConnection>?>(null)
+    val snapshot: StateFlow<List<WorkspaceConnection>?> = _snapshot.asStateFlow()
+    private val _connections = MutableStateFlow(emptyList<WorkspaceConnection>())
+    val connections: StateFlow<List<WorkspaceConnection>> = _connections.asStateFlow()
+
+    init {
+        (testScope ?: viewModelScope).launch {
+            source.collect {
+                _connections.value = it
+                _snapshot.value = it
+            }
+        }
+    }
+}
 
 internal fun <T> Result<T>.getOrNullOrRethrowCancellation(): T? =
     onFailure { if (it is CancellationException) throw it }.getOrNull()
@@ -243,6 +268,9 @@ fun GroundControlApp(
     // Activity-scoped (not per-NavBackStackEntry): shared by the Home sticky threads card and the
     // "threads" drill-in list so the loaded sections + live-poll loop survive navigating between
     // them (spec: ground-control-thread-findability).
+    val connectionSnapshots = viewModel {
+        ConnectionSnapshotViewModel(connRepo.connections)
+    }
     val messagesVm = viewModel {
         MessagesViewModel(threadsRepo, connRepo.connections)
     }
@@ -251,18 +279,15 @@ fun GroundControlApp(
     val settingsVm = viewModel {
         SettingsViewModel(connRepo, api, notificationsSetting, hostsRepo)
     }
-    // Null means DataStore has not emitted its first snapshot yet; routes must wait rather than
-    // mistake startup for a removed connection.
-    val connsForBadges: List<WorkspaceConnection>? by connRepo.connections
-        .collectAsStateWithLifecycle(initialValue = null)
+    // Null means the app-owned source has not emitted its first snapshot yet.
+    val connsForBadges by connectionSnapshots.snapshot.collectAsStateWithLifecycle()
     if (!hasConnectionSnapshot(connsForBadges)) {
         Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
         return
     }
     val badgeConnections = connsForBadges.orEmpty()
-    val currentConnections = rememberUpdatedState(badgeConnections)
-    val connectionsProvider = remember(currentConnections) {
-        connectionSnapshotProvider(currentConnections)
+    val connectionsProvider = remember(connectionSnapshots) {
+        connectionSnapshotProvider(connectionSnapshots.connections)
     }
     Scaffold(bottomBar = {
         val current by nav.currentBackStackEntryAsState()
@@ -604,7 +629,7 @@ fun GroundControlApp(
             }
             composable("capture") {
                 val vm = viewModel {
-                    NewThreadViewModel(threadsRepo, connectionsProvider = connectionsProvider)
+                    NewThreadViewModel(threadsRepo, connections = connectionSnapshots.connections)
                 }
                 NewThreadScreen(
                     vm,
@@ -629,7 +654,7 @@ fun GroundControlApp(
             ) { entry ->
                 val preselect = entry.arguments?.getString("connectionId")
                 val vm = viewModel {
-                    NewThreadViewModel(threadsRepo, connectionsProvider = connectionsProvider)
+                    NewThreadViewModel(threadsRepo, connections = connectionSnapshots.connections)
                 }
                 NewThreadScreen(
                     vm,

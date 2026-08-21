@@ -1,6 +1,6 @@
 package com.atomikpanda.groundcontrol
 
-import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -201,8 +201,8 @@ class CanonicalConnectionRoutesTest {
         assertTrue(hasConnectionSnapshot(emptyList()))
     }
 
-    @Test fun connection_snapshot_provider_reads_the_latest_collected_value() {
-        val collectedConnections = mutableStateOf(listOf(adopted))
+    @Test fun connection_snapshot_provider_reads_the_latest_app_owned_value() {
+        val collectedConnections = MutableStateFlow(listOf(adopted))
         val provider = connectionSnapshotProvider(collectedConnections)
         val replacement = adopted.copy(token = "replacement")
 

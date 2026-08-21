@@ -18,8 +18,10 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -50,7 +52,7 @@ class NewThreadViewModelTest {
     ): NewThreadViewModel =
         NewThreadViewModel(
             ThreadsRepository(SpecApi(HttpClient(MockEngine(handler)) { mshipDefaults() })),
-            connectionsProvider = { conns },
+            connections = MutableStateFlow(conns),
             testScope = scope,
         )
 
@@ -60,6 +62,24 @@ class NewThreadViewModelTest {
         assertTrue(s.connections.isEmpty())
         assertNull(s.selectedConnectionId)
         assertFalse(canCreate(s.copy(text = "hello")))
+    }
+
+    @Test fun connection_updates_repopulate_the_picker_while_the_screen_is_open() = runTest {
+        val connections = MutableStateFlow(emptyList<WorkspaceConnection>())
+        val vm = NewThreadViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine {
+                respond("""{"id":"new-thread-1","subject":"Subject","awaiting_reply":false,"messages":[]}""", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            connections = connections,
+            testScope = this,
+        )
+        runCurrent()
+
+        connections.value = listOf(conn("paired"))
+        runCurrent()
+
+        assertEquals(listOf(conn("paired")), vm.state.value.connections)
+        assertEquals("paired", vm.state.value.selectedConnectionId)
     }
 
     @Test fun single_connection_auto_selected() = runTest {
@@ -142,15 +162,15 @@ class NewThreadViewModelTest {
     }
 
     @Test fun stale_selection_scrubbed_on_reload() = runTest {
-        var conns = listOf(conn("1"), conn("2"), conn("3"))
+        val conns = MutableStateFlow(listOf(conn("1"), conn("2"), conn("3")))
         val vm = NewThreadViewModel(
             ThreadsRepository(SpecApi(HttpClient(MockEngine { respond("{}", HttpStatusCode.OK, jsonHdr) }) { mshipDefaults() })),
-            connectionsProvider = { conns },
+            connections = conns,
             testScope = this,
         )
         vm.load(); vm.onSelectConnection("1")
         assertEquals("1", vm.state.value.selectedConnectionId)
-        conns = listOf(conn("2"), conn("3"))  // "1" removed
+        conns.value = listOf(conn("2"), conn("3"))  // "1" removed
         vm.load()
         assertNull(vm.state.value.selectedConnectionId)  // stale dropped; >1 remain → no auto-default
     }
@@ -164,7 +184,7 @@ class NewThreadViewModelTest {
             "ws",
             legacyConnectionIds = listOf(retired.id),
         )
-        var connections = listOf(retired)
+        val connections = MutableStateFlow(listOf(retired))
         var postedHost: String? = null
         val vm = NewThreadViewModel(
             ThreadsRepository(
@@ -179,12 +199,12 @@ class NewThreadViewModelTest {
                     }) { mshipDefaults() },
                 ),
             ),
-            connectionsProvider = { connections },
+            connections = connections,
             testScope = this,
         )
         vm.load()
 
-        connections = listOf(canonical)
+        connections.value = listOf(canonical)
         vm.onTextChange("hello")
         vm.create()?.join()
 
