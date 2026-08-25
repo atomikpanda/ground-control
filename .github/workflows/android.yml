@@ -39,7 +39,7 @@ jobs:
           fi
 
           previous_run="$(
-            curl --fail --silent --show-error \
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/android.yml/runs?event=push&head_sha=$PREVIOUS_SHA&per_page=1"
@@ -55,24 +55,34 @@ jobs:
           fi
 
           previous_tag="v0.1.$previous_run_number"
+          expected_previous_apk="ground-control-$previous_tag.apk"
           attempt=1
           while [ "$attempt" -le 120 ]; do
             release_status="$(
-              curl --silent --output /dev/null --write-out "%{http_code}" \
+              curl --silent --output /dev/null --write-out "%{http_code}" --connect-timeout 10 --max-time 30 \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
                 "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$previous_tag"
             )"
             if [ "$release_status" = "200" ]; then
-              exit 0
-            fi
-            if [ "$release_status" != "404" ]; then
+              previous_release="$(
+                curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$previous_tag"
+              )"
+              if jq -e --arg asset "$expected_previous_apk" 'any(.assets[]?; .name == $asset)' \
+                >/dev/null <<<"$previous_release"; then
+                exit 0
+              fi
+              echo "Previous Android release $previous_tag lacks $expected_previous_apk; waiting for publication."
+            elif [ "$release_status" != "404" ]; then
               echo "Unable to check release $previous_tag (HTTP $release_status)." >&2
               exit 1
             fi
 
             previous_run="$(
-              curl --fail --silent --show-error \
+              curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
                 "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$previous_run_id"
@@ -82,7 +92,7 @@ jobs:
             previous_run_url="$(jq -r '.html_url // empty' <<<"$previous_run")"
             if [ "$previous_run_status" = "completed" ]; then
               previous_jobs="$(
-                curl --fail --silent --show-error \
+                curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
                   -H "Accept: application/vnd.github+json" \
                   -H "Authorization: Bearer $GITHUB_TOKEN" \
                   "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$previous_run_id/jobs?per_page=100"
@@ -94,14 +104,14 @@ jobs:
                 echo "Previous Android run $previous_run_url was non-publishable because verify concluded $previous_verify_conclusion; proceeding."
                 exit 0
               fi
-              echo "Previous Android run $previous_run_url completed with verify conclusion ${previous_verify_conclusion:-unknown} but did not publish $previous_tag. Rerun or repair that predecessor." >&2
+              echo "Previous Android run $previous_run_url completed with verify conclusion ${previous_verify_conclusion:-unknown} but did not publish $expected_previous_apk. Rerun or repair that predecessor." >&2
               exit 1
             fi
 
             sleep 15
             attempt=$((attempt + 1))
           done
-          echo "Timed out waiting 30 minutes for previous Android run $previous_run_url to publish $previous_tag; rerun or repair that predecessor." >&2
+          echo "Timed out waiting 30 minutes for previous Android run $previous_run_url to publish $expected_previous_apk; rerun or repair that predecessor." >&2
           exit 1
 
   release:
@@ -118,6 +128,7 @@ jobs:
       VERSION_NAME: 0.1.${{ github.run_number }}
       TAG_NAME: v0.1.${{ github.run_number }}
       APK_NAME: ground-control-v0.1.${{ github.run_number }}.apk
+      EXPECTED_SIGNING_CERT_SHA256: da7436c0408fea9eed851f4c1737b7be5af07143353251ce685e3340836f3262
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -163,14 +174,38 @@ jobs:
         run: |
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
-          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/$APK_NAME"
+          signing_certificate_sha256="$(
+            "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/$APK_NAME" |
+              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          if [ "$signing_certificate_sha256" != "$EXPECTED_SIGNING_CERT_SHA256" ]; then
+            echo "Release APK signing certificate does not match the expected public SHA-256." >&2
+            exit 1
+          fi
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -o pipefail
+          highest_version="$(
+            git ls-remote --tags --refs origin 'refs/tags/v0.1.*' |
+              sed -n 's#.*refs/tags/v0\.1\.\([0-9][0-9]*\)$#\1#p' |
+              sort -n |
+              tail -n 1
+          )"
+          if [ -n "$highest_version" ] && [ "$highest_version" -gt "$VERSION_CODE" ]; then
+            echo "Release $TAG_NAME is superseded by v0.1.$highest_version; skipping historical publication."
+            exit 0
+          fi
+
           asset="$RUNNER_TEMP/$APK_NAME#$APK_NAME"
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+          if release_is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
             gh release upload "$TAG_NAME" "$asset" --clobber
+            if [ "$release_is_draft" = "true" ]; then
+              gh release edit "$TAG_NAME" --draft=false
+            fi
           elif git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME"; then
             gh release create "$TAG_NAME" "$asset" \
               --verify-tag \

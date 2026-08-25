@@ -53,6 +53,7 @@ To generate and inspect a recoverable release key, generate restricted password 
 local shell, then run:
 
 ```bash
+set -euo pipefail
 install -d -m 700 "$HOME/.mothership/keys"
 ANDROID_KEYSTORE_PASSWORD="$(openssl rand -hex 32)"
 ANDROID_KEY_PASSWORD="$(openssl rand -hex 32)"
@@ -78,8 +79,8 @@ keytool -list -v \
   -keystore "$HOME/.mothership/keys/ground-control-release.jks" \
   -storepass "$ANDROID_KEYSTORE_PASSWORD"
 gh secret set -f "$HOME/.mothership/keys/ground-control-release.env"
-gh secret set ANDROID_KEYSTORE_BASE64 \
-  --body "$(base64 -w 0 "$HOME/.mothership/keys/ground-control-release.jks")"
+base64 -w 0 "$HOME/.mothership/keys/ground-control-release.jks" |
+  gh secret set ANDROID_KEYSTORE_BASE64
 ```
 
 Private key material and credentials must never be committed, logged, sent to pull-request
