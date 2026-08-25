@@ -4,12 +4,39 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
+enum class InboxFilter(val wireValue: String) {
+    @SerialName("active") ACTIVE("active"),
+    @SerialName("archived") ARCHIVED("archived"),
+    @SerialName("all") ALL("all"),
+}
+
+@Serializable
+enum class InboxState(val wireValue: String) {
+    @SerialName("active") ACTIVE("active"),
+    @SerialName("archived") ARCHIVED("archived"),
+}
+
+@Serializable
+enum class InboxAction(val wireValue: String) {
+    @SerialName("archive") ARCHIVE("archive"),
+    @SerialName("restore") RESTORE("restore"),
+    @SerialName("pin") PIN("pin"),
+    @SerialName("unpin") UNPIN("unpin"),
+}
+
+@Serializable
+data class InboxMutationBody(@SerialName("mutation_id") val mutationId: String)
+
+@Serializable
 data class SpecSummary(
     val id: String,
     val title: String,
     val status: String,
     @SerialName("task_slug") val taskSlug: String? = null,
     @SerialName("affected_repos") val affectedRepos: List<String> = emptyList(),
+    @SerialName("inbox_state") val inboxState: InboxState = InboxState.ACTIVE,
+    @SerialName("archive_reason") val archiveReason: String? = null,
+    val pinned: Boolean = false,
 )
 
 @Serializable

@@ -22,6 +22,9 @@ data class ThreadSummary(
     // membership, else indirect via spec_id/task_slug), or null when unowned. Drives the
     // messages-surface grouping (null -> the "Other" group).
     @SerialName("work_item_id") val workItemId: String? = null,
+    @SerialName("inbox_state") val inboxState: InboxState = InboxState.ACTIVE,
+    @SerialName("archive_reason") val archiveReason: String? = null,
+    val pinned: Boolean = false,
 )
 
 @Serializable
@@ -58,6 +61,9 @@ data class Thread(
     @SerialName("agent_seen_at") val agentSeenAt: String? = null,
     @SerialName("work_item_id") val workItemId: String? = null,
     @SerialName("work_item") val workItem: WorkItemRef? = null,
+    @SerialName("inbox_state") val inboxState: InboxState = InboxState.ACTIVE,
+    @SerialName("archive_reason") val archiveReason: String? = null,
+    val pinned: Boolean = false,
 )
 
 /** Compact work-item reference embedded on a Thread, so a thread that belongs to a

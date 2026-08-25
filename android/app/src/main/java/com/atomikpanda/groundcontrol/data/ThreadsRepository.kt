@@ -1,5 +1,7 @@
 package com.atomikpanda.groundcontrol.data
 
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.InboxFilter
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
@@ -13,10 +15,14 @@ data class WorkspaceThreads(
 )
 
 class ThreadsRepository(private val api: SpecApi) {
-    suspend fun listAllThreads(connections: List<WorkspaceConnection>): List<WorkspaceThreads> =
+    suspend fun listAllThreads(
+        connections: List<WorkspaceConnection>,
+        filter: InboxFilter = InboxFilter.ALL,
+        query: String? = null,
+    ): List<WorkspaceThreads> =
         coroutineScope {
             connections.map { conn ->
-                async { WorkspaceThreads(conn, runCatching { api.listThreads(conn) }) }
+                async { WorkspaceThreads(conn, runCatching { api.listThreads(conn, filter, query) }) }
             }.awaitAll()
         }
 
@@ -40,6 +46,13 @@ class ThreadsRepository(private val api: SpecApi) {
     suspend fun waitForChange(conn: WorkspaceConnection, since: String, timeoutSeconds: Int) =
         api.listThreadsWait(conn, since, timeoutSeconds)
     suspend fun listThreadsFor(conn: WorkspaceConnection) = api.listThreads(conn)
+
+    suspend fun mutateThreadInbox(
+        conn: WorkspaceConnection,
+        id: String,
+        action: InboxAction,
+        mutationId: String,
+    ) = api.mutateThreadInbox(conn, id, action, mutationId)
 
     /** Recent task-journal entries for a thread's linked task (MOS-224 activity strip). */
     suspend fun getJournal(conn: WorkspaceConnection, slug: String): List<JournalEntry> =

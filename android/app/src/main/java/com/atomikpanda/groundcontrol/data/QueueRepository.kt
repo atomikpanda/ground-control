@@ -1,6 +1,7 @@
 // app/src/main/java/com/atomikpanda/groundcontrol/data/QueueRepository.kt
 package com.atomikpanda.groundcontrol.data
 
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.home.displayName
@@ -116,4 +117,11 @@ class QueueRepository(private val api: SpecApi) {
     /** Answer a decision: append the chosen option's text to the decision's thread. */
     suspend fun answerDecision(conn: WorkspaceConnection, threadId: String, text: String): Thread =
         api.postMessage(conn, threadId, text)
+
+    suspend fun mutateThreadInbox(
+        conn: WorkspaceConnection,
+        threadId: String,
+        action: InboxAction,
+        mutationId: String,
+    ): Thread = api.mutateThreadInbox(conn, threadId, action, mutationId)
 }
