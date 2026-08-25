@@ -34,6 +34,58 @@ Early scaffold. **Android first** (Kotlin + Jetpack Compose); iOS (Swift + Swift
 Part of the Mothership family — coordinated via
 [`mship-workspace`](https://github.com/atomikpanda/mship-workspace).
 
+## Android releases
+
+Every successful merge to `main` publishes `ground-control-v0.1.N.apk` under
+[GitHub Releases](https://github.com/atomikpanda/ground-control/releases). In
+[Obtainium](https://obtainium.imranr.dev/), add
+`https://github.com/atomikpanda/ground-control` as the source URL; it selects the APK asset
+from the latest release.
+
+Android updates must use the same signing certificate. Back up the local key at
+`~/.mothership/keys/ground-control-release.jks` and its credentials at
+`~/.mothership/keys/ground-control-release.env`; both files must be mode `0600`.
+`ANDROID_KEYSTORE_BASE64` is the single-line base64 JKS. The
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, and `ANDROID_KEY_ALIAS` secrets hold
+the store password, key password, and alias.
+
+To generate and inspect a recoverable release key, generate restricted password values in your
+local shell, then run:
+
+```bash
+set -euo pipefail
+install -d -m 700 "$HOME/.mothership/keys"
+ANDROID_KEYSTORE_PASSWORD="$(openssl rand -hex 32)"
+ANDROID_KEY_PASSWORD="$(openssl rand -hex 32)"
+keytool -genkeypair -v \
+  -storetype JKS \
+  -keystore "$HOME/.mothership/keys/ground-control-release.jks" \
+  -alias ground-control \
+  -keyalg RSA -keysize 4096 -validity 10000 \
+  -dname "CN=Ground Control, O=Atomik Panda" \
+  -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+  -keypass "$ANDROID_KEY_PASSWORD"
+(
+  umask 077
+  cat > "$HOME/.mothership/keys/ground-control-release.env" <<EOF
+ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD
+ANDROID_KEY_ALIAS=ground-control
+EOF
+)
+chmod 600 "$HOME/.mothership/keys/ground-control-release.jks" \
+  "$HOME/.mothership/keys/ground-control-release.env"
+keytool -list -v \
+  -keystore "$HOME/.mothership/keys/ground-control-release.jks" \
+  -storepass "$ANDROID_KEYSTORE_PASSWORD"
+gh secret set -f "$HOME/.mothership/keys/ground-control-release.env"
+base64 -w 0 "$HOME/.mothership/keys/ground-control-release.jks" |
+  gh secret set ANDROID_KEYSTORE_BASE64
+```
+
+Private key material and credentials must never be committed, logged, sent to pull-request
+jobs, or copied into agent context.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

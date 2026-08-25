@@ -1,0 +1,226 @@
+name: Android
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@017a9effdb900e5b5b2fddfb590a105619dca3c3 # v4.4.2
+      - name: Verify Android app
+        working-directory: android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+  wait_for_previous_release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PREVIOUS_SHA: ${{ github.event.before }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for the previous Android release
+        run: |
+          if [ "$PREVIOUS_SHA" = "0000000000000000000000000000000000000000" ]; then
+            exit 0
+          fi
+
+          previous_run="$(
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/android.yml/runs?event=push&head_sha=$PREVIOUS_SHA&per_page=1"
+          )"
+          previous_run_id="$(jq -r '.workflow_runs[0].id // empty' <<<"$previous_run")"
+          previous_run_number="$(jq -r '.workflow_runs[0].run_number // empty' <<<"$previous_run")"
+          previous_run_status="$(jq -r '.workflow_runs[0].status // empty' <<<"$previous_run")"
+          previous_run_conclusion="$(jq -r '.workflow_runs[0].conclusion // empty' <<<"$previous_run")"
+          previous_run_url="$(jq -r '.workflow_runs[0].html_url // empty' <<<"$previous_run")"
+          if [ -z "$previous_run_id" ]; then
+            echo "No previous Android workflow run; proceeding."
+            exit 0
+          fi
+
+          previous_tag="v0.1.$previous_run_number"
+          expected_previous_apk="ground-control-$previous_tag.apk"
+          attempt=1
+          while [ "$attempt" -le 120 ]; do
+            release_status="$(
+              curl --silent --output /dev/null --write-out "%{http_code}" --connect-timeout 10 --max-time 30 \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$previous_tag"
+            )"
+            if [ "$release_status" = "200" ]; then
+              previous_release="$(
+                curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$previous_tag"
+              )"
+              if jq -e --arg asset "$expected_previous_apk" 'any(.assets[]?; .name == $asset)' \
+                >/dev/null <<<"$previous_release"; then
+                exit 0
+              fi
+              echo "Previous Android release $previous_tag lacks $expected_previous_apk; waiting for publication."
+            elif [ "$release_status" != "404" ]; then
+              echo "Unable to check release $previous_tag (HTTP $release_status)." >&2
+              exit 1
+            fi
+
+            previous_run="$(
+              curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$previous_run_id"
+            )"
+            previous_run_status="$(jq -r '.status // empty' <<<"$previous_run")"
+            previous_run_conclusion="$(jq -r '.conclusion // empty' <<<"$previous_run")"
+            previous_run_url="$(jq -r '.html_url // empty' <<<"$previous_run")"
+            if [ "$previous_run_status" = "completed" ]; then
+              previous_jobs="$(
+                curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$previous_run_id/jobs?per_page=100"
+              )"
+              previous_verify_conclusion="$(
+                jq -r '(.jobs | map(select(.name == "verify")) | first | .conclusion) // empty' <<<"$previous_jobs"
+              )"
+              if [ -n "$previous_verify_conclusion" ] && [ "$previous_verify_conclusion" != "success" ]; then
+                echo "Previous Android run $previous_run_url was non-publishable because verify concluded $previous_verify_conclusion; proceeding."
+                exit 0
+              fi
+              echo "Previous Android run $previous_run_url completed with verify conclusion ${previous_verify_conclusion:-unknown} but did not publish $expected_previous_apk. Rerun or repair that predecessor." >&2
+              exit 1
+            fi
+
+            sleep 15
+            attempt=$((attempt + 1))
+          done
+          echo "Timed out waiting 30 minutes for previous Android run $previous_run_url to publish $expected_previous_apk; rerun or repair that predecessor." >&2
+          exit 1
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [verify, wait_for_previous_release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: ground-control-android-release
+      cancel-in-progress: false
+    env:
+      VERSION_CODE: ${{ github.run_number }}
+      VERSION_NAME: 0.1.${{ github.run_number }}
+      TAG_NAME: v0.1.${{ github.run_number }}
+      APK_NAME: ground-control-v0.1.${{ github.run_number }}.apk
+      EXPECTED_SIGNING_CERT_SHA256: da7436c0408fea9eed851f4c1737b7be5af07143353251ce685e3340836f3262
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@017a9effdb900e5b5b2fddfb590a105619dca3c3 # v4.4.2
+      - name: Validate signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          for secret in KEYSTORE_BASE64 STORE_PASSWORD KEY_PASSWORD KEY_ALIAS; do
+            if [ -z "${!secret}" ]; then
+              echo "Required signing secret is missing: $secret" >&2
+              exit 1
+            fi
+          done
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ground-control-release.jks"
+      - name: Assemble signed release APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/ground-control-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          ./gradlew assembleRelease \
+            -PversionCode="$VERSION_CODE" \
+            -PversionName="$VERSION_NAME" \
+            --stacktrace
+      - name: Stage release APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/$APK_NAME"
+      - name: Verify APK signature
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          signing_certificate_sha256="$(
+            "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/$APK_NAME" |
+              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          if [ "$signing_certificate_sha256" != "$EXPECTED_SIGNING_CERT_SHA256" ]; then
+            echo "Release APK signing certificate does not match the expected public SHA-256." >&2
+            exit 1
+          fi
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          highest_version="$(
+            git ls-remote --tags --refs origin 'refs/tags/v0.1.*' |
+              sed -n 's#.*refs/tags/v0\.1\.\([0-9][0-9]*\)$#\1#p' |
+              sort -n |
+              tail -n 1
+          )"
+          if [ -n "$highest_version" ] && [ "$highest_version" -gt "$VERSION_CODE" ]; then
+            echo "Release $TAG_NAME is superseded by v0.1.$highest_version; skipping historical publication."
+            exit 0
+          fi
+
+          asset="$RUNNER_TEMP/$APK_NAME#$APK_NAME"
+          if release_is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            gh release upload "$TAG_NAME" "$asset" --clobber
+            if [ "$release_is_draft" = "true" ]; then
+              gh release edit "$TAG_NAME" --draft=false
+            fi
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME"; then
+            gh release create "$TAG_NAME" "$asset" \
+              --verify-tag \
+              --title "$TAG_NAME" \
+              --generate-notes
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG_NAME" "$GITHUB_SHA"
+            git push origin "$TAG_NAME"
+            gh release create "$TAG_NAME" "$asset" \
+              --verify-tag \
+              --title "$TAG_NAME" \
+              --generate-notes
+          fi
+      - name: Remove release credentials and APK
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ground-control-release.jks" "$RUNNER_TEMP/$APK_NAME"

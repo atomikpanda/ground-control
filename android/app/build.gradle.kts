@@ -6,6 +6,23 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val releaseVersionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 1
+val releaseVersionName = providers.gradleProperty("versionName").orNull ?: "0.1.0"
+val releaseKeystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
+val releaseStorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull
+val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
+val releaseSigningValues = listOf(
+    releaseKeystorePath,
+    releaseStorePassword,
+    releaseKeyPassword,
+    releaseKeyAlias,
+)
+val releaseSigningRequested = releaseSigningValues.any { !it.isNullOrBlank() }
+require(!releaseSigningRequested || releaseSigningValues.all { !it.isNullOrBlank() }) {
+    "Release signing requires ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_PASSWORD, and ANDROID_KEY_ALIAS"
+}
+
 android {
     namespace = "com.atomikpanda.groundcontrol"
     compileSdk = 34
@@ -14,14 +31,27 @@ android {
         applicationId = "com.atomikpanda.groundcontrol"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    signingConfigs {
+        if (releaseSigningRequested) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseSigningRequested) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {

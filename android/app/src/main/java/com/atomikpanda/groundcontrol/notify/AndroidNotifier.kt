@@ -1,9 +1,11 @@
 package com.atomikpanda.groundcontrol.notify
 
+import android.Manifest
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -11,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.app.RemoteInput
 import androidx.core.content.LocusIdCompat
+import androidx.core.content.ContextCompat
 import com.atomikpanda.groundcontrol.MainActivity
 import com.atomikpanda.groundcontrol.data.buildJson
 import kotlinx.serialization.encodeToString
@@ -41,6 +44,10 @@ internal class AndroidNotifier(private val context: Context) : Notifier, ReplyNo
                 ?.getNotificationChannel(NotificationChannels.NEEDS_YOU)
                 ?.importance
         } else null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return false
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled() ||
             !needsYouChannelAllowsNotifications(Build.VERSION.SDK_INT, channelImportance)
         ) return false
