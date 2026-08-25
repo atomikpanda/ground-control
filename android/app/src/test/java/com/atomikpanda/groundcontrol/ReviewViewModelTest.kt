@@ -218,8 +218,12 @@ class ReviewViewModelTest {
                 }
                 request.url.encodedPath.endsWith("/items/wi-1") &&
                     request.method == HttpMethod.Get -> {
-                    if (request.url.host == "new") replacementLoads += 1
-                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                    if (request.url.host == "new") {
+                        replacementLoads += 1
+                        respond(itemJson.replace("\"title\":\"T\"", "\"title\":\"Replacement\""), HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                    }
                 }
                 request.url.encodedPath.endsWith("/tasks/a") ->
                     respond(taskJson, HttpStatusCode.OK, jsonHdr)
@@ -242,7 +246,10 @@ class ReviewViewModelTest {
 
         connections.value = ConnectionState.Ready(listOf(replacement))
         runCurrent()
-        vm.state.first { replacementLoads == 1 && it is ReviewUiState.Content }
+        vm.state.first {
+            (it as? ReviewUiState.Content)?.c?.item?.title == "Replacement"
+        }
+        assertEquals(1, replacementLoads)
 
         releaseOldRequest.complete(Unit)
         staleRequest.join()

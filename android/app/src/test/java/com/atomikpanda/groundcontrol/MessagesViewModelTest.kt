@@ -26,10 +26,8 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -633,6 +631,7 @@ class MessagesViewModelTest {
         val resumeMutexHeld = CompletableDeferred<Unit>()
         var oldLoads = 0
         var newLoads = 0
+        val newLoadStarted = CompletableDeferred<Unit>()
         val vm = MessagesViewModel(repoWith { request ->
             when {
                 request.url.host == "old" && request.url.encodedPath.endsWith("/threads") -> {
@@ -650,6 +649,7 @@ class MessagesViewModelTest {
                 }
                 request.url.host == "new" && request.url.encodedPath.endsWith("/threads") -> {
                     newLoads += 1
+                    newLoadStarted.complete(Unit)
                     respond(threeThreadsJson, HttpStatusCode.OK, jsonHdr)
                 }
                 else -> respond("[]", HttpStatusCode.OK, jsonHdr)
@@ -688,14 +688,13 @@ class MessagesViewModelTest {
         holdHandoffCompletion.await()
         holdResume.await()
         refresh.join()
-        withTimeout(1_000) {
-            var replacementOwner = vm.ownerForTest(nextReady.id)
-            while (replacementOwner == null) {
-                delay(1)
-                replacementOwner = vm.ownerForTest(nextReady.id)
-            }
-            replacementOwner.snapshot.first { it.phase == MessageConnectionSnapshot.Phase.READY }
-        }
+        newLoadStarted.await()
+        runCurrent()
+        val replacementOwner = checkNotNull(vm.ownerForTest(nextReady.id))
+        assertEquals(
+            MessageConnectionSnapshot.Phase.READY,
+            replacementOwner.snapshot.first { it.phase == MessageConnectionSnapshot.Phase.READY }.phase,
+        )
 
         assertEquals(nextReady, vm.ownerSnapshot(nextReady.id)?.connection)
         assertEquals(MessageConnectionSnapshot.Phase.READY, vm.ownerSnapshot(nextReady.id)?.phase)
