@@ -21,7 +21,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -208,6 +207,7 @@ class ReviewViewModelTest {
         val oldRequestStarted = CompletableDeferred<Unit>()
         val releaseOldRequest = CompletableDeferred<Unit>()
         var replacementLoads = 0
+        val replacementLoadStarted = CompletableDeferred<Unit>()
         val handler: MockRequestHandler = { request ->
             when {
                 request.url.encodedPath.endsWith("/threads/t1/messages") &&
@@ -218,7 +218,10 @@ class ReviewViewModelTest {
                 }
                 request.url.encodedPath.endsWith("/items/wi-1") &&
                     request.method == HttpMethod.Get -> {
-                    if (request.url.host == "new") replacementLoads += 1
+                    if (request.url.host == "new") {
+                        replacementLoads += 1
+                        replacementLoadStarted.complete(Unit)
+                    }
                     respond(itemJson, HttpStatusCode.OK, jsonHdr)
                 }
                 request.url.encodedPath.endsWith("/tasks/a") ->
@@ -242,7 +245,10 @@ class ReviewViewModelTest {
 
         connections.value = ConnectionState.Ready(listOf(replacement))
         runCurrent()
-        vm.state.first { replacementLoads == 1 && it is ReviewUiState.Content }
+        replacementLoadStarted.await()
+        runCurrent()
+        assertEquals(1, replacementLoads)
+        assertTrue(vm.state.value is ReviewUiState.Content)
 
         releaseOldRequest.complete(Unit)
         staleRequest.join()
