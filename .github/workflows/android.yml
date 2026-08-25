@@ -171,17 +171,58 @@ jobs:
       - name: Stage release APK
         run: cp android/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/$APK_NAME"
       - name: Verify APK signature
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
+          set -o pipefail
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
-          signing_certificate_sha256="$(
-            "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/$APK_NAME" |
-              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+          command -v openssl >/dev/null
+
+          apk_certificate_pem="$(
+            "$APKSIGNER" verify --verbose --print-certs-pem "$RUNNER_TEMP/$APK_NAME" |
+              sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p'
+          )"
+          if [ -z "$apk_certificate_pem" ]; then
+            echo "apksigner verified the APK but returned no signer certificate." >&2
+            exit 1
+          fi
+          apk_signer_count="$(
+            printf '%s\n' "$apk_certificate_pem" |
+              awk '/^-----BEGIN CERTIFICATE-----$/ { count++ } END { print count + 0 }'
+          )"
+          if [ "$apk_signer_count" -ne 1 ]; then
+            echo "Expected exactly one APK signer certificate; found $apk_signer_count." >&2
+            exit 1
+          fi
+          apk_certificate_sha256="$(
+            printf '%s\n' "$apk_certificate_pem" |
+              openssl x509 -noout -fingerprint -sha256 |
+              sed -n 's/^sha256 Fingerprint=//Ip' |
               tr -d ':' |
               tr '[:upper:]' '[:lower:]'
           )"
-          if [ "$signing_certificate_sha256" != "$EXPECTED_SIGNING_CERT_SHA256" ]; then
-            echo "Release APK signing certificate does not match the expected public SHA-256." >&2
+          keystore_certificate_sha256="$(
+            keytool -exportcert -rfc \
+              -keystore "$RUNNER_TEMP/ground-control-release.jks" \
+              -storepass "$STORE_PASSWORD" \
+              -alias "$KEY_ALIAS" |
+              openssl x509 -noout -fingerprint -sha256 |
+              sed -n 's/^sha256 Fingerprint=//Ip' |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          if [ -z "$apk_certificate_sha256" ] || [ -z "$keystore_certificate_sha256" ]; then
+            echo "Could not compute the APK or keystore signing certificate SHA-256." >&2
+            exit 1
+          fi
+          if [ "$keystore_certificate_sha256" != "$EXPECTED_SIGNING_CERT_SHA256" ]; then
+            echo "Configured release keystore certificate does not match the pinned public SHA-256." >&2
+            exit 1
+          fi
+          if [ "$apk_certificate_sha256" != "$EXPECTED_SIGNING_CERT_SHA256" ]; then
+            echo "Release APK signing certificate does not match the pinned public SHA-256." >&2
             exit 1
           fi
       - name: Publish GitHub Release
