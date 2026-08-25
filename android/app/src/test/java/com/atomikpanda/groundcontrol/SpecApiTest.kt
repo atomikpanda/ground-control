@@ -177,9 +177,9 @@ class SpecApiTest {
         }
     }
     @Test fun list_inbox_requests_encode_filter_and_search_without_reclassifying() = runTest {
-        val encodedQueries = mutableListOf<String>()
+        val parameters = mutableListOf<Pair<String?, String?>>()
         val api = SpecApi(client { req ->
-            encodedQueries += req.url.encodedQuery
+            parameters += req.url.parameters["inbox"] to req.url.parameters["q"]
             respond(
                 when {
                     req.url.encodedPath.endsWith("/specs") ->
@@ -201,10 +201,10 @@ class SpecApiTest {
         assertEquals("manual", threads.single().archiveReason)
         assertEquals(
             listOf(
-                "inbox=archived&q=needs%20review%20%26%20more",
-                "inbox=active&q=needs%20review%20%26%20more",
+                "archived" to "needs review & more",
+                "active" to "needs review & more",
             ),
-            encodedQueries,
+            parameters,
         )
     }
 
