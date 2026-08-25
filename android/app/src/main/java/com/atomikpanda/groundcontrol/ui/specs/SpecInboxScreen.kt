@@ -132,6 +132,13 @@ fun SpecInboxScreen(vm: SpecInboxViewModel, onSpecClick: (connectionId: String, 
     }
 }
 
+/** Inbox action that remains effective after pin precedence is applied. */
+internal fun specInboxAction(spec: SpecSummary): InboxAction? = when {
+    spec.inboxState == InboxTab.ARCHIVED.state -> InboxAction.RESTORE
+    spec.pinned -> null
+    else -> InboxAction.ARCHIVE
+}
+
 /** Direct labels make the durable inbox actions available to TalkBack and keyboard users. */
 @Composable
 private fun SpecInboxRow(
@@ -147,15 +154,10 @@ private fun SpecInboxRow(
                 TextButton(onClick = { onAction(if (spec.pinned) InboxAction.UNPIN else InboxAction.PIN) }) {
                     Text(if (spec.pinned) "Unpin" else "Pin")
                 }
-                TextButton(
-                    onClick = {
-                        onAction(
-                            if (spec.inboxState == InboxTab.ARCHIVED.state) InboxAction.RESTORE
-                            else InboxAction.ARCHIVE,
-                        )
-                    },
-                ) {
-                    Text(if (spec.inboxState == InboxTab.ARCHIVED.state) "Restore" else "Archive")
+                specInboxAction(spec)?.let { action ->
+                    TextButton(onClick = { onAction(action) }) {
+                        Text(if (action == InboxAction.RESTORE) "Restore" else "Archive")
+                    }
                 }
             }
         },

@@ -323,4 +323,43 @@ class SpecInboxViewModelTest {
         assertEquals(listOf("fresh"), specIds(vm))
     }
 
+    @Test fun lifecycle_archived_spec_restored_to_active_stays_in_active_inbox() = runTest {
+        val archived = SpecRepository(SpecApi(HttpClient(MockEngine {
+            respond(
+                """[{"id":"restored","title":"Restored","status":"archived","inbox_state":"active"}]""",
+                HttpStatusCode.OK,
+                jsonHdr,
+            )
+        }) { mshipDefaults() }))
+        val vm = SpecInboxViewModel(archived, {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+
+        vm.refresh()?.join()
+
+        val groups = (vm.state.value as InboxUiState.Content).sections.single().groups.getOrThrow()
+        assertEquals(listOf(SpecGroup.ARCHIVED), groups.map { it.group })
+        assertEquals(listOf("restored"), groups.single().specs.map { it.id })
+    }
+
+    @Test fun lifecycle_archived_spec_with_archived_inbox_stays_in_archived_tab() = runTest {
+        val archived = SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+            val inboxState = request.url.parameters["inbox"] ?: "active"
+            respond(
+                """[{"id":"archived","title":"Archived","status":"archived","inbox_state":"$inboxState"}]""",
+                HttpStatusCode.OK,
+                jsonHdr,
+            )
+        }) { mshipDefaults() }))
+        val vm = SpecInboxViewModel(archived, {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+
+        vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
+
+        val groups = (vm.state.value as InboxUiState.Content).sections.single().groups.getOrThrow()
+        assertEquals(listOf(SpecGroup.ARCHIVED), groups.map { it.group })
+        assertEquals(listOf("archived"), groups.single().specs.map { it.id })
+    }
+
 }

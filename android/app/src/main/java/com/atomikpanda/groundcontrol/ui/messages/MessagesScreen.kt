@@ -286,6 +286,13 @@ private fun WorkItemGroupHeader(group: WorkItemThreadGroup) {
     }
 }
 
+/** Inbox action that remains effective after pin/attention precedence is applied. */
+internal fun threadInboxAction(thread: ThreadSummary): InboxAction? = when {
+    thread.inboxState == InboxTab.ARCHIVED.state -> InboxAction.RESTORE
+    thread.pinned || thread.needsYou || thread.needsDecision -> null
+    else -> InboxAction.ARCHIVE
+}
+
 /** One row with direct accessible inbox actions; lifecycle status is display-only. */
 @Composable
 private fun ThreadRow(
@@ -321,15 +328,10 @@ private fun ThreadRow(
                 TextButton(onClick = { onAction(if (thread.pinned) InboxAction.UNPIN else InboxAction.PIN) }) {
                     Text(if (thread.pinned) "Unpin" else "Pin")
                 }
-                TextButton(
-                    onClick = {
-                        onAction(
-                            if (thread.inboxState == InboxTab.ARCHIVED.state) InboxAction.RESTORE
-                            else InboxAction.ARCHIVE,
-                        )
-                    },
-                ) {
-                    Text(if (thread.inboxState == InboxTab.ARCHIVED.state) "Restore" else "Archive")
+                threadInboxAction(thread)?.let { action ->
+                    TextButton(onClick = { onAction(action) }) {
+                        Text(if (action == InboxAction.RESTORE) "Restore" else "Archive")
+                    }
                 }
             }
         },
