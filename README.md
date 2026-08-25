@@ -62,11 +62,25 @@ keytool -genkeypair -v \
   -dname "CN=Ground Control, O=Atomik Panda" \
   -storepass "$ANDROID_KEYSTORE_PASSWORD" \
   -keypass "$ANDROID_KEY_PASSWORD"
+(
+  umask 077
+  cat > "$HOME/.mothership/keys/ground-control-release.env" <<EOF
+ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD
+ANDROID_KEY_ALIAS=ground-control
+EOF
+)
 chmod 600 "$HOME/.mothership/keys/ground-control-release.jks" \
   "$HOME/.mothership/keys/ground-control-release.env"
 keytool -list -v \
   -keystore "$HOME/.mothership/keys/ground-control-release.jks" \
   -storepass "$ANDROID_KEYSTORE_PASSWORD"
+set -a
+. "$HOME/.mothership/keys/ground-control-release.env"
+set +a
+gh secret set -f "$HOME/.mothership/keys/ground-control-release.env"
+gh secret set ANDROID_KEYSTORE_BASE64 \
+  --body "$(base64 -w 0 "$HOME/.mothership/keys/ground-control-release.jks")"
 ```
 
 Private key material and credentials must never be committed, logged, sent to pull-request
