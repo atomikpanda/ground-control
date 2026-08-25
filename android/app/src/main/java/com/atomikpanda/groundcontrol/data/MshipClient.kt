@@ -637,12 +637,6 @@ class SpecApi(private val client: HttpClient) {
     suspend fun dispatch(conn: WorkspaceConnection, id: String): DispatchResult =
         client.post("${conn.baseUrl}/specs/$id/dispatch") { auth(conn) }.bodyAfterHostContact()
 
-    /** Archive a spec (swipe-to-archive in the inbox). The response is just `{id, status}` —
-     *  like [setUnattended], callers apply the optimistic removal themselves. */
-    suspend fun archiveSpec(conn: WorkspaceConnection, id: String) {
-        client.post("${conn.baseUrl}/specs/$id/archive") { auth(conn) }
-            .completeHostContact()
-    }
 
     suspend fun mutateSpecInbox(
         conn: WorkspaceConnection,

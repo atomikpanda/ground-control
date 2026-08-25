@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CancellationException
@@ -28,6 +29,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
+import java.util.UUID
 import kotlin.coroutines.coroutineContext
 data class ThreadsSection(
     val workspaceName: String,
@@ -48,6 +51,8 @@ sealed interface MessagesUiState {
     data class Content(
         val sections: List<ThreadsSection>,
         val selectedConnectionId: String? = null,
+        val tab: InboxTab = InboxTab.ACTIVE,
+        val searchQuery: String = "",
         val stateFilter: ThreadStateFilter = ThreadStateFilter.ALL,
         val filteredThreads: List<FilteredThread> = emptyList(),
         val groups: List<WorkItemThreadGroup> = emptyList(),
@@ -69,6 +74,9 @@ internal fun ThreadSummary.matchesStateFilter(filter: ThreadStateFilter): Boolea
     ThreadStateFilter.NEEDS_YOU -> needsYou
 }
 
+internal fun ThreadSummary.matchesInboxSearch(query: String): Boolean =
+    query.isBlank() || subject.contains(query, ignoreCase = true) || lastMessage.contains(query, ignoreCase = true)
+
 fun MessagesUiState.Content.unreadCountFor(connectionId: String?): Int =
     if (connectionId == null) unreadCount else unreadCountsByWorkspace[connectionId] ?: 0
 
@@ -89,6 +97,8 @@ class MessagesViewModel(
     private var latestConnections: List<WorkspaceConnection> = emptyList()
     private var pollingRequested = false
     private var selectedConnectionId: String? = null
+    private var tab = InboxTab.ACTIVE
+    private var searchQuery = ""
     private var stateFilter: ThreadStateFilter = ThreadStateFilter.ALL
 
     init {
@@ -123,7 +133,10 @@ class MessagesViewModel(
         connection = connection,
         fullLoad = { requestConnection ->
             coroutineScope {
-                val threads = async { repo.listThreadsFor(requestConnection) }
+                val threads = async {
+                    repo.listAllThreads(listOf(requestConnection), tab.filter, searchQuery)
+                        .single().threads.getOrThrow()
+                }
                 val items = async {
                     try {
                         repo.listAllItems(listOf(requestConnection))[requestConnection.id].orEmpty()
@@ -288,6 +301,70 @@ class MessagesViewModel(
         stateFilter = filter
         renderOwners()
     }
+
+    fun selectInboxTab(tab: InboxTab) {
+        if (this.tab == tab) return
+        this.tab = tab
+        refresh()
+    }
+
+    fun onSearchQueryChange(query: String) {
+        if (searchQuery == query) return
+        searchQuery = query
+        refresh()
+    }
+
+    fun mutateInbox(connectionId: String, threadId: String, action: InboxAction): Job {
+        val mutationId = UUID.randomUUID().toString()
+        return scope().launch {
+            val connection = latestConnections.findByConnectionId(connectionId) ?: return@launch
+            val canonicalConnectionId = connection.id
+            val original = findThread(canonicalConnectionId, threadId) ?: return@launch
+            val sourceTab = tab
+            applyThreadMutation(canonicalConnectionId, threadId, action)
+            try {
+                repo.mutateThreadInbox(connection, threadId, action, mutationId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                if (tab == sourceTab) rollbackThreadMutation(canonicalConnectionId, original, action)
+            }
+        }
+    }
+
+    private fun findThread(connectionId: String, threadId: String): ThreadSummary? =
+        owners[connectionId]?.snapshot?.value?.threads?.getOrNull()?.firstOrNull { it.id == threadId }
+
+    private suspend fun applyThreadMutation(
+        connectionId: String,
+        threadId: String,
+        action: InboxAction,
+    ) {
+        owners[connectionId]?.updateThreads { threads ->
+            when (action) {
+                InboxAction.ARCHIVE, InboxAction.RESTORE -> threads.filterNot { it.id == threadId }
+                InboxAction.PIN -> threads.map { if (it.id == threadId) it.copy(pinned = true) else it }
+                InboxAction.UNPIN -> threads.map { if (it.id == threadId) it.copy(pinned = false) else it }
+            }
+        }
+        renderOwners()
+    }
+
+    private suspend fun rollbackThreadMutation(
+        connectionId: String,
+        original: ThreadSummary,
+        action: InboxAction,
+    ) {
+        owners[connectionId]?.updateThreads { threads ->
+            when (action) {
+                InboxAction.ARCHIVE, InboxAction.RESTORE ->
+                    if (threads.any { it.id == original.id }) threads else threads + original
+                InboxAction.PIN, InboxAction.UNPIN ->
+                    threads.map { if (it.id == original.id) original else it }
+            }
+        }
+        renderOwners()
+    }
     fun topThreads(n: Int, connectionId: String? = null): List<ThreadSummary> =
         allThreads(connectionId).take(n)
 
@@ -337,14 +414,19 @@ class MessagesViewModel(
         val visibleSections = sections.filter { selectedConnectionId == null || it.connectionId == selectedConnectionId }
         val filtered = visibleSections
             .flatMap { section -> section.threads.getOrDefault(emptyList()).map { FilteredThread(section.connectionId, it) } }
-            .filter { it.thread.matchesStateFilter(stateFilter) }
+            .filter { it.thread.inboxState == tab.state }
+            .filter { it.thread.matchesInboxSearch(searchQuery) }
+            .filter { tab == InboxTab.ARCHIVED || it.thread.matchesStateFilter(stateFilter) }
             .sortedByDescending { it.thread.updatedAt ?: "" }
         val unreadByWorkspace = sections.associate { section ->
-            section.connectionId to section.threads.getOrDefault(emptyList()).count { it.unseen }
+            section.connectionId to section.threads.getOrDefault(emptyList())
+                .count { it.inboxState == InboxTab.ACTIVE.state && it.unseen }
         }
         _state.value = MessagesUiState.Content(
             sections = sections,
             selectedConnectionId = selectedConnectionId,
+            tab = tab,
+            searchQuery = searchQuery,
             stateFilter = stateFilter,
             filteredThreads = filtered,
             groups = groupThreadsByWorkItem(filtered.map { it.thread }, visibleSections.flatMap { it.items }),

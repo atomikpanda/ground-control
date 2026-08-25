@@ -5,8 +5,10 @@ import com.atomikpanda.groundcontrol.data.SpecGroup
 import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.buildJson
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.specs.InboxUiState
+import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
 import com.atomikpanda.groundcontrol.ui.specs.SpecInboxViewModel
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -78,7 +80,7 @@ class SpecInboxViewModelTest {
     private fun repoWithArchiveEndpoint(archiveFails: Boolean) = SpecRepository(SpecApi(HttpClient(MockEngine { req ->
         if (req.url.encodedPath.endsWith("/archive")) {
             if (archiveFails) respond("boom", HttpStatusCode.InternalServerError)
-            else respond("""{"id":"b","status":"archived"}""", HttpStatusCode.OK, jsonHdr)
+            else respond("""{"id":"b","title":"B","status":"needs_review","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
         } else {
             respond(
                 """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
@@ -110,7 +112,7 @@ class SpecInboxViewModelTest {
         }, this)
         vm.refresh()?.join()
         assertEquals(listOf("b", "a"), specIds(vm))   // needs_review(b) before ready_to_dispatch(a)
-        vm.archiveSpec("conn-7", "b").join()
+        vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE).join()
         assertEquals(listOf("a"), specIds(vm))
     }
 
@@ -128,7 +130,7 @@ class SpecInboxViewModelTest {
         val archiveRepo = SpecRepository(SpecApi(HttpClient(MockEngine { req ->
             if (req.url.encodedPath.endsWith("/archive")) {
                 archiveHost = req.url.host
-                respond("""{"id":"b","status":"archived"}""", HttpStatusCode.OK, jsonHdr)
+                respond("""{"id":"b","title":"B","status":"needs_review","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
             } else {
                 respond(
                     """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
@@ -142,7 +144,7 @@ class SpecInboxViewModelTest {
         vm.refresh()?.join()
 
         connections = listOf(canonical)
-        vm.archiveSpec(retired.id, "b").join()
+        vm.mutateInbox(retired.id, "b", InboxAction.ARCHIVE).join()
 
         assertEquals("new", archiveHost)
         assertEquals(listOf("a"), specIds(vm))
@@ -157,7 +159,7 @@ class SpecInboxViewModelTest {
             listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
         }, this)
         vm.refresh()?.join()
-        vm.archiveSpec("conn-7", "b").join()
+        vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE).join()
         assertEquals(listOf("b", "a"), specIds(vm))
     }
 
@@ -169,7 +171,7 @@ class SpecInboxViewModelTest {
             listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
         }, this)
         vm.refresh()?.join()
-        val job = vm.archiveSpec("conn-7", "b")
+        val job = vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE)
         job.join()
         assertTrue(job.isCancelled)
         assertEquals(listOf("a"), specIds(vm))   // optimistic removal stands; no rollback ran
@@ -180,12 +182,12 @@ class SpecInboxViewModelTest {
      *  outstanding. */
     private fun repoWithGatedArchiveEndpoint(bStarted: CompletableDeferred<Unit>, releaseB: CompletableDeferred<Unit>) =
         SpecRepository(SpecApi(HttpClient(MockEngine { req ->
-            if (req.url.encodedPath.endsWith("/specs/b/archive")) {
+            if (req.url.encodedPath.endsWith("/specs/b/inbox/archive")) {
                 bStarted.complete(Unit)
                 releaseB.await()
                 respond("boom", HttpStatusCode.InternalServerError)
-            } else if (req.url.encodedPath.endsWith("/archive")) {
-                respond("""{"id":"a","status":"archived"}""", HttpStatusCode.OK, jsonHdr)
+            } else if (req.url.encodedPath.endsWith("/inbox/archive")) {
+                respond("""{"id":"a","title":"A","status":"approved","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
             } else {
                 respond(
                     """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
@@ -208,10 +210,10 @@ class SpecInboxViewModelTest {
         vm.refresh()?.join()
         assertEquals(listOf("b", "a"), specIds(vm))
 
-        val archiveBJob = vm.archiveSpec("conn-7", "b")
+        val archiveBJob = vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE)
         bStarted.await()   // "b" removed optimistically; its archive request is now in flight
 
-        vm.archiveSpec("conn-7", "a").join()   // concurrently archives (and confirms) "a"
+        vm.mutateInbox("conn-7", "a", InboxAction.ARCHIVE).join()   // concurrently archives (and confirms) "a"
         assertEquals(emptyList<String>(), specIds(vm))
 
         releaseB.complete(Unit)   // now let "b"'s archive fail
@@ -220,4 +222,46 @@ class SpecInboxViewModelTest {
         // "b" comes back (its archive failed); "a" stays gone (its archive genuinely succeeded).
         assertEquals(listOf("b"), specIds(vm))
     }
+
+    @Test fun tab_search_and_inbox_actions_use_durable_server_filters() = runTest {
+        val inboxRequests = mutableListOf<Pair<String?, String?>>()
+        val actions = mutableListOf<String>()
+        val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+            if (request.url.encodedPath.contains("/inbox/")) {
+                actions += request.url.encodedPath.substringAfterLast("/inbox/")
+                respond(
+                    """{"id":"b","title":"B","status":"needs_review","inbox_state":"archived"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            } else {
+                inboxRequests += request.url.parameters["inbox"] to request.url.parameters["q"]
+                val archived = request.url.parameters["inbox"] == "archived"
+                respond(
+                    if (archived) """[{"id":"b","title":"needle","status":"needs_review","inbox_state":"archived"}]"""
+                    else """[{"id":"b","title":"needle","status":"needs_review"}]""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            }
+        }) { mshipDefaults() })), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+
+        vm.refresh()?.join()
+        assertEquals(InboxTab.ACTIVE, (vm.state.value as InboxUiState.Content).tab)
+        vm.onSearchQueryChange("needle")
+        advanceUntilIdle()
+        vm.mutateInbox("conn-7", "b", InboxAction.PIN).join()
+        vm.mutateInbox("conn-7", "b", InboxAction.UNPIN).join()
+        vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE).join()
+        vm.selectInboxTab(InboxTab.ARCHIVED)
+        advanceUntilIdle()
+        vm.mutateInbox("conn-7", "b", InboxAction.RESTORE).join()
+
+        assertTrue(inboxRequests.contains("active" to "needle"))
+        assertTrue(inboxRequests.contains("archived" to "needle"))
+        assertEquals(listOf("pin", "unpin", "archive", "restore"), actions)
+    }
+
 }

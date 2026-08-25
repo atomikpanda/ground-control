@@ -12,6 +12,8 @@ import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateFilter
 import com.atomikpanda.groundcontrol.ui.messages.mergeThreadsById
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
 import com.atomikpanda.groundcontrol.ui.messages.unreadCountFor
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -37,6 +39,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -881,6 +884,43 @@ class MessagesViewModelTest {
         runCurrent()
 
         assertEquals(finalReplacement, vm.ownerSnapshot(finalReplacement.id)?.connection)
+    }
+
+    @Test fun tab_search_and_inbox_actions_use_durable_server_filters() = runTest {
+        val inboxRequests = mutableListOf<Pair<String?, String?>>()
+        val actions = mutableListOf<String>()
+        val vm = MessagesViewModel(repoWith { request ->
+            if (request.url.encodedPath.contains("/inbox/")) {
+                actions += request.url.encodedPath.substringAfterLast("/inbox/")
+                respond("""{"id":"t1","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
+            } else if (request.url.encodedPath.endsWith("/threads")) {
+                inboxRequests += request.url.parameters["inbox"] to request.url.parameters["q"]
+                val archived = request.url.parameters["inbox"] == "archived"
+                respond(
+                    if (archived) """[{"id":"t1","subject":"needle","inbox_state":"archived"}]"""
+                    else """[{"id":"t1","subject":"needle"}]""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            } else {
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.refresh()?.join()
+        assertEquals(InboxTab.ACTIVE, (vm.state.value as MessagesUiState.Content).tab)
+        vm.onSearchQueryChange("needle")
+        advanceUntilIdle()
+        vm.mutateInbox(connA.id, "t1", InboxAction.PIN).join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.UNPIN).join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.ARCHIVE).join()
+        vm.selectInboxTab(InboxTab.ARCHIVED)
+        advanceUntilIdle()
+        vm.mutateInbox(connA.id, "t1", InboxAction.RESTORE).join()
+
+        assertTrue(inboxRequests.contains("active" to "needle"))
+        assertTrue(inboxRequests.contains("archived" to "needle"))
+        assertEquals(listOf("pin", "unpin", "archive", "restore"), actions)
     }
 
 }

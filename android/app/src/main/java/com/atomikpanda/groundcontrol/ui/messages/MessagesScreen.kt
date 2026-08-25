@@ -28,6 +28,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
@@ -42,7 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
+import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 
 /**
@@ -111,25 +117,54 @@ fun MessagesScreen(
                     // against sections — that can transiently race during a live-merge).
                     val connByThread = s.filteredThreads.associate { it.thread.id to it.connectionId }
                     LazyColumn(Modifier.fillMaxSize()) {
+                        item {
+                            TabRow(selectedTabIndex = s.tab.ordinal) {
+                                InboxTab.entries.forEach { tab ->
+                                    Tab(
+                                        selected = s.tab == tab,
+                                        onClick = { vm.selectInboxTab(tab) },
+                                        text = { Text(tab.label) },
+                                    )
+                                }
+                            }
+                        }
+                        item {
+                            OutlinedTextField(
+                                value = s.searchQuery,
+                                onValueChange = vm::onSearchQueryChange,
+                                label = { Text("Search ${s.tab.label.lowercase()} threads") },
+                                modifier = Modifier.fillMaxWidth().padding(12.dp, 8.dp),
+                                singleLine = true,
+                            )
+                        }
                         item { ThreadsWorkspaceRail(s, vm::selectWorkspace) }
-                        item { ThreadStateChipRow(s.stateFilter, vm::selectStateFilter) }
+                        if (s.tab == InboxTab.ACTIVE) {
+                            item { ThreadStateChipRow(s.stateFilter, vm::selectStateFilter) }
+                        }
                         if (s.groups.isEmpty()) {
                             item {
                                 Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
-                                    Text("No threads here yet.")
+                                    Text(
+                                        if (s.tab == InboxTab.ACTIVE) "No active threads."
+                                        else "No archived threads.",
+                                    )
                                 }
                             }
                         }
                         s.groups.forEach { group ->
                             item(key = "hdr-${group.workItemId ?: "other"}") { WorkItemGroupHeader(group) }
                             items(group.threads, key = { it.id }) { thread ->
-                                ThreadRow(thread) {
-                                    val conn = connByThread[thread.id]
-                                    if (conn != null) onThreadClick(conn, thread.id)
-                                    // Shouldn't happen (groups + connByThread derive from one render pass),
-                                    // but make an invariant break observable instead of a silent dead tap.
-                                    else Log.w("MessagesScreen", "no connection for thread ${thread.id}; tap dropped")
-                                }
+                                val connectionId = connByThread[thread.id]
+                                ThreadRow(
+                                    thread = thread,
+                                    onClick = {
+                                        if (connectionId != null) onThreadClick(connectionId, thread.id)
+                                        else Log.w("MessagesScreen", "no connection for thread ${thread.id}; tap dropped")
+                                    },
+                                    onAction = { action ->
+                                        if (connectionId != null) vm.mutateInbox(connectionId, thread.id, action)
+                                    },
+                                )
                             }
                         }
                     }
@@ -251,15 +286,17 @@ private fun WorkItemGroupHeader(group: WorkItemThreadGroup) {
     }
 }
 
-/** One thread row. `unseen` threads get a bold headline + a small leading dot — the "unread
- *  badge/highlight" from AC4 — on top of the list's newest-first ordering. */
+/** One row with direct accessible inbox actions; lifecycle status is display-only. */
 @Composable
-private fun ThreadRow(thread: ThreadSummary, onClick: () -> Unit) {
+private fun ThreadRow(
+    thread: ThreadSummary,
+    onClick: () -> Unit,
+    onAction: (InboxAction) -> Unit,
+) {
     val replyMarker = if (thread.awaitingReply) "⏳ waiting" else "✓ replied"
     val supporting = buildString {
         if (thread.lastMessage.isNotBlank()) append(thread.lastMessage)
         append(" · $replyMarker")
-        // Human relative time ("3m ago") instead of a raw ISO string; omit on an unparseable value.
         thread.updatedAt?.let { relativeTimeAgo(it, System.currentTimeMillis()) }?.let { append(" · $it") }
     }
     ListItem(
@@ -279,6 +316,23 @@ private fun ThreadRow(thread: ThreadSummary, onClick: () -> Unit) {
             )
         },
         supportingContent = { Text(supporting) },
+        trailingContent = {
+            Row {
+                TextButton(onClick = { onAction(if (thread.pinned) InboxAction.UNPIN else InboxAction.PIN) }) {
+                    Text(if (thread.pinned) "Unpin" else "Pin")
+                }
+                TextButton(
+                    onClick = {
+                        onAction(
+                            if (thread.inboxState == InboxTab.ARCHIVED.state) InboxAction.RESTORE
+                            else InboxAction.ARCHIVE,
+                        )
+                    },
+                ) {
+                    Text(if (thread.inboxState == InboxTab.ARCHIVED.state) "Restore" else "Archive")
+                }
+            }
+        },
         modifier = Modifier.clickable(onClick = onClick),
     )
 }

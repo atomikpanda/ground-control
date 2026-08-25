@@ -108,6 +108,14 @@ internal class MessageConnectionOwner(
         }
         if (request != null) waitForAuthoritativeRefresh(request) else if (queuedForHandoff) queued.await()
     }
+    /** Applies one optimistic inbox mutation without replacing data received by other owners. */
+    suspend fun updateThreads(transform: (List<ThreadSummary>) -> List<ThreadSummary>) {
+        mutex.withLock {
+            val current = _snapshot.value
+            _snapshot.value = current.copy(threads = current.threads.map(transform))
+        }
+    }
+
 
     /** A cancelled refresh is only complete after the refresh that superseded it
      * has finished. Polls deliberately do not extend this wait. */

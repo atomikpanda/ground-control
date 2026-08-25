@@ -26,9 +26,6 @@ class SpecRepository(private val api: SpecApi) {
             }.awaitAll()
         }
 
-    /** Archive a spec (swipe-to-archive). Thin passthrough so the ViewModel only ever talks
-     *  to the repository, matching [listAllSpecs]'s layering. */
-    suspend fun archiveSpec(conn: WorkspaceConnection, id: String) = api.archiveSpec(conn, id)
 
     suspend fun mutateSpecInbox(
         conn: WorkspaceConnection,
