@@ -38,35 +38,58 @@ jobs:
             exit 0
           fi
 
-          previous_run_number="$(
+          previous_run="$(
             curl --fail --silent --show-error \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/android.yml/runs?event=push&head_sha=$PREVIOUS_SHA&per_page=1" |
-              jq -r '.workflow_runs[0].run_number // empty'
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/android.yml/runs?event=push&head_sha=$PREVIOUS_SHA&per_page=1"
           )"
-          if [ -z "$previous_run_number" ]; then
+          previous_run_id="$(jq -r '.workflow_runs[0].id // empty' <<<"$previous_run")"
+          previous_run_number="$(jq -r '.workflow_runs[0].run_number // empty' <<<"$previous_run")"
+          previous_run_status="$(jq -r '.workflow_runs[0].status // empty' <<<"$previous_run")"
+          previous_run_conclusion="$(jq -r '.workflow_runs[0].conclusion // empty' <<<"$previous_run")"
+          previous_run_url="$(jq -r '.workflow_runs[0].html_url // empty' <<<"$previous_run")"
+          if [ -z "$previous_run_id" ]; then
             echo "No previous Android workflow run; proceeding."
             exit 0
           fi
 
           previous_tag="v0.1.$previous_run_number"
-          while true; do
-            status="$(
+          attempt=1
+          while [ "$attempt" -le 120 ]; do
+            release_status="$(
               curl --silent --output /dev/null --write-out "%{http_code}" \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
                 "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$previous_tag"
             )"
-            if [ "$status" = "200" ]; then
+            if [ "$release_status" = "200" ]; then
               exit 0
             fi
-            if [ "$status" != "404" ]; then
-              echo "Unable to check release $previous_tag (HTTP $status)." >&2
+            if [ "$release_status" != "404" ]; then
+              echo "Unable to check release $previous_tag (HTTP $release_status)." >&2
               exit 1
             fi
+
+            previous_run="$(
+              curl --fail --silent --show-error \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$previous_run_id"
+            )"
+            previous_run_status="$(jq -r '.status // empty' <<<"$previous_run")"
+            previous_run_conclusion="$(jq -r '.conclusion // empty' <<<"$previous_run")"
+            previous_run_url="$(jq -r '.html_url // empty' <<<"$previous_run")"
+            if [ "$previous_run_status" = "completed" ]; then
+              echo "Previous Android run $previous_run_url completed with $previous_run_conclusion but did not publish $previous_tag. Rerun or repair that predecessor." >&2
+              exit 1
+            fi
+
             sleep 15
+            attempt=$((attempt + 1))
           done
+          echo "Timed out waiting 30 minutes for previous Android run $previous_run_url to publish $previous_tag; rerun or repair that predecessor." >&2
+          exit 1
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
