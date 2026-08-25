@@ -81,11 +81,20 @@ jobs:
             previous_run_conclusion="$(jq -r '.conclusion // empty' <<<"$previous_run")"
             previous_run_url="$(jq -r '.html_url // empty' <<<"$previous_run")"
             if [ "$previous_run_status" = "completed" ]; then
-              if [ "$previous_run_conclusion" != "success" ]; then
-                echo "Previous Android run $previous_run_url was non-publishable ($previous_run_conclusion); proceeding."
+              previous_jobs="$(
+                curl --fail --silent --show-error \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$previous_run_id/jobs?per_page=100"
+              )"
+              previous_verify_conclusion="$(
+                jq -r '(.jobs | map(select(.name == "verify")) | first | .conclusion) // empty' <<<"$previous_jobs"
+              )"
+              if [ -n "$previous_verify_conclusion" ] && [ "$previous_verify_conclusion" != "success" ]; then
+                echo "Previous Android run $previous_run_url was non-publishable because verify concluded $previous_verify_conclusion; proceeding."
                 exit 0
               fi
-              echo "Previous Android run $previous_run_url succeeded but did not publish $previous_tag. Rerun or repair that predecessor." >&2
+              echo "Previous Android run $previous_run_url completed with verify conclusion ${previous_verify_conclusion:-unknown} but did not publish $previous_tag. Rerun or repair that predecessor." >&2
               exit 1
             fi
 
