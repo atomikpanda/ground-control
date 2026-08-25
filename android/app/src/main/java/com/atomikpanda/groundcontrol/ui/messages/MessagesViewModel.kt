@@ -321,17 +321,19 @@ class MessagesViewModel(
             val connection = latestConnections.findByConnectionId(connectionId) ?: return@launch
             val canonicalConnectionId = connection.id
             val original = findThread(canonicalConnectionId, threadId) ?: return@launch
+            val owner = owners[canonicalConnectionId]
             val sourceTab = tab
+            owner?.beginInboxMutation()
             applyThreadMutation(canonicalConnectionId, threadId, action)
             try {
-                reconcileThreadMutation(
-                    canonicalConnectionId,
-                    original,
-                    repo.mutateThreadInbox(connection, threadId, action, mutationId),
-                )
+                val response = repo.mutateThreadInbox(connection, threadId, action, mutationId)
+                owner?.endInboxMutation()
+                reconcileThreadMutation(canonicalConnectionId, original, response)
             } catch (cancelled: CancellationException) {
+                owner?.endInboxMutation()
                 throw cancelled
             } catch (_: Throwable) {
+                owner?.endInboxMutation()
                 if (tab == sourceTab) rollbackThreadMutation(canonicalConnectionId, original, action)
             }
         }

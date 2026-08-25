@@ -271,4 +271,56 @@ class SpecInboxViewModelTest {
         assertEquals(listOf("archive", "pin", "unpin", "restore"), actions)
     }
 
+    @Test fun stale_refresh_cannot_overwrite_authoritative_inbox_mutation() = runTest {
+        val heldGetStarted = CompletableDeferred<Unit>()
+        val releaseGet = CompletableDeferred<Unit>()
+        val heldPostStarted = CompletableDeferred<Unit>()
+        val releasePost = CompletableDeferred<Unit>()
+        var holdNextGet = false
+        val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+            if (request.url.encodedPath.contains("/inbox/")) {
+                heldPostStarted.complete(Unit)
+                releasePost.await()
+                respond(
+                    """{"id":"b","title":"B","status":"needs_review","inbox_state":"archived"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            } else {
+                val body = when {
+                    holdNextGet -> {
+                        holdNextGet = false
+                        heldGetStarted.complete(Unit)
+                        releaseGet.await()
+                        """[{"id":"b","title":"B","status":"needs_review"}]"""
+                    }
+                    request.url.parameters["q"] == "b" ->
+                        """[{"id":"b","title":"B","status":"needs_review"}]"""
+                    else -> """[{"id":"fresh","title":"Fresh","status":"needs_review"}]"""
+                }
+                respond(body, HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, this)
+
+        vm.refresh()?.join()
+        assertEquals(listOf("fresh"), specIds(vm))
+        // Seed the mutation target, then hold a stale refresh that began before the POST.
+        vm.onSearchQueryChange("b")?.join()
+        holdNextGet = true
+        val staleRefresh = vm.refresh()!!
+        heldGetStarted.await()
+        val mutation = vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE)
+        heldPostStarted.await()
+        releasePost.complete(Unit)
+        mutation.join()
+        releaseGet.complete(Unit)
+        staleRefresh.join()
+        assertTrue(specIds(vm).isEmpty())
+
+        vm.onSearchQueryChange("")?.join()
+        assertEquals(listOf("fresh"), specIds(vm))
+    }
+
 }

@@ -51,6 +51,8 @@ class SpecInboxViewModel(
     private var tab = InboxTab.ACTIVE
     private var searchQuery = ""
     private var refreshRevision = 0L
+    private var mutationEpoch = 0L
+
 
 
     /** Returns the Job so callers (tests) can join/await completion if needed. */
@@ -62,11 +64,17 @@ class SpecInboxViewModel(
         }
         val requestTab = tab
         val requestQuery = searchQuery
+        val publicationEpoch = mutationEpoch
         val revision = ++refreshRevision
         if (_state.value !is InboxUiState.Content) _state.value = InboxUiState.Loading
         return (testScope ?: viewModelScope).launch {
             val results = repo.listAllSpecs(connections, requestTab.filter, requestQuery)
-            if (revision != refreshRevision || requestTab != tab || requestQuery != searchQuery) return@launch
+            if (
+                revision != refreshRevision ||
+                publicationEpoch != mutationEpoch ||
+                requestTab != tab ||
+                requestQuery != searchQuery
+            ) return@launch
             _state.value = InboxUiState.Content(
                 sections = results.map { ws ->
                     WorkspaceSection(
@@ -117,16 +125,17 @@ class SpecInboxViewModel(
             replaceConnectionAlias(connectionId, conn)
             val original = findSpec(canonicalConnectionId, specId) ?: return@launch
             val sourceTab = tab
+            mutationEpoch += 1
             applyMutation(canonicalConnectionId, specId, action)
             try {
-                reconcileMutation(
-                    canonicalConnectionId,
-                    original,
-                    repo.mutateSpecInbox(conn, specId, action, mutationId),
-                )
+                val response = repo.mutateSpecInbox(conn, specId, action, mutationId)
+                mutationEpoch += 1
+                reconcileMutation(canonicalConnectionId, original, response)
             } catch (cancelled: CancellationException) {
+                mutationEpoch += 1
                 throw cancelled
             } catch (_: Throwable) {
+                mutationEpoch += 1
                 if (tab == sourceTab) rollbackMutation(canonicalConnectionId, original, action)
             }
         }

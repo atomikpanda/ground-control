@@ -932,4 +932,50 @@ class MessagesViewModelTest {
         assertEquals(listOf("archive", "pin", "unpin", "restore"), actions)
     }
 
+    @Test fun stale_refresh_cannot_overwrite_authoritative_inbox_mutation() = runTest {
+        val heldGetStarted = CompletableDeferred<Unit>()
+        val releaseGet = CompletableDeferred<Unit>()
+        val heldPostStarted = CompletableDeferred<Unit>()
+        val releasePost = CompletableDeferred<Unit>()
+        var holdNextGet = false
+        val vm = MessagesViewModel(repoWith { request ->
+            if (request.url.encodedPath.contains("/inbox/")) {
+                heldPostStarted.complete(Unit)
+                releasePost.await()
+                respond("""{"id":"b","subject":"B","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
+            } else if (request.url.encodedPath.endsWith("/threads")) {
+                val body = when {
+                    holdNextGet -> {
+                        holdNextGet = false
+                        heldGetStarted.complete(Unit)
+                        releaseGet.await()
+                        """[{"id":"b","subject":"B"}]"""
+                    }
+                    request.url.parameters["q"] == "b" -> """[{"id":"b","subject":"B"}]"""
+                    else -> """[{"id":"fresh","subject":"Fresh"}]"""
+                }
+                respond(body, HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.refresh()?.join()
+        assertEquals(listOf("fresh"), (vm.state.value as MessagesUiState.Content).filteredThreads.map { it.thread.id })
+        vm.onSearchQueryChange("b")?.join()
+        holdNextGet = true
+        val staleRefresh = vm.refresh()
+        heldGetStarted.await()
+        val mutation = vm.mutateInbox(connA.id, "b", InboxAction.ARCHIVE)
+        heldPostStarted.await()
+        releasePost.complete(Unit)
+        mutation.join()
+        releaseGet.complete(Unit)
+        staleRefresh.join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+
+        vm.onSearchQueryChange("")?.join()
+        assertEquals(listOf("fresh"), (vm.state.value as MessagesUiState.Content).filteredThreads.map { it.thread.id })
+    }
+
 }

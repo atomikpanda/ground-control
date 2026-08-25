@@ -22,6 +22,7 @@ internal const val LIVE_POLL_RETRY_DELAY_MILLIS = 2_000L
 internal data class MessageRequestToken(
     val generation: Long,
     val revision: Long,
+    val publicationEpoch: Long,
     val kind: Kind,
 ) {
     enum class Kind { INITIAL, REFRESH, POLL }
@@ -80,6 +81,7 @@ internal class MessageConnectionOwner(
 
     private var generation = 0L
     private var latestIssuedRevision = 0L
+    private var publicationEpoch = 0L
     private var activeToken: MessageRequestToken? = null
     private var activeRequest: Job? = null
     private var retryJob: Job? = null
@@ -113,6 +115,19 @@ internal class MessageConnectionOwner(
         mutex.withLock {
             val current = _snapshot.value
             _snapshot.value = current.copy(threads = current.threads.map(transform))
+        }
+    }
+
+    /** Fences every prior load before an optimistic mutation changes this owner's snapshot. */
+    suspend fun beginInboxMutation() {
+        mutex.withLock { invalidatePublicationLocked() }
+    }
+
+    /** Fences loads started during the POST before the authoritative response is reconciled. */
+    suspend fun endInboxMutation() {
+        mutex.withLock {
+            invalidatePublicationLocked()
+            if (pollingEnabled && readyToPollLocked()) launchRequestLocked(MessageRequestToken.Kind.POLL)
         }
     }
 
@@ -181,9 +196,18 @@ internal class MessageConnectionOwner(
         }
     }
 
+    private fun invalidatePublicationLocked() {
+        publicationEpoch += 1
+        activeToken = null
+        activeRequest = null
+        retryJob?.cancel()
+        retryJob = null
+    }
+
     private fun issueLocked(kind: MessageRequestToken.Kind): MessageRequestToken {
         latestIssuedRevision += 1
-        return MessageRequestToken(generation, latestIssuedRevision, kind).also { activeToken = it }
+        return MessageRequestToken(generation, latestIssuedRevision, publicationEpoch, kind)
+            .also { activeToken = it }
     }
 
     private suspend fun complete(token: MessageRequestToken, result: Result<out MessageLoadResult>) {
@@ -200,6 +224,7 @@ internal class MessageConnectionOwner(
 
     private fun isCurrentLocked(token: MessageRequestToken): Boolean =
         !cancelled && token.generation == generation &&
+            token.publicationEpoch == publicationEpoch &&
             token.revision == latestIssuedRevision && activeToken == token
 
     private fun acceptSuccessLocked(token: MessageRequestToken, payload: MessageLoadResult) {
