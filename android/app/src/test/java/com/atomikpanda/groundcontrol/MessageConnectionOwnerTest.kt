@@ -492,4 +492,30 @@ class MessageConnectionOwnerTest {
         assertTrue(refresh.isCompleted)
         assertFalse(refresh.isCancelled)
     }
+    @Test fun mutation_invalidation_cancels_held_load_before_owner_cancellation() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val cancelled = CompletableDeferred<Unit>()
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                started.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    cancelled.complete(Unit)
+                }
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+
+        val refresh = owner.refresh()
+        started.await()
+        owner.beginInboxMutation()
+        cancelled.await()
+        owner.cancel()
+        refresh.join()
+        assertTrue(refresh.isCompleted)
+    }
+
     }

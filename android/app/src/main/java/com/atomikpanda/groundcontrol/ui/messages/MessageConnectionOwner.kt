@@ -7,11 +7,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.coroutines.coroutineContext
@@ -120,13 +122,13 @@ internal class MessageConnectionOwner(
 
     /** Fences every prior load before an optimistic mutation changes this owner's snapshot. */
     suspend fun beginInboxMutation() {
-        mutex.withLock { invalidatePublicationLocked() }
+        cancelAndJoin(mutex.withLock { invalidatePublicationLocked() })
     }
 
     /** Fences loads started during the POST before the authoritative response is reconciled. */
     suspend fun endInboxMutation() {
+        cancelAndJoin(mutex.withLock { invalidatePublicationLocked() })
         mutex.withLock {
-            invalidatePublicationLocked()
             if (pollingEnabled && readyToPollLocked()) launchRequestLocked(MessageRequestToken.Kind.POLL)
         }
     }
@@ -196,12 +198,19 @@ internal class MessageConnectionOwner(
         }
     }
 
-    private fun invalidatePublicationLocked() {
+    private fun invalidatePublicationLocked(): List<Job> {
         publicationEpoch += 1
         activeToken = null
+        val jobs = listOfNotNull(activeRequest, retryJob)
         activeRequest = null
-        retryJob?.cancel()
         retryJob = null
+        return jobs
+    }
+
+    /** Mutation invalidation owns detached requests until cancellation has completed. */
+    private suspend fun cancelAndJoin(jobs: List<Job>) = withContext(NonCancellable) {
+        jobs.forEach(Job::cancel)
+        jobs.joinAll()
     }
 
     private fun issueLocked(kind: MessageRequestToken.Kind): MessageRequestToken {
