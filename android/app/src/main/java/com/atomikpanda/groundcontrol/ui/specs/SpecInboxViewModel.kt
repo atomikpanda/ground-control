@@ -80,16 +80,16 @@ class SpecInboxViewModel(
         }
     }
 
-    fun selectInboxTab(tab: InboxTab) {
-        if (this.tab == tab) return
+    fun selectInboxTab(tab: InboxTab): Job? {
+        if (this.tab == tab) return null
         this.tab = tab
-        refresh()
+        return refresh()
     }
 
-    fun onSearchQueryChange(query: String) {
-        if (searchQuery == query) return
+    fun onSearchQueryChange(query: String): Job? {
+        if (searchQuery == query) return null
         searchQuery = query
-        refresh()
+        return refresh()
     }
 
     private fun toGroupBlocks(specs: List<SpecSummary>): List<GroupBlock> {

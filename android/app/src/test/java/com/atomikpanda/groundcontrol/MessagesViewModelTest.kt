@@ -39,7 +39,6 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -909,13 +908,11 @@ class MessagesViewModelTest {
 
         vm.refresh()?.join()
         assertEquals(InboxTab.ACTIVE, (vm.state.value as MessagesUiState.Content).tab)
-        vm.onSearchQueryChange("needle")
-        advanceUntilIdle()
+        vm.onSearchQueryChange("needle")?.join()
         vm.mutateInbox(connA.id, "t1", InboxAction.PIN).join()
         vm.mutateInbox(connA.id, "t1", InboxAction.UNPIN).join()
         vm.mutateInbox(connA.id, "t1", InboxAction.ARCHIVE).join()
-        vm.selectInboxTab(InboxTab.ARCHIVED)
-        advanceUntilIdle()
+        vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
         vm.mutateInbox(connA.id, "t1", InboxAction.RESTORE).join()
 
         assertTrue(inboxRequests.contains("active" to "needle"))

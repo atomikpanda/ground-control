@@ -250,13 +250,11 @@ class SpecInboxViewModelTest {
 
         vm.refresh()?.join()
         assertEquals(InboxTab.ACTIVE, (vm.state.value as InboxUiState.Content).tab)
-        vm.onSearchQueryChange("needle")
-        advanceUntilIdle()
+        vm.onSearchQueryChange("needle")?.join()
         vm.mutateInbox("conn-7", "b", InboxAction.PIN).join()
         vm.mutateInbox("conn-7", "b", InboxAction.UNPIN).join()
         vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE).join()
-        vm.selectInboxTab(InboxTab.ARCHIVED)
-        advanceUntilIdle()
+        vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
         vm.mutateInbox("conn-7", "b", InboxAction.RESTORE).join()
 
         assertTrue(inboxRequests.contains("active" to "needle"))
