@@ -39,6 +39,7 @@ internal data class MessageFullLoad(
 
 internal data class MessagePollDelta(
     val changedThreads: List<ThreadSummary>,
+    val removedIds: List<String>,
     val cursor: String,
 ) : MessageLoadResult
 
@@ -91,11 +92,13 @@ internal class MessageConnectionOwner(
     private var pendingHandoffJobs = emptySet<Job>()
     private var queuedRefreshWaiters = emptyList<CompletableDeferred<Unit>>()
     private var pollingEnabled = false
+    private var mutationDepth = 0
     private var cancelled = false
 
     fun initialLoad(): Job = scope.launch {
         mutex.withLock { activeRequest ?: launchRequestLocked(MessageRequestToken.Kind.INITIAL) }?.join()
     }
+    
     fun refresh(): Job = scope.launch {
         val queued = CompletableDeferred<Unit>()
         var queuedForHandoff = false
@@ -119,17 +122,22 @@ internal class MessageConnectionOwner(
             _snapshot.value = current.copy(threads = current.threads.map(transform))
         }
     }
-
     /** Fences every prior load before an optimistic mutation changes this owner's snapshot. */
     suspend fun beginInboxMutation() {
-        cancelAndJoin(mutex.withLock { invalidatePublicationLocked() })
+        cancelAndJoin(mutex.withLock {
+            mutationDepth += 1
+            invalidatePublicationLocked()
+        })
     }
 
     /** Fences loads started during the POST before the authoritative response is reconciled. */
     suspend fun endInboxMutation() {
         cancelAndJoin(mutex.withLock { invalidatePublicationLocked() })
         mutex.withLock {
-            if (pollingEnabled && readyToPollLocked()) launchRequestLocked(MessageRequestToken.Kind.POLL)
+            mutationDepth = (mutationDepth - 1).coerceAtLeast(0)
+            if (mutationDepth == 0 && pollingEnabled && readyToPollLocked()) {
+                launchRequestLocked(MessageRequestToken.Kind.POLL)
+            }
         }
     }
 
@@ -232,7 +240,7 @@ internal class MessageConnectionOwner(
     }
 
     private fun isCurrentLocked(token: MessageRequestToken): Boolean =
-        !cancelled && token.generation == generation &&
+        !cancelled && mutationDepth == 0 && token.generation == generation &&
             token.publicationEpoch == publicationEpoch &&
             token.revision == latestIssuedRevision && activeToken == token
 
@@ -251,7 +259,12 @@ internal class MessageConnectionOwner(
                 lastError = null,
             )
             is MessagePollDelta -> current.copy(
-                threads = Result.success(mergeThreadsById(current.threads.getOrDefault(emptyList()), payload.changedThreads)),
+                threads = Result.success(
+                    mergeThreadsById(
+                        current.threads.getOrDefault(emptyList()).filterNot { it.id in payload.removedIds },
+                        payload.changedThreads,
+                    ),
+                ),
                 cursor = payload.cursor.ifBlank { current.cursor },
                 phase = MessageConnectionSnapshot.Phase.READY,
                 lastError = null,

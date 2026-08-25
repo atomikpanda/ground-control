@@ -95,6 +95,9 @@ class MessagesViewModel(
     private val ownerCollectors = mutableMapOf<MessageConnectionOwner, Job>()
     private val reconcileMutex = Mutex()
     private var reconcileRevision = 0L
+    private val mutationLocks = mutableMapOf<String, Mutex>()
+    private val mutationLocksMutex = Mutex()
+
     private var latestConnections: List<WorkspaceConnection> = emptyList()
     private var pollingRequested = false
     private var selectedConnectionId: String? = null
@@ -152,7 +155,7 @@ class MessagesViewModel(
         },
         poll = { requestConnection, cursor ->
             val response = repo.waitForChange(requestConnection, cursor, 25)
-            MessagePollDelta(response.threads, response.cursor)
+            MessagePollDelta(response.threads, response.removedIds, response.cursor)
         },
         scope = scope(),
     )
@@ -306,13 +309,20 @@ class MessagesViewModel(
     fun selectInboxTab(tab: InboxTab): Job? {
         if (this.tab == tab) return null
         this.tab = tab
+        publishInboxSelection()
         return refresh()
     }
 
     fun onSearchQueryChange(query: String): Job? {
         if (searchQuery == query) return null
         searchQuery = query
+        publishInboxSelection()
         return refresh()
+    }
+
+    private fun publishInboxSelection() {
+        val current = _state.value as? MessagesUiState.Content ?: return
+        _state.value = current.copy(tab = tab, searchQuery = searchQuery)
     }
 
     fun mutateInbox(connectionId: String, threadId: String, action: InboxAction): Job {
@@ -320,24 +330,29 @@ class MessagesViewModel(
         return scope().launch {
             val connection = latestConnections.findByConnectionId(connectionId) ?: return@launch
             val canonicalConnectionId = connection.id
-            val original = findThread(canonicalConnectionId, threadId) ?: return@launch
-            val owner = owners[canonicalConnectionId]
-            val sourceTab = tab
-            owner?.beginInboxMutation()
-            applyThreadMutation(canonicalConnectionId, threadId, action)
-            try {
-                val response = repo.mutateThreadInbox(connection, threadId, action, mutationId)
-                owner?.endInboxMutation()
-                reconcileThreadMutation(canonicalConnectionId, original, response)
-            } catch (cancelled: CancellationException) {
-                owner?.endInboxMutation()
-                throw cancelled
-            } catch (_: Throwable) {
-                owner?.endInboxMutation()
-                if (tab == sourceTab) rollbackThreadMutation(canonicalConnectionId, original, action)
+            mutationLock("$canonicalConnectionId:$threadId").withLock {
+                val original = findThread(canonicalConnectionId, threadId) ?: return@withLock
+                val owner = owners[canonicalConnectionId]
+                val sourceTab = tab
+                owner?.beginInboxMutation()
+                applyThreadMutation(canonicalConnectionId, threadId, action)
+                try {
+                    val response = repo.mutateThreadInbox(connection, threadId, action, mutationId)
+                    owner?.endInboxMutation()
+                    reconcileThreadMutation(canonicalConnectionId, original, response)
+                } catch (cancelled: CancellationException) {
+                    owner?.endInboxMutation()
+                    throw cancelled
+                } catch (_: Throwable) {
+                    owner?.endInboxMutation()
+                    if (tab == sourceTab) rollbackThreadMutation(canonicalConnectionId, original, action)
+                }
             }
         }
     }
+
+    private suspend fun mutationLock(key: String): Mutex =
+        mutationLocksMutex.withLock { mutationLocks.getOrPut(key) { Mutex() } }
 
     private fun findThread(connectionId: String, threadId: String): ThreadSummary? =
         owners[connectionId]?.snapshot?.value?.threads?.getOrNull()?.firstOrNull { it.id == threadId }

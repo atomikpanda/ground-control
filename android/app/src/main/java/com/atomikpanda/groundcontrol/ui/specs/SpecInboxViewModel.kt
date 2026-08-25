@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
 import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
 import java.util.UUID
@@ -52,6 +54,10 @@ class SpecInboxViewModel(
     private var searchQuery = ""
     private var refreshRevision = 0L
     private var mutationEpoch = 0L
+    private var mutationsInFlight = 0
+    private val mutationLocks = mutableMapOf<String, Mutex>()
+    private val mutationLocksMutex = Mutex()
+
 
 
 
@@ -72,6 +78,7 @@ class SpecInboxViewModel(
             if (
                 revision != refreshRevision ||
                 publicationEpoch != mutationEpoch ||
+                mutationsInFlight != 0 ||
                 requestTab != tab ||
                 requestQuery != searchQuery
             ) return@launch
@@ -92,13 +99,20 @@ class SpecInboxViewModel(
     fun selectInboxTab(tab: InboxTab): Job? {
         if (this.tab == tab) return null
         this.tab = tab
+        publishInboxSelection()
         return refresh()
     }
 
     fun onSearchQueryChange(query: String): Job? {
         if (searchQuery == query) return null
         searchQuery = query
+        publishInboxSelection()
         return refresh()
+    }
+
+    private fun publishInboxSelection() {
+        val current = _state.value as? InboxUiState.Content ?: return
+        _state.value = current.copy(tab = tab, searchQuery = searchQuery)
     }
 
     private fun toGroupBlocks(specs: List<SpecSummary>, selectedTab: InboxTab = tab): List<GroupBlock> {
@@ -124,24 +138,33 @@ class SpecInboxViewModel(
         return (testScope ?: viewModelScope).launch {
             val conn = connectionsProvider().findByConnectionId(connectionId) ?: return@launch
             val canonicalConnectionId = conn.id
-            replaceConnectionAlias(connectionId, conn)
-            val original = findSpec(canonicalConnectionId, specId) ?: return@launch
-            val sourceTab = tab
-            mutationEpoch += 1
-            applyMutation(canonicalConnectionId, specId, action)
-            try {
-                val response = repo.mutateSpecInbox(conn, specId, action, mutationId)
+            mutationLock("$canonicalConnectionId:$specId").withLock {
+                replaceConnectionAlias(connectionId, conn)
+                val original = findSpec(canonicalConnectionId, specId) ?: return@withLock
+                val sourceTab = tab
                 mutationEpoch += 1
-                reconcileMutation(canonicalConnectionId, original, response)
-            } catch (cancelled: CancellationException) {
-                mutationEpoch += 1
-                throw cancelled
-            } catch (_: Throwable) {
-                mutationEpoch += 1
-                if (tab == sourceTab) rollbackMutation(canonicalConnectionId, original, action)
+                mutationsInFlight += 1
+                applyMutation(canonicalConnectionId, specId, action)
+                try {
+                    val response = repo.mutateSpecInbox(conn, specId, action, mutationId)
+                    mutationEpoch += 1
+                    mutationsInFlight -= 1
+                    reconcileMutation(canonicalConnectionId, original, response)
+                } catch (cancelled: CancellationException) {
+                    mutationEpoch += 1
+                    mutationsInFlight -= 1
+                    throw cancelled
+                } catch (_: Throwable) {
+                    mutationEpoch += 1
+                    mutationsInFlight -= 1
+                    if (tab == sourceTab) rollbackMutation(canonicalConnectionId, original, action)
+                }
             }
         }
     }
+
+    private suspend fun mutationLock(key: String): Mutex =
+        mutationLocksMutex.withLock { mutationLocks.getOrPut(key) { Mutex() } }
 
     private fun replaceConnectionAlias(requestedId: String, canonical: WorkspaceConnection) {
         if (requestedId == canonical.id) return

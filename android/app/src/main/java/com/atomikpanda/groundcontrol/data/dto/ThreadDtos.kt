@@ -79,6 +79,7 @@ data class WorkItemRef(
 @Serializable
 data class ThreadsWaitResponse(
     val threads: List<ThreadSummary> = emptyList(),
+    @SerialName("removed_ids") val removedIds: List<String> = emptyList(),
     val cursor: String = "",
     @SerialName("timed_out") val timedOut: Boolean = false,
 )

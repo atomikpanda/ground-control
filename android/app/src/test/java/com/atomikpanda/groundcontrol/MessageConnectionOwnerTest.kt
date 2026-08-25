@@ -94,7 +94,7 @@ class MessageConnectionOwnerTest {
         val owner = owner(backgroundScope)
         val token = owner.beginForTest(MessageRequestToken.Kind.POLL)
         owner.handoffTo(replacement)
-        owner.completeForTest(token, Result.success(MessagePollDelta(listOf(thread("stale")), "stale-cursor")))
+        owner.completeForTest(token, Result.success(MessagePollDelta(listOf(thread("stale")), emptyList(), "stale-cursor")))
         assertEquals(emptyList<ThreadSummary>(), owner.snapshot.value.threads.getOrThrow())
         assertEquals("", owner.snapshot.value.cursor)
     }
@@ -104,7 +104,7 @@ class MessageConnectionOwnerTest {
         val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
         owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("old")), emptyList())))
         val poll = owner.beginForTest(MessageRequestToken.Kind.POLL)
-        owner.completeForTest(poll, Result.success(MessagePollDelta(listOf(thread("new", "2026-08-22T00:00:00Z")), "next")))
+        owner.completeForTest(poll, Result.success(MessagePollDelta(listOf(thread("new", "2026-08-22T00:00:00Z")), emptyList(), "next")))
         assertEquals(listOf("new", "old"), owner.snapshot.value.threads.getOrThrow().map { it.id })
         assertEquals("next", owner.snapshot.value.cursor)
     }
@@ -114,9 +114,9 @@ class MessageConnectionOwnerTest {
         val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
         owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("old")), emptyList())))
         val poll = owner.beginForTest(MessageRequestToken.Kind.POLL)
-        owner.completeForTest(poll, Result.success(MessagePollDelta(listOf(thread("changed")), "cursor")))
+        owner.completeForTest(poll, Result.success(MessagePollDelta(listOf(thread("changed")), emptyList(), "cursor")))
         val timeout = owner.beginForTest(MessageRequestToken.Kind.POLL)
-        owner.completeForTest(timeout, Result.success(MessagePollDelta(listOf(thread("changed-again")), "")))
+        owner.completeForTest(timeout, Result.success(MessagePollDelta(listOf(thread("changed-again")), emptyList(), "")))
         assertEquals("cursor", owner.snapshot.value.cursor)
         assertEquals(setOf("old", "changed", "changed-again"), owner.snapshot.value.threads.getOrThrow().map { it.id }.toSet())
     }
@@ -126,10 +126,10 @@ class MessageConnectionOwnerTest {
         val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
         owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("accepted")), emptyList())))
         val cursor = owner.beginForTest(MessageRequestToken.Kind.POLL)
-        owner.completeForTest(cursor, Result.success(MessagePollDelta(emptyList(), "cursor-7")))
+        owner.completeForTest(cursor, Result.success(MessagePollDelta(emptyList(), emptyList(), "cursor-7")))
         val stale = owner.beginForTest(MessageRequestToken.Kind.POLL)
         val receipt = requireNotNull(owner.handoffTo(replacement))
-        owner.completeForTest(stale, Result.success(MessagePollDelta(listOf(thread("stale")), "cursor-8")))
+        owner.completeForTest(stale, Result.success(MessagePollDelta(listOf(thread("stale")), emptyList(), "cursor-8")))
         assertEquals("", owner.snapshot.value.cursor)
         assertEquals(emptyList<ThreadSummary>(), owner.snapshot.value.threads.getOrThrow())
         assertEquals(replacement, owner.snapshot.value.connection)
@@ -150,7 +150,7 @@ class MessageConnectionOwnerTest {
         val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
         owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("accepted")), emptyList())))
         val poll = owner.beginForTest(MessageRequestToken.Kind.POLL)
-        owner.completeForTest(poll, Result.success(MessagePollDelta(emptyList(), "accepted-cursor")))
+        owner.completeForTest(poll, Result.success(MessagePollDelta(emptyList(), emptyList(), "accepted-cursor")))
         val failed = owner.beginForTest(MessageRequestToken.Kind.POLL)
         owner.completeForTest(failed, Result.failure(IOException("offline")))
         assertEquals(listOf("accepted"), owner.snapshot.value.threads.getOrThrow().map { it.id })
@@ -274,7 +274,7 @@ class MessageConnectionOwnerTest {
             fullLoad = { MessageFullLoad(emptyList(), emptyList()) },
             poll = { _, _ ->
                 polls += 1
-                MessagePollDelta(emptyList(), "")
+                MessagePollDelta(emptyList(), emptyList(), "")
             },
             scope = backgroundScope,
             retryDelay = { retryGate.receive() },
@@ -439,7 +439,7 @@ class MessageConnectionOwnerTest {
         val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
         owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("accepted")), emptyList())))
         val cursor = owner.beginForTest(MessageRequestToken.Kind.POLL)
-        owner.completeForTest(cursor, Result.success(MessagePollDelta(emptyList(), "cursor-7")))
+        owner.completeForTest(cursor, Result.success(MessagePollDelta(emptyList(), emptyList(), "cursor-7")))
         val receipt = requireNotNull(owner.handoffTo(adopted))
         owner.resumeAfterHandoff(receipt)
         runCurrent()
@@ -516,6 +516,17 @@ class MessageConnectionOwnerTest {
         owner.cancel()
         refresh.join()
         assertTrue(refresh.isCompleted)
+    }
+
+    @Test fun poll_removed_ids_remove_threads_without_resetting_cursor() = runTest {
+        val owner = owner(backgroundScope)
+        val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
+        owner.completeForTest(initial, Result.success(MessageFullLoad(listOf(thread("removed")), emptyList())))
+        val poll = owner.beginForTest(MessageRequestToken.Kind.POLL)
+        owner.completeForTest(poll, Result.success(MessagePollDelta(emptyList(), listOf("removed"), "next-cursor")))
+
+        assertEquals(emptyList<ThreadSummary>(), owner.snapshot.value.threads.getOrThrow())
+        assertEquals("next-cursor", owner.snapshot.value.cursor)
     }
 
     }

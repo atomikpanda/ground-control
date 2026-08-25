@@ -196,10 +196,12 @@ internal fun GroundControlContent(
     val appScope = rememberCoroutineScope()
     val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
     val coachMark = remember { DataStoreCoachMarkStore(context.applicationContext, appScope) }
-    // Activity-scoped (not per-NavBackStackEntry): shared by the Home sticky threads card and the
-    // "threads" drill-in list so the loaded sections + live-poll loop survive navigating between
-    // them (spec: ground-control-thread-findability).
-    val messagesVm = viewModel {
+    // Home owns an Active-only messages snapshot, separate from the threads tab's selected
+    // inbox/search state. Sharing one owner would let tab search reclassify Home's server feed.
+    val homeMessagesVm: MessagesViewModel = viewModel(key = "homeMessages") {
+        MessagesViewModel(threadsRepo, connectionStateSource.state)
+    }
+    val messagesVm: MessagesViewModel = viewModel(key = "inboxMessages") {
         MessagesViewModel(threadsRepo, connectionStateSource.state)
     }
     // Activity-scoped so relay links received on Home immediately trigger fleet
@@ -241,7 +243,7 @@ internal fun GroundControlContent(
                 }
                 HomeScreen(
                     vm,
-                    messagesVm,
+                    homeMessagesVm,
                     onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },

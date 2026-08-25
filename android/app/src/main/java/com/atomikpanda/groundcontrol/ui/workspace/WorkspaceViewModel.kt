@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
 import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
+import com.atomikpanda.groundcontrol.data.dto.InboxFilter
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
@@ -59,7 +60,7 @@ class WorkspaceViewModel(
     private fun refresh(snapshot: RouteConnectionSnapshot): Job = scope.launch {
         val conn = snapshot.connection
         val threads = async { catchingApi { api.listThreads(conn) } }
-        val specs = async { catchingApi { api.listSpecs(conn) } }
+        val specs = async { catchingApi { api.listSpecs(conn, InboxFilter.ACTIVE) } }
         val tasks = async { catchingApi { api.listTasks(conn) } }
         val t = threads.await()
         val s = specs.await()
