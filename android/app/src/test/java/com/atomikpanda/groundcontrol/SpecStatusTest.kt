@@ -28,6 +28,7 @@ class SpecStatusTest {
             listOf(
                 SpecGroup.NEEDS_REVIEW, SpecGroup.READY_TO_DISPATCH,
                 SpecGroup.IN_IMPLEMENTATION, SpecGroup.DRAFTING, SpecGroup.DONE,
+                SpecGroup.ARCHIVED,
             ),
             orderedGroups(),
         )
