@@ -890,8 +890,14 @@ class MessagesViewModelTest {
         val actions = mutableListOf<String>()
         val vm = MessagesViewModel(repoWith { request ->
             if (request.url.encodedPath.contains("/inbox/")) {
-                actions += request.url.encodedPath.substringAfterLast("/inbox/")
-                respond("""{"id":"t1","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
+                val action = request.url.encodedPath.substringAfterLast("/inbox/")
+                actions += action
+                val response = when (action) {
+                    "archive", "unpin" -> """{"id":"t1","subject":"needle","inbox_state":"archived","pinned":false}"""
+                    "pin" -> """{"id":"t1","subject":"needle","inbox_state":"active","pinned":true}"""
+                    else -> """{"id":"t1","subject":"needle","inbox_state":"active","pinned":false}"""
+                }
+                respond(response, HttpStatusCode.OK, jsonHdr)
             } else if (request.url.encodedPath.endsWith("/threads")) {
                 inboxRequests += request.url.parameters["inbox"] to request.url.parameters["q"]
                 val archived = request.url.parameters["inbox"] == "archived"
@@ -909,15 +915,21 @@ class MessagesViewModelTest {
         vm.refresh()?.join()
         assertEquals(InboxTab.ACTIVE, (vm.state.value as MessagesUiState.Content).tab)
         vm.onSearchQueryChange("needle")?.join()
-        vm.mutateInbox(connA.id, "t1", InboxAction.PIN).join()
-        vm.mutateInbox(connA.id, "t1", InboxAction.UNPIN).join()
         vm.mutateInbox(connA.id, "t1", InboxAction.ARCHIVE).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+        vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.PIN).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+        vm.selectInboxTab(InboxTab.ACTIVE)?.join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.UNPIN).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
         vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
         vm.mutateInbox(connA.id, "t1", InboxAction.RESTORE).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
 
         assertTrue(inboxRequests.contains("active" to "needle"))
         assertTrue(inboxRequests.contains("archived" to "needle"))
-        assertEquals(listOf("pin", "unpin", "archive", "restore"), actions)
+        assertEquals(listOf("archive", "pin", "unpin", "restore"), actions)
     }
 
 }

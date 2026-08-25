@@ -228,17 +228,19 @@ class SpecInboxViewModelTest {
         val actions = mutableListOf<String>()
         val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
             if (request.url.encodedPath.contains("/inbox/")) {
-                actions += request.url.encodedPath.substringAfterLast("/inbox/")
-                respond(
-                    """{"id":"b","title":"B","status":"needs_review","inbox_state":"archived"}""",
-                    HttpStatusCode.OK,
-                    jsonHdr,
-                )
+                val action = request.url.encodedPath.substringAfterLast("/inbox/")
+                actions += action
+                val response = when (action) {
+                    "archive", "unpin" -> """{"id":"b","title":"needle","status":"needs_review","inbox_state":"archived","pinned":false}"""
+                    "pin" -> """{"id":"b","title":"needle","status":"archived","inbox_state":"active","pinned":true}"""
+                    else -> """{"id":"b","title":"needle","status":"archived","inbox_state":"active","pinned":false}"""
+                }
+                respond(response, HttpStatusCode.OK, jsonHdr)
             } else {
                 inboxRequests += request.url.parameters["inbox"] to request.url.parameters["q"]
                 val archived = request.url.parameters["inbox"] == "archived"
                 respond(
-                    if (archived) """[{"id":"b","title":"needle","status":"needs_review","inbox_state":"archived"}]"""
+                    if (archived) """[{"id":"b","title":"needle","status":"archived","inbox_state":"archived"}]"""
                     else """[{"id":"b","title":"needle","status":"needs_review"}]""",
                     HttpStatusCode.OK,
                     jsonHdr,
@@ -251,15 +253,22 @@ class SpecInboxViewModelTest {
         vm.refresh()?.join()
         assertEquals(InboxTab.ACTIVE, (vm.state.value as InboxUiState.Content).tab)
         vm.onSearchQueryChange("needle")?.join()
-        vm.mutateInbox("conn-7", "b", InboxAction.PIN).join()
-        vm.mutateInbox("conn-7", "b", InboxAction.UNPIN).join()
         vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE).join()
+        assertTrue(specIds(vm).isEmpty())
+        vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
+        assertEquals(listOf("b"), specIds(vm))   // lifecycle status "archived" remains renderable
+        vm.mutateInbox("conn-7", "b", InboxAction.PIN).join()
+        assertTrue(specIds(vm).isEmpty())
+        vm.selectInboxTab(InboxTab.ACTIVE)?.join()
+        vm.mutateInbox("conn-7", "b", InboxAction.UNPIN).join()
+        assertTrue(specIds(vm).isEmpty())
         vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
         vm.mutateInbox("conn-7", "b", InboxAction.RESTORE).join()
+        assertTrue(specIds(vm).isEmpty())
 
         assertTrue(inboxRequests.contains("active" to "needle"))
         assertTrue(inboxRequests.contains("archived" to "needle"))
-        assertEquals(listOf("pin", "unpin", "archive", "restore"), actions)
+        assertEquals(listOf("archive", "pin", "unpin", "restore"), actions)
     }
 
 }

@@ -7,6 +7,7 @@ import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.groupForStatus
 import com.atomikpanda.groundcontrol.data.orderedGroups
@@ -71,7 +72,7 @@ class SpecInboxViewModel(
                     WorkspaceSection(
                         workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
                         connectionId = ws.connection.id,
-                        groups = ws.specs.map { specs -> toGroupBlocks(specs) },
+                        groups = ws.specs.map { specs -> toGroupBlocks(specs, requestTab) },
                     )
                 },
                 tab = requestTab,
@@ -92,11 +93,15 @@ class SpecInboxViewModel(
         return refresh()
     }
 
-    private fun toGroupBlocks(specs: List<SpecSummary>): List<GroupBlock> {
-        val byGroup = specs.groupBy { groupForStatus(it.status) }
-        return orderedGroups().mapNotNull { g ->
-            byGroup[g]?.takeIf { it.isNotEmpty() }?.let { GroupBlock(g, it) }
-        }   // empty groups + null-group (archived/unknown) omitted
+    private fun toGroupBlocks(specs: List<SpecSummary>, selectedTab: InboxTab = tab): List<GroupBlock> {
+        val byGroup = specs.mapNotNull { spec ->
+            val group = groupForStatus(spec.status)
+                ?: SpecGroup.ARCHIVED.takeIf { selectedTab == InboxTab.ARCHIVED }
+            group?.let { it to spec }
+        }.groupBy({ it.first }, { it.second })
+        return orderedGroups().mapNotNull { group ->
+            byGroup[group]?.takeIf { it.isNotEmpty() }?.let { GroupBlock(group, it) }
+        }
     }
 
     /**
@@ -114,7 +119,11 @@ class SpecInboxViewModel(
             val sourceTab = tab
             applyMutation(canonicalConnectionId, specId, action)
             try {
-                repo.mutateSpecInbox(conn, specId, action, mutationId)
+                reconcileMutation(
+                    canonicalConnectionId,
+                    original,
+                    repo.mutateSpecInbox(conn, specId, action, mutationId),
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
@@ -160,6 +169,31 @@ class SpecInboxViewModel(
                     if (specs.any { it.id == original.id }) specs else specs + original
                 InboxAction.PIN, InboxAction.UNPIN ->
                     specs.map { if (it.id == original.id) original else it }
+            }
+        }
+    }
+
+    private fun reconcileMutation(
+        connectionId: String,
+        original: SpecSummary,
+        response: SpecRecord,
+    ) {
+        val resolved = original.copy(
+            title = response.title,
+            status = response.status,
+            taskSlug = response.taskSlug,
+            affectedRepos = response.affectedRepos,
+            inboxState = response.inboxState,
+            archiveReason = response.archiveReason,
+            pinned = response.pinned,
+        )
+        updateSpec(connectionId) { specs ->
+            if (resolved.inboxState != tab.state) {
+                specs.filterNot { it.id == resolved.id }
+            } else if (specs.any { it.id == resolved.id }) {
+                specs.map { if (it.id == resolved.id) resolved else it }
+            } else {
+                specs + resolved
             }
         }
     }

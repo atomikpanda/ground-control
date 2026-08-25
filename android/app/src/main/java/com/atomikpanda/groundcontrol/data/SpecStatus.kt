@@ -7,6 +7,7 @@ enum class SpecGroup(val label: String) {
     IN_IMPLEMENTATION("In implementation"),
     DRAFTING("Drafting"),
     DONE("Done"),
+    ARCHIVED("Archived"),
 }
 
 /** Map a raw mship spec status to its inbox group, or null to hide it. */

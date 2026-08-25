@@ -6,6 +6,7 @@ import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import kotlinx.coroutines.CancellationException
@@ -323,7 +324,11 @@ class MessagesViewModel(
             val sourceTab = tab
             applyThreadMutation(canonicalConnectionId, threadId, action)
             try {
-                repo.mutateThreadInbox(connection, threadId, action, mutationId)
+                reconcileThreadMutation(
+                    canonicalConnectionId,
+                    original,
+                    repo.mutateThreadInbox(connection, threadId, action, mutationId),
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
@@ -361,6 +366,33 @@ class MessagesViewModel(
                     if (threads.any { it.id == original.id }) threads else threads + original
                 InboxAction.PIN, InboxAction.UNPIN ->
                     threads.map { if (it.id == original.id) original else it }
+            }
+        }
+        renderOwners()
+    }
+
+    private suspend fun reconcileThreadMutation(
+        connectionId: String,
+        original: ThreadSummary,
+        response: Thread,
+    ) {
+        val resolved = original.copy(
+            subject = response.subject,
+            updatedAt = response.updatedAt,
+            awaitingReply = response.awaitingReply,
+            agentSeenAt = response.agentSeenAt,
+            workItemId = response.workItemId,
+            inboxState = response.inboxState,
+            archiveReason = response.archiveReason,
+            pinned = response.pinned,
+        )
+        owners[connectionId]?.updateThreads { threads ->
+            if (resolved.inboxState != tab.state) {
+                threads.filterNot { it.id == resolved.id }
+            } else if (threads.any { it.id == resolved.id }) {
+                threads.map { if (it.id == resolved.id) resolved else it }
+            } else {
+                threads + resolved
             }
         }
         renderOwners()
