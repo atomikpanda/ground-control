@@ -49,11 +49,13 @@ Android updates must use the same signing certificate. Back up the local key at
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, and `ANDROID_KEY_ALIAS` secrets hold
 the store password, key password, and alias.
 
-To generate and inspect a recoverable release key, set the password variables in your local
-shell, then run:
+To generate and inspect a recoverable release key, generate restricted password values in your
+local shell, then run:
 
 ```bash
 install -d -m 700 "$HOME/.mothership/keys"
+ANDROID_KEYSTORE_PASSWORD="$(openssl rand -hex 32)"
+ANDROID_KEY_PASSWORD="$(openssl rand -hex 32)"
 keytool -genkeypair -v \
   -storetype JKS \
   -keystore "$HOME/.mothership/keys/ground-control-release.jks" \
@@ -75,9 +77,6 @@ chmod 600 "$HOME/.mothership/keys/ground-control-release.jks" \
 keytool -list -v \
   -keystore "$HOME/.mothership/keys/ground-control-release.jks" \
   -storepass "$ANDROID_KEYSTORE_PASSWORD"
-set -a
-. "$HOME/.mothership/keys/ground-control-release.env"
-set +a
 gh secret set -f "$HOME/.mothership/keys/ground-control-release.env"
 gh secret set ANDROID_KEYSTORE_BASE64 \
   --body "$(base64 -w 0 "$HOME/.mothership/keys/ground-control-release.jks")"

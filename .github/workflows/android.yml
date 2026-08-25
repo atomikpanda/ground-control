@@ -81,7 +81,11 @@ jobs:
             previous_run_conclusion="$(jq -r '.conclusion // empty' <<<"$previous_run")"
             previous_run_url="$(jq -r '.html_url // empty' <<<"$previous_run")"
             if [ "$previous_run_status" = "completed" ]; then
-              echo "Previous Android run $previous_run_url completed with $previous_run_conclusion but did not publish $previous_tag. Rerun or repair that predecessor." >&2
+              if [ "$previous_run_conclusion" != "success" ]; then
+                echo "Previous Android run $previous_run_url was non-publishable ($previous_run_conclusion); proceeding."
+                exit 0
+              fi
+              echo "Previous Android run $previous_run_url succeeded but did not publish $previous_tag. Rerun or repair that predecessor." >&2
               exit 1
             fi
 
