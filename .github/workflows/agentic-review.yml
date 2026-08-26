@@ -16,3 +16,4 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     with:
       central_ref: v1
+      max_parallel: 3
