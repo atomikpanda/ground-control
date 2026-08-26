@@ -118,8 +118,11 @@ class SpecInboxViewModel(
 
     private fun toGroupBlocks(specs: List<SpecSummary>, selectedTab: InboxTab = tab): List<GroupBlock> {
         val byGroup = specs.mapNotNull { spec ->
-            val group = groupForStatus(spec.status)
-                ?: SpecGroup.ARCHIVED.takeIf { spec.inboxState == InboxTab.ARCHIVED.state }
+            val group = when {
+                selectedTab == InboxTab.ARCHIVED -> SpecGroup.ARCHIVED
+                spec.status == "archived" -> SpecGroup.ARCHIVED
+                else -> groupForStatus(spec.status)
+            }
             group?.let { it to spec }
         }.groupBy({ it.first }, { it.second })
         return orderedGroups().mapNotNull { group ->

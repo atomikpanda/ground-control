@@ -257,6 +257,10 @@ class SpecInboxViewModelTest {
         assertTrue(specIds(vm).isEmpty())
         vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
         assertEquals(listOf("b"), specIds(vm))   // lifecycle status "archived" remains renderable
+        assertEquals(
+            SpecGroup.ARCHIVED,
+            (vm.state.value as InboxUiState.Content).sections.single().groups.getOrThrow().single().group,
+        )
         vm.mutateInbox("conn-7", "b", InboxAction.PIN).join()
         assertTrue(specIds(vm).isEmpty())
         vm.selectInboxTab(InboxTab.ACTIVE)?.join()
