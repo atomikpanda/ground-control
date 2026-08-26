@@ -2,6 +2,12 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.buildJson
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.InboxFilter
+import com.atomikpanda.groundcontrol.data.dto.InboxState
+import com.atomikpanda.groundcontrol.data.dto.SpecRecord
+import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -169,5 +175,91 @@ class SpecApiTest {
         } catch (e: com.atomikpanda.groundcontrol.data.ApiConflictException) {
             assertTrue(e.detail.contains("already exists"))
         }
+    }
+    @Test fun list_inbox_requests_encode_filter_and_search_without_reclassifying() = runTest {
+        val parameters = mutableListOf<Pair<String?, String?>>()
+        val api = SpecApi(client { req ->
+            parameters += req.url.parameters["inbox"] to req.url.parameters["q"]
+            respond(
+                when {
+                    req.url.encodedPath.endsWith("/specs") ->
+                        """[{"id":"s1","title":"Spec","status":"drafting","inbox_state":"archived","archive_reason":"manual","pinned":false}]"""
+                    else ->
+                        """[{"id":"t1","subject":"Thread","inbox_state":"archived","archive_reason":"manual","pinned":false}]"""
+                },
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        })
+
+        val specs = api.listSpecs(conn, InboxFilter.ARCHIVED, "needs review & more")
+        val threads = api.listThreads(conn, InboxFilter.ACTIVE, "needs review & more")
+
+        assertEquals(InboxState.ARCHIVED, specs.single().inboxState)
+        assertEquals("manual", specs.single().archiveReason)
+        assertEquals(InboxState.ARCHIVED, threads.single().inboxState)
+        assertEquals("manual", threads.single().archiveReason)
+        assertEquals(
+            listOf(
+                "archived" to "needs review & more",
+                "active" to "needs review & more",
+            ),
+            parameters,
+        )
+    }
+
+    @Test fun inbox_mutations_use_action_routes_and_caller_mutation_ids() = runTest {
+        data class Request(val path: String, val body: String)
+        val requests = mutableListOf<Request>()
+        val api = SpecApi(client { req ->
+            requests += Request(
+                req.url.encodedPath,
+                (req.body as io.ktor.http.content.TextContent).text,
+            )
+            respond(
+                if (req.url.encodedPath.startsWith("/threads/")) {
+                    """{"id":"t1","subject":"Thread","inbox_state":"archived","archive_reason":"manual","pinned":false,"messages":[]}"""
+                } else {
+                    """{"id":"s1","title":"Spec","status":"drafting","inbox_state":"archived","archive_reason":"manual","pinned":false}"""
+                },
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        })
+        val actions = listOf("archive", "restore", "pin", "unpin")
+
+        actions.zip(InboxAction.entries).forEach { (wireAction, action) ->
+            val thread = api.mutateThreadInbox(conn, "t1", action, "thread-$wireAction")
+            assertEquals(InboxState.ARCHIVED, thread.inboxState)
+            assertEquals("manual", thread.archiveReason)
+            val spec = api.mutateSpecInbox(conn, "s1", action, "spec-$wireAction")
+            assertEquals(InboxState.ARCHIVED, spec.inboxState)
+            assertEquals("manual", spec.archiveReason)
+        }
+
+        assertEquals(
+            actions.flatMap { action -> listOf(
+                Request("/threads/t1/inbox/$action", """{"mutation_id":"thread-$action"}"""),
+                Request("/specs/s1/inbox/$action", """{"mutation_id":"spec-$action"}"""),
+            ) },
+            requests,
+        )
+    }
+
+    @Test fun spec_inbox_classification_defaults_for_older_servers() {
+        val summary = buildJson().decodeFromString(
+            SpecSummary.serializer(),
+            """{"id":"s1","title":"Spec","status":"drafting"}""",
+        )
+        val record = buildJson().decodeFromString(
+            SpecRecord.serializer(),
+            """{"id":"s1","title":"Spec","status":"drafting"}""",
+        )
+        assertEquals(InboxState.ACTIVE, summary.inboxState)
+        assertEquals(null, summary.archiveReason)
+        assertEquals(false, summary.pinned)
+        assertEquals(InboxState.ACTIVE, record.inboxState)
+        assertEquals(null, record.archiveReason)
+        assertEquals(false, record.pinned)
     }
 }

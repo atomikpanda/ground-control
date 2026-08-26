@@ -52,6 +52,9 @@ data class SpecRecord(
     val body: String = "",
     @SerialName("prose_verdicts") val proseVerdicts: Map<String, ProseVerdictDto> = emptyMap(),
     @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("inbox_state") val inboxState: InboxState = InboxState.ACTIVE,
+    @SerialName("archive_reason") val archiveReason: String? = null,
+    val pinned: Boolean = false,
 )
 
 @Serializable

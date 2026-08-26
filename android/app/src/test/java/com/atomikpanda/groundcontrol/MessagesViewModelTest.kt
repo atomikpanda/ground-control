@@ -12,6 +12,8 @@ import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateFilter
 import com.atomikpanda.groundcontrol.ui.messages.mergeThreadsById
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
 import com.atomikpanda.groundcontrol.ui.messages.unreadCountFor
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -883,4 +885,258 @@ class MessagesViewModelTest {
         assertEquals(finalReplacement, vm.ownerSnapshot(finalReplacement.id)?.connection)
     }
 
+    @Test fun tab_search_and_inbox_actions_use_durable_server_filters() = runTest {
+        val inboxRequests = mutableListOf<Pair<String?, String?>>()
+        val actions = mutableListOf<String>()
+        val vm = MessagesViewModel(repoWith { request ->
+            if (request.url.encodedPath.contains("/inbox/")) {
+                val action = request.url.encodedPath.substringAfterLast("/inbox/")
+                actions += action
+                val response = when (action) {
+                    "archive", "unpin" -> """{"id":"t1","subject":"needle","inbox_state":"archived","pinned":false}"""
+                    "pin" -> """{"id":"t1","subject":"needle","inbox_state":"active","pinned":true}"""
+                    else -> """{"id":"t1","subject":"needle","inbox_state":"active","pinned":false}"""
+                }
+                respond(response, HttpStatusCode.OK, jsonHdr)
+            } else if (request.url.encodedPath.endsWith("/threads")) {
+                inboxRequests += request.url.parameters["inbox"] to request.url.parameters["q"]
+                val archived = request.url.parameters["inbox"] == "archived"
+                respond(
+                    if (archived) """[{"id":"t1","subject":"needle","inbox_state":"archived"}]"""
+                    else """[{"id":"t1","subject":"needle"}]""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            } else {
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.refresh()?.join()
+        assertEquals(InboxTab.ACTIVE, (vm.state.value as MessagesUiState.Content).tab)
+        vm.onSearchQueryChange("needle")?.join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.ARCHIVE).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+        vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.PIN).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+        vm.selectInboxTab(InboxTab.ACTIVE)?.join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.UNPIN).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+        vm.selectInboxTab(InboxTab.ARCHIVED)?.join()
+        vm.mutateInbox(connA.id, "t1", InboxAction.RESTORE).join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+
+        assertTrue(inboxRequests.contains("active" to "needle"))
+        assertTrue(inboxRequests.contains("archived" to "needle"))
+        assertEquals(listOf("archive", "pin", "unpin", "restore"), actions)
+    }
+
+    @Test fun stale_refresh_cannot_overwrite_authoritative_inbox_mutation() = runTest {
+        val heldGetStarted = CompletableDeferred<Unit>()
+        val releaseGet = CompletableDeferred<Unit>()
+        val heldPostStarted = CompletableDeferred<Unit>()
+        val releasePost = CompletableDeferred<Unit>()
+        var holdNextGet = false
+        val vm = MessagesViewModel(repoWith { request ->
+            if (request.url.encodedPath.contains("/inbox/")) {
+                heldPostStarted.complete(Unit)
+                releasePost.await()
+                respond("""{"id":"b","subject":"B","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
+            } else if (request.url.encodedPath.endsWith("/threads")) {
+                val body = when {
+                    holdNextGet -> {
+                        holdNextGet = false
+                        heldGetStarted.complete(Unit)
+                        releaseGet.await()
+                        """[{"id":"b","subject":"B"}]"""
+                    }
+                    request.url.parameters["q"] == "b" -> """[{"id":"b","subject":"B"}]"""
+                    else -> """[{"id":"fresh","subject":"Fresh"}]"""
+                }
+                respond(body, HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.refresh()?.join()
+        assertEquals(listOf("fresh"), (vm.state.value as MessagesUiState.Content).filteredThreads.map { it.thread.id })
+        vm.onSearchQueryChange("b")?.join()
+        holdNextGet = true
+        val staleRefresh = vm.refresh()
+        heldGetStarted.await()
+        val mutation = vm.mutateInbox(connA.id, "b", InboxAction.ARCHIVE)
+        heldPostStarted.await()
+        releasePost.complete(Unit)
+        mutation.join()
+        releaseGet.complete(Unit)
+        staleRefresh.join()
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+
+        vm.onSearchQueryChange("")?.join()
+        assertEquals(listOf("fresh"), (vm.state.value as MessagesUiState.Content).filteredThreads.map { it.thread.id })
+    }
+
+    @Test fun long_poll_uses_the_selected_inbox_and_search_and_removes_tombstoned_threads() = runTest {
+        val pollStarted = CompletableDeferred<Unit>()
+        val releasePoll = CompletableDeferred<Unit>()
+        val pollRequests = mutableListOf<Pair<String?, String?>>()
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.parameters["wait"] == "1" -> {
+                    pollRequests += request.url.parameters["inbox"] to request.url.parameters["q"]
+                    pollStarted.complete(Unit)
+                    releasePoll.await()
+                    respond(
+                        """{"threads":[],"removed_ids":["t1"],"cursor":"next","timed_out":false}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                request.url.encodedPath.endsWith("/threads") -> respond(
+                    if (request.url.parameters["inbox"] == "archived") {
+                        """[{"id":"t1","subject":"needle","inbox_state":"archived"}]"""
+                    } else {
+                        """[{"id":"t1","subject":"needle"}]"""
+                    },
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.refresh().join()
+        vm.selectInboxTab(InboxTab.ARCHIVED)!!.join()
+        vm.onSearchQueryChange("needle")!!.join()
+        val poll = async { vm.pollOnce(connA, "before") }
+        pollStarted.await()
+        assertEquals(listOf("archived" to "needle"), pollRequests)
+        releasePoll.complete(Unit)
+        assertEquals("next", poll.await())
+        assertTrue((vm.state.value as MessagesUiState.Content).filteredThreads.isEmpty())
+    }
+
+    @Test fun discarded_refresh_does_not_revert_selected_inbox_metadata() = runTest {
+        val staleRefreshStarted = CompletableDeferred<Unit>()
+        val releaseStaleRefresh = CompletableDeferred<Unit>()
+        var requests = 0
+        val vm = MessagesViewModel(repoWith { request ->
+            if (request.url.encodedPath.endsWith("/threads")) {
+                requests += 1
+                if (requests == 2) {
+                    staleRefreshStarted.complete(Unit)
+                    releaseStaleRefresh.await()
+                    respond("""[{"id":"stale","subject":"stale","inbox_state":"archived"}]""", HttpStatusCode.OK, jsonHdr)
+                } else {
+                    respond("""[{"id":"fresh","subject":"fresh","inbox_state":"archived"}]""", HttpStatusCode.OK, jsonHdr)
+                }
+            } else {
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.refresh().join()
+        val archivedRefresh = vm.selectInboxTab(InboxTab.ARCHIVED)!!
+        staleRefreshStarted.await()
+        vm.onSearchQueryChange("needle")!!.join()
+        releaseStaleRefresh.complete(Unit)
+        archivedRefresh.join()
+
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(InboxTab.ARCHIVED, content.tab)
+        assertEquals("needle", content.searchQuery)
+    }
+
+    @Test fun failed_thread_pin_after_tab_switch_restores_the_original_thread_state() = runTest {
+        val mutationStarted = CompletableDeferred<Unit>()
+        val releaseMutation = CompletableDeferred<Unit>()
+        val archivedRefreshStarted = CompletableDeferred<Unit>()
+        var archivedRefreshes = 0
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.encodedPath.contains("/inbox/") -> {
+                    mutationStarted.complete(Unit)
+                    releaseMutation.await()
+                    respondError(HttpStatusCode.InternalServerError)
+                }
+                request.url.encodedPath.endsWith("/threads") &&
+                    request.url.parameters["inbox"] == "archived" -> {
+                    archivedRefreshes += 1
+                    archivedRefreshStarted.complete(Unit)
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/threads") ->
+                    respond("""[{"id":"t1","subject":"thread","pinned":false}]""", HttpStatusCode.OK, jsonHdr)
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connectionState(listOf(connA)), backgroundScope)
+
+        vm.refresh().join()
+        val mutation = vm.mutateInbox(connA.id, "t1", InboxAction.PIN)
+        mutationStarted.await()
+        val archivedRefresh = vm.selectInboxTab(InboxTab.ARCHIVED)!!
+        runCurrent()
+        assertTrue(!archivedRefreshStarted.isCompleted)
+        releaseMutation.complete(Unit)
+        archivedRefreshStarted.await()
+        mutation.join()
+        archivedRefresh.join()
+        assertEquals(1, archivedRefreshes)
+
+        val archivedContent = vm.state.value as MessagesUiState.Content
+        assertEquals(InboxTab.ARCHIVED, archivedContent.tab)
+        assertTrue(archivedContent.filteredThreads.isEmpty())
+
+        vm.selectInboxTab(InboxTab.ACTIVE)!!.join()
+        val restored = vm.ownerSnapshot(connA.id)!!.threads.getOrThrow().single()
+        assertEquals("t1", restored.id)
+        assertEquals(false, restored.pinned)
+    }
+
+    @Test fun home_peek_respects_its_selected_state_filter() = runTest {
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
+        vm.refresh().join()
+        vm.selectStateFilter(ThreadStateFilter.UNREAD)
+
+        assertEquals(
+            listOf("b1", "a1"),
+            vm.topThreads(3).map { it.id },
+        )
+    }
+
+    @Test fun inbox_tab_and_search_do_not_reclassify_the_home_messages_owner() = runTest {
+        val requests = mutableListOf<Triple<String, String?, String?>>()
+        val repository = repoWith { request ->
+            if (request.url.encodedPath.endsWith("/threads")) {
+                requests += Triple(
+                    request.url.host,
+                    request.url.parameters["inbox"],
+                    request.url.parameters["q"],
+                )
+                respond("""[{"id":"t1","subject":"needle"}]""", HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val home = MessagesViewModel(repository, connectionState(listOf(connA)), backgroundScope)
+        val inbox = MessagesViewModel(repository, connectionState(listOf(connB)), backgroundScope)
+
+        home.refresh().join()
+        inbox.refresh().join()
+        inbox.selectInboxTab(InboxTab.ARCHIVED)!!.join()
+        inbox.onSearchQueryChange("needle")!!.join()
+
+        val homeContent = home.state.value as MessagesUiState.Content
+        assertEquals(InboxTab.ACTIVE, homeContent.tab)
+        assertEquals("", homeContent.searchQuery)
+        val homeRequests = requests.filter { it.first == "a" }
+        assertTrue(homeRequests.isNotEmpty())
+        assertTrue(homeRequests.all { it.second == "active" && it.third == null })
+
+        val inboxRequests = requests.filter { it.first == "b" }
+        assertTrue(inboxRequests.contains(Triple("b", "archived", null)))
+        assertTrue(inboxRequests.contains(Triple("b", "archived", "needle")))
+    }
 }

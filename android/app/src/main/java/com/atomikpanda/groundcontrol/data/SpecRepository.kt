@@ -1,5 +1,7 @@
 package com.atomikpanda.groundcontrol.data
 
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.InboxFilter
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -13,14 +15,22 @@ data class WorkspaceSpecs(
 
 class SpecRepository(private val api: SpecApi) {
 
-    suspend fun listAllSpecs(connections: List<WorkspaceConnection>): List<WorkspaceSpecs> =
+    suspend fun listAllSpecs(
+        connections: List<WorkspaceConnection>,
+        filter: InboxFilter = InboxFilter.ALL,
+        query: String? = null,
+    ): List<WorkspaceSpecs> =
         coroutineScope {
             connections.map { conn ->
-                async { WorkspaceSpecs(conn, runCatching { api.listSpecs(conn) }) }
+                async { WorkspaceSpecs(conn, runCatching { api.listSpecs(conn, filter, query) }) }
             }.awaitAll()
         }
 
-    /** Archive a spec (swipe-to-archive). Thin passthrough so the ViewModel only ever talks
-     *  to the repository, matching [listAllSpecs]'s layering. */
-    suspend fun archiveSpec(conn: WorkspaceConnection, id: String) = api.archiveSpec(conn, id)
+
+    suspend fun mutateSpecInbox(
+        conn: WorkspaceConnection,
+        id: String,
+        action: InboxAction,
+        mutationId: String,
+    ) = api.mutateSpecInbox(conn, id, action, mutationId)
 }

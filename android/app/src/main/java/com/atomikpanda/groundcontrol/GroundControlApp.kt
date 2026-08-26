@@ -45,6 +45,7 @@ import com.atomikpanda.groundcontrol.data.HomeFeedRepository
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
+import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -78,6 +79,8 @@ import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
 import com.atomikpanda.groundcontrol.ui.theme.resolveIdentity
 import com.atomikpanda.groundcontrol.ui.settings.SettingsScreen
 import com.atomikpanda.groundcontrol.ui.settings.SettingsViewModel
+import com.atomikpanda.groundcontrol.ui.specs.SpecInboxScreen
+import com.atomikpanda.groundcontrol.ui.specs.SpecInboxViewModel
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
 import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailViewModel
 import com.atomikpanda.groundcontrol.ui.tasks.TaskDetailScreen
@@ -135,6 +138,7 @@ internal data class GroundControlDependencies(
     val api: SpecApi,
     val home: HomeFeedRepository,
     val queue: QueueRepository,
+    val specs: SpecRepository,
     val detail: SpecDetailRepository,
     val tasks: TasksRepository,
     val threads: ThreadsRepository,
@@ -151,6 +155,7 @@ internal data class GroundControlDependencies(
                 home = HomeFeedRepository(api),
                 queue = QueueRepository(api),
                 detail = SpecDetailRepository(api),
+                specs = SpecRepository(api),
                 tasks = TasksRepository(api),
                 threads = ThreadsRepository(api),
             )
@@ -188,6 +193,7 @@ internal fun GroundControlContent(
     val api = dependencies.api
     val homeRepo = dependencies.home
     val queueRepo = dependencies.queue
+    val specsRepo = dependencies.specs
     val detailRepo = dependencies.detail
     val tasksRepo = dependencies.tasks
     val threadsRepo = dependencies.threads
@@ -196,10 +202,12 @@ internal fun GroundControlContent(
     val appScope = rememberCoroutineScope()
     val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
     val coachMark = remember { DataStoreCoachMarkStore(context.applicationContext, appScope) }
-    // Activity-scoped (not per-NavBackStackEntry): shared by the Home sticky threads card and the
-    // "threads" drill-in list so the loaded sections + live-poll loop survive navigating between
-    // them (spec: ground-control-thread-findability).
-    val messagesVm = viewModel {
+    // Home owns an Active-only messages snapshot, separate from the threads tab's selected
+    // inbox/search state. Sharing one owner would let tab search reclassify Home's server feed.
+    val homeMessagesVm: MessagesViewModel = viewModel(key = "homeMessages") {
+        MessagesViewModel(threadsRepo, connectionStateSource.state)
+    }
+    val messagesVm: MessagesViewModel = viewModel(key = "inboxMessages") {
         MessagesViewModel(threadsRepo, connectionStateSource.state)
     }
     // Activity-scoped so relay links received on Home immediately trigger fleet
@@ -241,13 +249,19 @@ internal fun GroundControlContent(
                 }
                 HomeScreen(
                     vm,
-                    messagesVm,
+                    homeMessagesVm,
                     onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
                     onBrowseWorkspace = { connId -> nav.navigate("farm/$connId") },
+                    onOpenThreads = {
+                        (homeMessagesVm.state.value as? MessagesUiState.Content)?.let { home ->
+                            messagesVm.selectWorkspace(home.selectedConnectionId)
+                            messagesVm.selectStateFilter(home.stateFilter)
+                        }
+                        nav.navigate("threads")
+                    },
                     onCapture = { nav.navigate("capture") },
-                    onOpenThreads = { nav.navigate("threads") },
                     onReviewInQueue = { nav.navigate(Section.QUEUE.route) { launchSingleTop = true } },
                     onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                 )
@@ -264,7 +278,23 @@ internal fun GroundControlContent(
                     onOpenPr = { url -> uriHandler.openUri(url) },
                     onOpenTask = { connId, task -> nav.navigate("taskDetail/$connId/$task") },
                     onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
+                    onOpenSpecs = { nav.navigate("specs") { launchSingleTop = true } },
                 )
+            }
+            composable("specs") {
+                val vm = viewModel {
+                    SpecInboxViewModel(
+                        specsRepo,
+                        connectionsProvider = {
+                            (connectionStateSource.state.value as? ConnectionState.Ready)
+                                ?.connections
+                                .orEmpty()
+                        },
+                    )
+                }
+                SpecInboxScreen(vm) { connId, specId ->
+                    nav.navigate("specDetail/$connId/$specId")
+                }
             }
             composable("threads") {
                 MessagesScreen(

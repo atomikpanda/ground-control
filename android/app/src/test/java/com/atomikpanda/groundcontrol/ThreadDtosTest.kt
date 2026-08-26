@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.buildJson
+import com.atomikpanda.groundcontrol.data.dto.InboxState
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
@@ -137,5 +138,24 @@ class ThreadDtosTest {
         val t = json.decodeFromString(Thread.serializer(), raw)
         assertNull(t.workItemId)
         assertNull(t.workItem)
+    }
+    @Test fun parses_server_provided_inbox_classification() {
+        val raw = """{"id":"t1","subject":"Idea","inbox_state":"archived",
+            "archive_reason":"manual","pinned":true,"messages":[]}"""
+        val thread = json.decodeFromString(Thread.serializer(), raw.trimIndent())
+        assertEquals(InboxState.ARCHIVED, thread.inboxState)
+        assertEquals("manual", thread.archiveReason)
+        assertTrue(thread.pinned)
+    }
+
+    @Test fun inbox_classification_defaults_for_older_servers() {
+        val summary = json.decodeFromString(ThreadSummary.serializer(), """{"id":"t1"}""")
+        val thread = json.decodeFromString(Thread.serializer(), """{"id":"t1"}""")
+        assertEquals(InboxState.ACTIVE, summary.inboxState)
+        assertNull(summary.archiveReason)
+        assertFalse(summary.pinned)
+        assertEquals(InboxState.ACTIVE, thread.inboxState)
+        assertNull(thread.archiveReason)
+        assertFalse(thread.pinned)
     }
 }

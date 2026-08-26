@@ -6,16 +6,23 @@ import com.atomikpanda.groundcontrol.data.SpecGroup
 import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.groupForStatus
 import com.atomikpanda.groundcontrol.data.orderedGroups
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
+import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
+import java.util.UUID
 
 data class GroupBlock(val group: SpecGroup, val specs: List<SpecSummary>)
 
@@ -28,7 +35,11 @@ data class WorkspaceSection(
 sealed interface InboxUiState {
     data object Loading : InboxUiState
     data object EmptyConfig : InboxUiState                       // no connections configured
-    data class Content(val sections: List<WorkspaceSection>) : InboxUiState
+    data class Content(
+        val sections: List<WorkspaceSection>,
+        val tab: InboxTab = InboxTab.ACTIVE,
+        val searchQuery: String = "",
+    ) : InboxUiState
 }
 
 /** `connectionsProvider` is a suspend-free snapshot supplier (the repo/DataStore feeds it). */
@@ -40,64 +51,180 @@ class SpecInboxViewModel(
 
     private val _state = MutableStateFlow<InboxUiState>(InboxUiState.Loading)
     val state: StateFlow<InboxUiState> = _state.asStateFlow()
+    private var tab = InboxTab.ACTIVE
+    private var searchQuery = ""
+    private var refreshRevision = 0L
+    private var mutationEpoch = 0L
+    private var mutationsInFlight = 0
+    private var refreshesInFlight = 0
+    private var refreshPending = false
+    private var queuedRefreshWaiters = emptyList<CompletableDeferred<Unit>>()
+    private val mutationLocks = mutableMapOf<String, Mutex>()
+    private val mutationLocksMutex = Mutex()
+
+    private fun scope(): CoroutineScope = testScope ?: viewModelScope
 
     /** Returns the Job so callers (tests) can join/await completion if needed. */
     fun refresh(): Job? {
         val connections = connectionsProvider()
-        if (connections.isEmpty()) { _state.value = InboxUiState.EmptyConfig; return null }
-        _state.value = InboxUiState.Loading
-        return (testScope ?: viewModelScope).launch {
-            val results = repo.listAllSpecs(connections)
-            _state.value = InboxUiState.Content(
-                results.map { ws ->
-                    WorkspaceSection(
-                        workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
-                        connectionId = ws.connection.id,
-                        groups = ws.specs.map { specs -> toGroupBlocks(specs) },
-                    )
-                }
-            )
+        if (connections.isEmpty()) {
+            _state.value = InboxUiState.EmptyConfig
+            return null
         }
+        if (mutationsInFlight > 0) {
+            refreshPending = true
+            val queued = CompletableDeferred<Unit>()
+            queuedRefreshWaiters = queuedRefreshWaiters + queued
+            return scope().launch { queued.await() }
+        }
+        return launchRefresh(connections)
     }
 
-    private fun toGroupBlocks(specs: List<SpecSummary>): List<GroupBlock> {
-        val byGroup = specs.groupBy { groupForStatus(it.status) }
-        return orderedGroups().mapNotNull { g ->
-            byGroup[g]?.takeIf { it.isNotEmpty() }?.let { GroupBlock(g, it) }
-        }   // empty groups + null-group (archived/unknown) omitted
-    }
-
-    /** Swipe-to-archive: remove the spec from its workspace section immediately (optimistic)
-     *  and archive it server-side. Rethrows CancellationException, same as FarmViewModel's
-     *  setUnattended, so scope cancellation isn't swallowed as an ordinary failure.
-     *
-     *  On failure, re-inserts only this one spec back into the section's *current* groups rather
-     *  than restoring a whole pre-archive snapshot — a whole-snapshot restore would resurrect any
-     *  spec removed by a concurrent refresh or a different, concurrently-succeeding archive that
-     *  landed while this request was still in flight. */
-    fun archiveSpec(connectionId: String, specId: String): Job = (testScope ?: viewModelScope).launch {
-        val conn = connectionsProvider().findByConnectionId(connectionId) ?: return@launch
-        val canonicalConnectionId = conn.id
-        if (canonicalConnectionId != connectionId) {
-            val current = _state.value as? InboxUiState.Content
-            if (current != null) {
-                _state.value = current.copy(
-                    sections = current.sections.map { section ->
-                        if (section.connectionId != connectionId) section
-                        else section.copy(
-                            workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
-                            connectionId = canonicalConnectionId,
+    private fun launchRefresh(connections: List<WorkspaceConnection>): Job {
+        val requestTab = tab
+        val requestQuery = searchQuery
+        val publicationEpoch = mutationEpoch
+        val revision = ++refreshRevision
+        refreshesInFlight += 1
+        if (_state.value !is InboxUiState.Content) _state.value = InboxUiState.Loading
+        return scope().launch {
+            try {
+                val results = repo.listAllSpecs(connections, requestTab.filter, requestQuery)
+                if (
+                    revision != refreshRevision ||
+                    publicationEpoch != mutationEpoch ||
+                    mutationsInFlight != 0 ||
+                    requestTab != tab ||
+                    requestQuery != searchQuery
+                ) return@launch
+                _state.value = InboxUiState.Content(
+                    sections = results.map { ws ->
+                        WorkspaceSection(
+                            workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
+                            connectionId = ws.connection.id,
+                            groups = ws.specs.map { specs -> toGroupBlocks(specs, requestTab) },
                         )
                     },
+                    tab = requestTab,
+                    searchQuery = requestQuery,
                 )
+            } finally {
+                refreshesInFlight -= 1
+                completeQueuedRefreshWaitersIfSettled()
             }
         }
-        val archived = findSpec(canonicalConnectionId, specId)
-        removeSpec(canonicalConnectionId, specId)
-        runCatching { repo.archiveSpec(conn, specId) }.onFailure {
-            if (it is CancellationException) throw it
-            if (archived != null) reinsertSpec(canonicalConnectionId, archived)
+    }
+
+    private fun launchPendingRefresh(): Job? {
+        if (mutationsInFlight != 0 || !refreshPending) return null
+        refreshPending = false
+        val request = refresh()
+        if (request == null) {
+            queuedRefreshWaiters.forEach { it.complete(Unit) }
+            queuedRefreshWaiters = emptyList()
+            return null
         }
+        return scope().launch { request.join() }
+    }
+
+    private fun completeQueuedRefreshWaitersIfSettled() {
+        if (mutationsInFlight != 0 || refreshPending || refreshesInFlight != 0) return
+        queuedRefreshWaiters.forEach { it.complete(Unit) }
+        queuedRefreshWaiters = emptyList()
+    }
+
+    fun selectInboxTab(tab: InboxTab): Job? {
+        if (this.tab == tab) return null
+        this.tab = tab
+        publishInboxSelection()
+        return refresh()
+    }
+
+    fun onSearchQueryChange(query: String): Job? {
+        if (searchQuery == query) return null
+        searchQuery = query
+        publishInboxSelection()
+        return refresh()
+    }
+    private fun publishInboxSelection() {
+        val current = _state.value as? InboxUiState.Content ?: return
+        _state.value = current.copy(
+            sections = current.sections.map { section ->
+                section.copy(groups = Result.success(emptyList()))
+            },
+            tab = tab,
+            searchQuery = searchQuery,
+        )
+    }
+
+
+
+    private fun toGroupBlocks(specs: List<SpecSummary>, selectedTab: InboxTab = tab): List<GroupBlock> {
+        val byGroup = specs.mapNotNull { spec ->
+            val group = when {
+                selectedTab == InboxTab.ARCHIVED -> SpecGroup.ARCHIVED
+                spec.status == "archived" -> SpecGroup.ARCHIVED
+                else -> groupForStatus(spec.status)
+            }
+            group?.let { it to spec }
+        }.groupBy({ it.first }, { it.second })
+        return orderedGroups().mapNotNull { group ->
+            byGroup[group]?.takeIf { it.isNotEmpty() }?.let { GroupBlock(group, it) }
+        }
+    }
+
+    /**
+     * Applies one durable inbox action. Archive and restore remove the item from the current
+     * tab; pin and unpin update only that one item. A failed mutation restores only the entity
+     * still present in the current state, never a stale whole-list snapshot.
+     */
+    fun mutateInbox(connectionId: String, specId: String, action: InboxAction): Job {
+        val mutationId = UUID.randomUUID().toString()
+        return scope().launch {
+            val conn = connectionsProvider().findByConnectionId(connectionId) ?: return@launch
+            val canonicalConnectionId = conn.id
+            mutationLock("$canonicalConnectionId:$specId").withLock {
+                replaceConnectionAlias(connectionId, conn)
+                val original = findSpec(canonicalConnectionId, specId) ?: return@withLock
+                var refreshAfterFailure = false
+                var successor: Job? = null
+                mutationEpoch += 1
+                mutationsInFlight += 1
+                if (refreshesInFlight > 0) refreshPending = true
+                try {
+                    applyMutation(canonicalConnectionId, specId, action)
+                    val response = repo.mutateSpecInbox(conn, specId, action, mutationId)
+                    reconcileMutation(canonicalConnectionId, original, response)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    rollbackMutation(canonicalConnectionId, original, action)
+                    refreshAfterFailure = true
+                } finally {
+                    mutationEpoch += 1
+                    mutationsInFlight -= 1
+                    if (refreshAfterFailure) refreshPending = true
+                    successor = launchPendingRefresh()
+                }
+                if (refreshAfterFailure) successor?.join()
+            }
+        }
+    }
+
+    private suspend fun mutationLock(key: String): Mutex =
+        mutationLocksMutex.withLock { mutationLocks.getOrPut(key) { Mutex() } }
+
+    private fun replaceConnectionAlias(requestedId: String, canonical: WorkspaceConnection) {
+        if (requestedId == canonical.id) return
+        val current = _state.value as? InboxUiState.Content ?: return
+        _state.value = current.copy(
+            sections = current.sections.map { section ->
+                if (section.connectionId != requestedId) section else section.copy(
+                    workspaceName = canonical.workspaceName.ifBlank { canonical.baseUrl },
+                    connectionId = canonical.id,
+                )
+            },
+        )
     }
 
     private fun findSpec(connectionId: String, specId: String): SpecSummary? =
@@ -107,40 +234,70 @@ class SpecInboxViewModel(
             ?.flatMap { it.specs }
             ?.firstOrNull { it.id == specId }
 
-    private fun removeSpec(connectionId: String, specId: String) {
-        val current = _state.value as? InboxUiState.Content ?: return
-        _state.value = current.copy(
-            sections = current.sections.map { section ->
-                if (section.connectionId != connectionId) {
-                    section
-                } else {
-                    section.copy(groups = section.groups.map { blocks ->
-                        blocks.mapNotNull { block ->
-                            val filtered = block.specs.filterNot { it.id == specId }
-                            filtered.takeIf { it.isNotEmpty() }?.let { block.copy(specs = it) }
-                        }
-                    })
-                }
-            },
-        )
+    private fun applyMutation(connectionId: String, specId: String, action: InboxAction) {
+        updateSpec(connectionId) { specs ->
+            when (action) {
+                InboxAction.ARCHIVE, InboxAction.RESTORE -> specs.filterNot { it.id == specId }
+                InboxAction.PIN -> specs.map { if (it.id == specId) it.copy(pinned = true) else it }
+                InboxAction.UNPIN -> specs.map { if (it.id == specId) it.copy(pinned = false) else it }
+            }
+        }
     }
 
-    /** Re-inserts a single archived spec back into its section, recomputed against the section's
-     *  CURRENT specs (not a captured-at-call-time snapshot) so concurrent changes — another
-     *  archive that succeeded, or a refresh — aren't clobbered. A no-op if the spec is already
-     *  present (e.g. a concurrent refresh already brought it back). */
-    private fun reinsertSpec(connectionId: String, spec: SpecSummary) {
+    private fun rollbackMutation(connectionId: String, original: SpecSummary, action: InboxAction) {
+        updateSpec(connectionId) { specs ->
+            if (original.inboxState != tab.state) {
+                specs.filterNot { it.id == original.id }
+            } else when (action) {
+                InboxAction.ARCHIVE, InboxAction.RESTORE ->
+                    if (specs.any { it.id == original.id }) specs else specs + original
+                InboxAction.PIN, InboxAction.UNPIN ->
+                    specs.map { if (it.id == original.id) original else it }
+            }
+        }
+    }
+
+    private fun reconcileMutation(
+        connectionId: String,
+        original: SpecSummary,
+        response: SpecRecord,
+    ) {
+        val resolved = original.copy(
+            title = response.title,
+            status = response.status,
+            taskSlug = response.taskSlug,
+            affectedRepos = response.affectedRepos,
+            inboxState = response.inboxState,
+            archiveReason = response.archiveReason,
+            pinned = response.pinned,
+        )
+        updateSpec(connectionId) { specs ->
+            if (resolved.inboxState != tab.state) {
+                specs.filterNot { it.id == resolved.id }
+            } else if (specs.any { it.id == resolved.id }) {
+                specs.map { if (it.id == resolved.id) resolved else it }
+            } else {
+                specs + resolved
+            }
+        }
+    }
+
+    private fun updateSpec(
+        connectionId: String,
+        transform: (List<SpecSummary>) -> List<SpecSummary>,
+    ) {
         val current = _state.value as? InboxUiState.Content ?: return
         _state.value = current.copy(
             sections = current.sections.map { section ->
-                if (section.connectionId != connectionId) {
-                    section
-                } else {
-                    section.copy(groups = section.groups.map { blocks ->
+                if (section.connectionId != connectionId) section else section.copy(
+                    groups = section.groups.map { blocks ->
                         val specs = blocks.flatMap { it.specs }
-                        if (specs.any { it.id == spec.id }) blocks else toGroupBlocks(specs + spec)
-                    })
-                }
+                        transform(specs)
+                            .takeIf { it.isNotEmpty() }
+                            ?.let { toGroupBlocks(it, tab) }
+                            ?: emptyList()
+                    },
+                )
             },
         )
     }

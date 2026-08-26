@@ -1,6 +1,8 @@
 // app/src/main/java/com/atomikpanda/groundcontrol/data/QueueRepository.kt
 package com.atomikpanda.groundcontrol.data
 
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.InboxFilter
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.ui.home.displayName
@@ -62,12 +64,12 @@ class QueueRepository(private val api: SpecApi) {
      *  ships independently of the others. */
     private suspend fun sourceCards(conn: WorkspaceConnection): List<QueueV2Card> = coroutineScope {
         val specCards = async {
-            api.listSpecs(conn)
+            api.listSpecs(conn, InboxFilter.ACTIVE)
                 .filter { it.status == "needs_review" }
                 .flatMap { summary -> cardsFromSpec(conn, api.getSpec(conn, summary.id)) }
         }
         val decisionCards = async {
-            api.listThreads(conn)
+            api.listThreads(conn, InboxFilter.ACTIVE)
                 .filter { it.needsDecision }
                 .mapNotNull { summary -> decisionCardFrom(conn, api.getThread(conn, summary.id)) }
         }
@@ -116,4 +118,11 @@ class QueueRepository(private val api: SpecApi) {
     /** Answer a decision: append the chosen option's text to the decision's thread. */
     suspend fun answerDecision(conn: WorkspaceConnection, threadId: String, text: String): Thread =
         api.postMessage(conn, threadId, text)
+
+    suspend fun mutateThreadInbox(
+        conn: WorkspaceConnection,
+        threadId: String,
+        action: InboxAction,
+        mutationId: String,
+    ): Thread = api.mutateThreadInbox(conn, threadId, action, mutationId)
 }

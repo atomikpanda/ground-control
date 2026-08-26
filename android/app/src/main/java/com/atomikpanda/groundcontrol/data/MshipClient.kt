@@ -6,6 +6,9 @@ import com.atomikpanda.groundcontrol.data.dto.CaptureBody
 import com.atomikpanda.groundcontrol.data.dto.WorkspaceInfo
 import com.atomikpanda.groundcontrol.data.dto.WorkspacesResponse
 import com.atomikpanda.groundcontrol.data.dto.DispatchResult
+import com.atomikpanda.groundcontrol.data.dto.InboxAction
+import com.atomikpanda.groundcontrol.data.dto.InboxFilter
+import com.atomikpanda.groundcontrol.data.dto.InboxMutationBody
 import com.atomikpanda.groundcontrol.data.dto.HealthResponse
 import com.atomikpanda.groundcontrol.data.dto.HostHealth
 import com.atomikpanda.groundcontrol.data.dto.HostTokenBody
@@ -584,8 +587,16 @@ class SpecApi(private val client: HttpClient) {
     suspend fun health(conn: WorkspaceConnection): HealthResponse =
         client.get("${conn.baseUrl}/health") { auth(conn) }.bodyAfterHostContact()
 
-    suspend fun listSpecs(conn: WorkspaceConnection): List<SpecSummary> =
-        client.get("${conn.baseUrl}/specs") { auth(conn) }.bodyAfterHostContact()
+    suspend fun listSpecs(
+        conn: WorkspaceConnection,
+        filter: InboxFilter = InboxFilter.ALL,
+        query: String? = null,
+    ): List<SpecSummary> =
+        client.get("${conn.baseUrl}/specs") {
+            auth(conn)
+            if (filter != InboxFilter.ALL) parameter("inbox", filter.wireValue)
+            query?.takeIf { it.isNotBlank() }?.let { parameter("q", it) }
+        }.bodyAfterHostContact()
 
     suspend fun getSpec(conn: WorkspaceConnection, id: String): SpecRecord =
         client.get("${conn.baseUrl}/specs/$id") { auth(conn) }.bodyAfterHostContact()
@@ -626,12 +637,16 @@ class SpecApi(private val client: HttpClient) {
     suspend fun dispatch(conn: WorkspaceConnection, id: String): DispatchResult =
         client.post("${conn.baseUrl}/specs/$id/dispatch") { auth(conn) }.bodyAfterHostContact()
 
-    /** Archive a spec (swipe-to-archive in the inbox). The response is just `{id, status}` —
-     *  like [setUnattended], callers apply the optimistic removal themselves. */
-    suspend fun archiveSpec(conn: WorkspaceConnection, id: String) {
-        client.post("${conn.baseUrl}/specs/$id/archive") { auth(conn) }
-            .completeHostContact()
-    }
+
+    suspend fun mutateSpecInbox(
+        conn: WorkspaceConnection,
+        id: String,
+        action: InboxAction,
+        mutationId: String,
+    ): SpecRecord =
+        client.post("${conn.baseUrl}/specs/$id/inbox/${action.wireValue}") {
+            auth(conn); jsonBody(InboxMutationBody(mutationId))
+        }.bodyAfterHostContact()
 
     suspend fun listTasks(conn: WorkspaceConnection): List<TaskSummary> =
         client.get("${conn.baseUrl}/tasks") { auth(conn) }.bodyAfterHostContact()
@@ -672,24 +687,50 @@ class SpecApi(private val client: HttpClient) {
     suspend fun getJournal(conn: WorkspaceConnection, slug: String): List<JournalEntry> =
         client.get("${conn.baseUrl}/journal/$slug") { auth(conn) }.bodyAfterHostContact()
 
-    suspend fun listThreads(conn: WorkspaceConnection): List<ThreadSummary> =
-        client.get("${conn.baseUrl}/threads") { auth(conn) }.bodyAfterHostContact()
+    suspend fun listThreads(
+        conn: WorkspaceConnection,
+        filter: InboxFilter = InboxFilter.ALL,
+        query: String? = null,
+    ): List<ThreadSummary> =
+        client.get("${conn.baseUrl}/threads") {
+            auth(conn)
+            if (filter != InboxFilter.ALL) parameter("inbox", filter.wireValue)
+            query?.takeIf { it.isNotBlank() }?.let { parameter("q", it) }
+        }.bodyAfterHostContact()
 
-    suspend fun listThreadsWait(conn: WorkspaceConnection, since: String, timeoutSeconds: Int): ThreadsWaitResponse =
+    suspend fun listThreadsWait(
+        conn: WorkspaceConnection,
+        since: String,
+        timeoutSeconds: Int,
+        filter: InboxFilter = InboxFilter.ALL,
+        query: String? = null,
+    ): ThreadsWaitResponse =
         client.get("${conn.baseUrl}/threads") {
             auth(conn)
             parameter("wait", "1")
             parameter("since", since)
             parameter("timeout", timeoutSeconds)
+            if (filter != InboxFilter.ALL) parameter("inbox", filter.wireValue)
+            query?.takeIf { it.isNotBlank() }?.let { parameter("q", it) }
             timeout {
                 // Exceed the server wait so Ktor/OkHttp don't abort mid-poll.
                 requestTimeoutMillis = (timeoutSeconds + 10) * 1000L
                 socketTimeoutMillis = (timeoutSeconds + 10) * 1000L
             }
         }.bodyAfterHostContact()
-
     suspend fun getThread(conn: WorkspaceConnection, id: String): Thread =
         client.get("${conn.baseUrl}/threads/$id") { auth(conn) }.bodyAfterHostContact()
+
+
+    suspend fun mutateThreadInbox(
+        conn: WorkspaceConnection,
+        id: String,
+        action: InboxAction,
+        mutationId: String,
+    ): Thread =
+        client.post("${conn.baseUrl}/threads/$id/inbox/${action.wireValue}") {
+            auth(conn); jsonBody(InboxMutationBody(mutationId))
+        }.bodyAfterHostContact()
 
     suspend fun createThread(conn: WorkspaceConnection, text: String, subject: String?): Thread =
         client.post("${conn.baseUrl}/threads") { auth(conn); jsonBody(NewThreadBody(text, subject)) }.bodyAfterHostContact()

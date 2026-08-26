@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.data
 
+import com.atomikpanda.groundcontrol.data.dto.InboxFilter
 import com.atomikpanda.groundcontrol.ui.home.NeedsYouItem
 import com.atomikpanda.groundcontrol.ui.home.NewMessageNote
 import com.atomikpanda.groundcontrol.ui.home.approvalsFrom
@@ -126,8 +127,8 @@ class HomeFeedRepository(private val api: SpecApi) {
         }
 
     private suspend fun loadOne(conn: WorkspaceConnection): ConnResult = coroutineScope {
-        val specs = async { catchingApi { api.listSpecs(conn) } }
-        val threads = async { catchingApi { api.listThreads(conn) } }
+        val specs = async { catchingApi { api.listSpecs(conn, InboxFilter.ACTIVE) } }
+        val threads = async { catchingApi { api.listThreads(conn, InboxFilter.ACTIVE) } }
         val tasks = async { catchingApi { api.listTasks(conn) } }
         val s = specs.await()
         val t = threads.await()
