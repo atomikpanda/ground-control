@@ -159,7 +159,7 @@ class SpecInboxViewModel(
                     mutationEpoch += 1
                     mutationsInFlight -= 1
                     rollbackMutation(canonicalConnectionId, original, action)
-                    refresh()
+                    refresh()?.join()
                 }
             }
         }

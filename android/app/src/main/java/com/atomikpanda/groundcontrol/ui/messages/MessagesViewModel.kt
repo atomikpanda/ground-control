@@ -346,7 +346,7 @@ class MessagesViewModel(
                 } catch (_: Throwable) {
                     rollbackThreadMutation(canonicalConnectionId, original, action)
                     owner?.endInboxMutation()
-                    refresh()
+                    refresh().join()
                 }
             }
         }
@@ -418,7 +418,7 @@ class MessagesViewModel(
         renderOwners()
     }
     fun topThreads(n: Int, connectionId: String? = null): List<ThreadSummary> =
-        allThreads(connectionId).take(n)
+        allThreads(connectionId).filter { it.matchesStateFilter(stateFilter) }.take(n)
 
     /** Retained for callers/tests that exercise a single poll turn without starting the loop. */
     internal suspend fun pollOnce(conn: WorkspaceConnection, cursor: String): String {
