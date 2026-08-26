@@ -1052,7 +1052,7 @@ class MessagesViewModelTest {
     @Test fun failed_thread_pin_after_tab_switch_restores_the_original_thread_state() = runTest {
         val mutationStarted = CompletableDeferred<Unit>()
         val releaseMutation = CompletableDeferred<Unit>()
-        val archivedRefreshStarted = CompletableDeferred<Unit>()
+        var archivedRefreshes = 0
         val vm = MessagesViewModel(repoWith { request ->
             when {
                 request.url.encodedPath.contains("/inbox/") -> {
@@ -1063,7 +1063,8 @@ class MessagesViewModelTest {
                 request.url.encodedPath.endsWith("/threads") &&
                     request.url.parameters["inbox"] == "archived" -> {
                     archivedRefreshStarted.complete(Unit)
-                    awaitCancellation()
+                    if (++archivedRefreshes == 1) awaitCancellation()
+                    else respond("[]", HttpStatusCode.OK, jsonHdr)
                 }
                 request.url.encodedPath.endsWith("/threads") ->
                     respond("""[{"id":"t1","subject":"thread","pinned":false}]""", HttpStatusCode.OK, jsonHdr)
@@ -1079,6 +1080,11 @@ class MessagesViewModelTest {
         releaseMutation.complete(Unit)
         mutation.join()
 
+        val archivedContent = vm.state.value as MessagesUiState.Content
+        assertEquals(InboxTab.ARCHIVED, archivedContent.tab)
+        assertTrue(archivedContent.filteredThreads.isEmpty())
+
+        vm.selectInboxTab(InboxTab.ACTIVE)!!.join()
         val restored = vm.ownerSnapshot(connA.id)!!.threads.getOrThrow().single()
         assertEquals("t1", restored.id)
         assertEquals(false, restored.pinned)

@@ -595,7 +595,7 @@ class SpecApi(private val client: HttpClient) {
         client.get("${conn.baseUrl}/specs") {
             auth(conn)
             if (filter != InboxFilter.ALL) parameter("inbox", filter.wireValue)
-            query?.let { parameter("q", it) }
+            query?.takeIf { it.isNotBlank() }?.let { parameter("q", it) }
         }.bodyAfterHostContact()
 
     suspend fun getSpec(conn: WorkspaceConnection, id: String): SpecRecord =
@@ -695,7 +695,7 @@ class SpecApi(private val client: HttpClient) {
         client.get("${conn.baseUrl}/threads") {
             auth(conn)
             if (filter != InboxFilter.ALL) parameter("inbox", filter.wireValue)
-            query?.let { parameter("q", it) }
+            query?.takeIf { it.isNotBlank() }?.let { parameter("q", it) }
         }.bodyAfterHostContact()
 
     suspend fun listThreadsWait(
@@ -711,7 +711,7 @@ class SpecApi(private val client: HttpClient) {
             parameter("since", since)
             parameter("timeout", timeoutSeconds)
             if (filter != InboxFilter.ALL) parameter("inbox", filter.wireValue)
-            query?.let { parameter("q", it) }
+            query?.takeIf { it.isNotBlank() }?.let { parameter("q", it) }
             timeout {
                 // Exceed the server wait so Ktor/OkHttp don't abort mid-poll.
                 requestTimeoutMillis = (timeoutSeconds + 10) * 1000L

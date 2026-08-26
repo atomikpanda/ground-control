@@ -180,21 +180,30 @@ class SpecInboxViewModelTest {
     /** Archiving "b" blocks in flight until the test releases it; archiving "a" always succeeds
      *  immediately. Lets a test force a concurrent change to land while "b"'s request is still
      *  outstanding. */
-    private fun repoWithGatedArchiveEndpoint(bStarted: CompletableDeferred<Unit>, releaseB: CompletableDeferred<Unit>) =
-        SpecRepository(SpecApi(HttpClient(MockEngine { req ->
+    private fun repoWithGatedArchiveEndpoint(bStarted: CompletableDeferred<Unit>, releaseB: CompletableDeferred<Unit>): SpecRepository {
+        var aArchived = false
+        return SpecRepository(SpecApi(HttpClient(MockEngine { req ->
             if (req.url.encodedPath.endsWith("/specs/b/inbox/archive")) {
                 bStarted.complete(Unit)
                 releaseB.await()
                 respond("boom", HttpStatusCode.InternalServerError)
             } else if (req.url.encodedPath.endsWith("/inbox/archive")) {
+                aArchived = true
                 respond("""{"id":"a","title":"A","status":"approved","inbox_state":"archived"}""", HttpStatusCode.OK, jsonHdr)
             } else {
                 respond(
-                    """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
-                        {"id":"b","title":"B","status":"needs_review","task_slug":null,"affected_repos":[]}]""",
-                    HttpStatusCode.OK, jsonHdr)
+                    if (aArchived) {
+                        """[{"id":"b","title":"B","status":"needs_review","task_slug":null,"affected_repos":[]}]"""
+                    } else {
+                        """[{"id":"a","title":"A","status":"approved","task_slug":null,"affected_repos":["r"]},
+                            {"id":"b","title":"B","status":"needs_review","task_slug":null,"affected_repos":[]}]"""
+                    },
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
             }
         }) { mshipDefaults() }))
+    }
 
     // Greptile finding on PR #37: a failed archive used to restore the whole pre-archive
     // snapshot, resurrecting any spec removed by a *different*, concurrently-succeeding archive
