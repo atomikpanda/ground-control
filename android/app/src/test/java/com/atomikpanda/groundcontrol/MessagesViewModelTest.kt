@@ -1052,6 +1052,7 @@ class MessagesViewModelTest {
     @Test fun failed_thread_pin_after_tab_switch_restores_the_original_thread_state() = runTest {
         val mutationStarted = CompletableDeferred<Unit>()
         val releaseMutation = CompletableDeferred<Unit>()
+        val archivedRefreshStarted = CompletableDeferred<Unit>()
         var archivedRefreshes = 0
         val vm = MessagesViewModel(repoWith { request ->
             when {
