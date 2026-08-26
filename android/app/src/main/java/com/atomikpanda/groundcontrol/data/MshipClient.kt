@@ -718,6 +718,9 @@ class SpecApi(private val client: HttpClient) {
                 socketTimeoutMillis = (timeoutSeconds + 10) * 1000L
             }
         }.bodyAfterHostContact()
+    suspend fun getThread(conn: WorkspaceConnection, id: String): Thread =
+        client.get("${conn.baseUrl}/threads/$id") { auth(conn) }.bodyAfterHostContact()
+
 
     suspend fun mutateThreadInbox(
         conn: WorkspaceConnection,

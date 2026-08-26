@@ -109,6 +109,11 @@ class SpecInboxViewModel(
         publishInboxSelection()
         return refresh()
     }
+    private fun publishInboxSelection() {
+        val current = _state.value as? InboxUiState.Content ?: return
+        _state.value = current.copy(tab = tab, searchQuery = searchQuery)
+    }
+
 
 
     private fun toGroupBlocks(specs: List<SpecSummary>, selectedTab: InboxTab = tab): List<GroupBlock> {
