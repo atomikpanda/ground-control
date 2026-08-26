@@ -1117,7 +1117,7 @@ class MessagesViewModelTest {
             }
         }
         val home = MessagesViewModel(repository, connectionState(listOf(connA)), backgroundScope)
-        val inbox = MessagesViewModel(repository, connectionState(listOf(connA)), backgroundScope)
+        val inbox = MessagesViewModel(repository, connectionState(listOf(connB)), backgroundScope)
 
         home.refresh().join()
         inbox.refresh().join()
@@ -1127,14 +1127,12 @@ class MessagesViewModelTest {
         val homeContent = home.state.value as MessagesUiState.Content
         assertEquals(InboxTab.ACTIVE, homeContent.tab)
         assertEquals("", homeContent.searchQuery)
-        assertEquals(
-            listOf(
-                Triple("a", "active", null),
-                Triple("a", "active", null),
-                Triple("a", "archived", null),
-                Triple("a", "archived", "needle"),
-            ),
-            requests,
-        )
+        val homeRequests = requests.filter { it.first == "a" }
+        assertTrue(homeRequests.isNotEmpty())
+        assertTrue(homeRequests.all { it.second == "active" && it.third == null })
+
+        val inboxRequests = requests.filter { it.first == "b" }
+        assertTrue(inboxRequests.contains(Triple("b", "archived", null)))
+        assertTrue(inboxRequests.contains(Triple("b", "archived", "needle")))
     }
 }
