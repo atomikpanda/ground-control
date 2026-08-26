@@ -698,21 +698,26 @@ class SpecApi(private val client: HttpClient) {
             query?.let { parameter("q", it) }
         }.bodyAfterHostContact()
 
-    suspend fun listThreadsWait(conn: WorkspaceConnection, since: String, timeoutSeconds: Int): ThreadsWaitResponse =
+    suspend fun listThreadsWait(
+        conn: WorkspaceConnection,
+        since: String,
+        timeoutSeconds: Int,
+        filter: InboxFilter = InboxFilter.ALL,
+        query: String? = null,
+    ): ThreadsWaitResponse =
         client.get("${conn.baseUrl}/threads") {
             auth(conn)
             parameter("wait", "1")
             parameter("since", since)
             parameter("timeout", timeoutSeconds)
+            if (filter != InboxFilter.ALL) parameter("inbox", filter.wireValue)
+            query?.let { parameter("q", it) }
             timeout {
                 // Exceed the server wait so Ktor/OkHttp don't abort mid-poll.
                 requestTimeoutMillis = (timeoutSeconds + 10) * 1000L
                 socketTimeoutMillis = (timeoutSeconds + 10) * 1000L
             }
         }.bodyAfterHostContact()
-
-    suspend fun getThread(conn: WorkspaceConnection, id: String): Thread =
-        client.get("${conn.baseUrl}/threads/$id") { auth(conn) }.bodyAfterHostContact()
 
     suspend fun mutateThreadInbox(
         conn: WorkspaceConnection,

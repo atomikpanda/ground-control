@@ -247,9 +247,14 @@ internal fun GroundControlContent(
                     onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
                     onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
-                    onBrowseWorkspace = { connId -> nav.navigate("farm/$connId") },
+                    onOpenThreads = {
+                        (homeMessagesVm.state.value as? MessagesUiState.Content)?.let { home ->
+                            messagesVm.selectWorkspace(home.selectedConnectionId)
+                            messagesVm.selectStateFilter(home.stateFilter)
+                        }
+                        nav.navigate("threads")
+                    },
                     onCapture = { nav.navigate("capture") },
-                    onOpenThreads = { nav.navigate("threads") },
                     onReviewInQueue = { nav.navigate(Section.QUEUE.route) { launchSingleTop = true } },
                     onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                 )

@@ -43,8 +43,13 @@ class ThreadsRepository(private val api: SpecApi) {
     suspend fun postMessage(conn: WorkspaceConnection, id: String, text: String) = api.postMessage(conn, id, text)
     suspend fun markSeen(conn: WorkspaceConnection, id: String, seenAt: String?) =
         api.markThreadSeen(conn, id, seenAt)
-    suspend fun waitForChange(conn: WorkspaceConnection, since: String, timeoutSeconds: Int) =
-        api.listThreadsWait(conn, since, timeoutSeconds)
+    suspend fun waitForChange(
+        conn: WorkspaceConnection,
+        since: String,
+        timeoutSeconds: Int,
+        filter: InboxFilter = InboxFilter.ALL,
+        query: String? = null,
+    ) = api.listThreadsWait(conn, since, timeoutSeconds, filter, query)
     suspend fun listThreadsFor(conn: WorkspaceConnection) = api.listThreads(conn)
 
     suspend fun mutateThreadInbox(

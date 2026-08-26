@@ -154,7 +154,7 @@ class MessagesViewModel(
             }
         },
         poll = { requestConnection, cursor ->
-            val response = repo.waitForChange(requestConnection, cursor, 25)
+            val response = repo.waitForChange(requestConnection, cursor, 25, tab.filter, searchQuery)
             MessagePollDelta(response.threads, response.removedIds, response.cursor)
         },
         scope = scope(),
@@ -338,14 +338,15 @@ class MessagesViewModel(
                 applyThreadMutation(canonicalConnectionId, threadId, action)
                 try {
                     val response = repo.mutateThreadInbox(connection, threadId, action, mutationId)
-                    owner?.endInboxMutation()
                     reconcileThreadMutation(canonicalConnectionId, original, response)
+                    owner?.endInboxMutation()
                 } catch (cancelled: CancellationException) {
                     owner?.endInboxMutation()
                     throw cancelled
                 } catch (_: Throwable) {
+                    rollbackThreadMutation(canonicalConnectionId, original, action)
                     owner?.endInboxMutation()
-                    if (tab == sourceTab) rollbackThreadMutation(canonicalConnectionId, original, action)
+                    refresh()
                 }
             }
         }
@@ -378,7 +379,9 @@ class MessagesViewModel(
         action: InboxAction,
     ) {
         owners[connectionId]?.updateThreads { threads ->
-            when (action) {
+            if (original.inboxState != tab.state) {
+                threads.filterNot { it.id == original.id }
+            } else when (action) {
                 InboxAction.ARCHIVE, InboxAction.RESTORE ->
                     if (threads.any { it.id == original.id }) threads else threads + original
                 InboxAction.PIN, InboxAction.UNPIN ->

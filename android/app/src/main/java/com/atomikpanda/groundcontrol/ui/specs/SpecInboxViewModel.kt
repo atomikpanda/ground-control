@@ -110,17 +110,11 @@ class SpecInboxViewModel(
         return refresh()
     }
 
-    private fun publishInboxSelection() {
-        val current = _state.value as? InboxUiState.Content ?: return
-        _state.value = current.copy(tab = tab, searchQuery = searchQuery)
-    }
 
     private fun toGroupBlocks(specs: List<SpecSummary>, selectedTab: InboxTab = tab): List<GroupBlock> {
         val byGroup = specs.mapNotNull { spec ->
             val group = groupForStatus(spec.status)
-                ?: SpecGroup.ARCHIVED.takeIf {
-                    spec.status == "archived" && spec.inboxState == selectedTab.state
-                }
+                ?: SpecGroup.ARCHIVED.takeIf { spec.inboxState == InboxTab.ARCHIVED.state }
             group?.let { it to spec }
         }.groupBy({ it.first }, { it.second })
         return orderedGroups().mapNotNull { group ->
@@ -141,7 +135,6 @@ class SpecInboxViewModel(
             mutationLock("$canonicalConnectionId:$specId").withLock {
                 replaceConnectionAlias(connectionId, conn)
                 val original = findSpec(canonicalConnectionId, specId) ?: return@withLock
-                val sourceTab = tab
                 mutationEpoch += 1
                 mutationsInFlight += 1
                 applyMutation(canonicalConnectionId, specId, action)
@@ -157,7 +150,8 @@ class SpecInboxViewModel(
                 } catch (_: Throwable) {
                     mutationEpoch += 1
                     mutationsInFlight -= 1
-                    if (tab == sourceTab) rollbackMutation(canonicalConnectionId, original, action)
+                    rollbackMutation(canonicalConnectionId, original, action)
+                    refresh()
                 }
             }
         }
@@ -198,7 +192,9 @@ class SpecInboxViewModel(
 
     private fun rollbackMutation(connectionId: String, original: SpecSummary, action: InboxAction) {
         updateSpec(connectionId) { specs ->
-            when (action) {
+            if (original.inboxState != tab.state) {
+                specs.filterNot { it.id == original.id }
+            } else when (action) {
                 InboxAction.ARCHIVE, InboxAction.RESTORE ->
                     if (specs.any { it.id == original.id }) specs else specs + original
                 InboxAction.PIN, InboxAction.UNPIN ->

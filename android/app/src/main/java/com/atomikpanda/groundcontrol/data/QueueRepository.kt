@@ -69,7 +69,7 @@ class QueueRepository(private val api: SpecApi) {
                 .flatMap { summary -> cardsFromSpec(conn, api.getSpec(conn, summary.id)) }
         }
         val decisionCards = async {
-            api.listThreads(conn)
+            api.listThreads(conn, InboxFilter.ACTIVE)
                 .filter { it.needsDecision }
                 .mapNotNull { summary -> decisionCardFrom(conn, api.getThread(conn, summary.id)) }
         }

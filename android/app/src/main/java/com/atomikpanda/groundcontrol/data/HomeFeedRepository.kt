@@ -128,7 +128,7 @@ class HomeFeedRepository(private val api: SpecApi) {
 
     private suspend fun loadOne(conn: WorkspaceConnection): ConnResult = coroutineScope {
         val specs = async { catchingApi { api.listSpecs(conn, InboxFilter.ACTIVE) } }
-        val threads = async { catchingApi { api.listThreads(conn) } }
+        val threads = async { catchingApi { api.listThreads(conn, InboxFilter.ACTIVE) } }
         val tasks = async { catchingApi { api.listTasks(conn) } }
         val s = specs.await()
         val t = threads.await()
