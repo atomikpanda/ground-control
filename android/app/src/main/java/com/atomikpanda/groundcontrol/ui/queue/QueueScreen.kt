@@ -52,6 +52,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -109,6 +110,7 @@ fun QueueScreen(
     onOpenPr: (url: String) -> Unit,
     onOpenTask: (connectionId: String, task: String) -> Unit,
     onRePair: () -> Unit,
+    onOpenSpecs: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     // The connection-state owner performs the initial load; this only refreshes while the tab
@@ -165,7 +167,17 @@ fun QueueScreen(
     // driven reactively above — do NOT show one here.
     val approveAll: () -> Unit = { vm.approveAllCurrent() }
 
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Queue") },
+                actions = {
+                    TextButton(onClick = onOpenSpecs) { Text("Browse specs") }
+                },
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
             when (val s = state) {
                 QueueUiState.Loading -> CircularProgressIndicator()

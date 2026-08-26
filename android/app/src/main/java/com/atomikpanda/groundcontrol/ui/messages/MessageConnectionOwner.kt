@@ -91,6 +91,7 @@ internal class MessageConnectionOwner(
     private var retiredRequestJobs = emptySet<Job>()
     private var pendingHandoffJobs = emptySet<Job>()
     private var queuedRefreshWaiters = emptyList<CompletableDeferred<Unit>>()
+    private var handoffResumeGeneration: Long? = null
     private var pollingEnabled = false
     private var mutationDepth = 0
     private var cancelled = false
@@ -101,19 +102,23 @@ internal class MessageConnectionOwner(
     
     fun refresh(): Job = scope.launch {
         val queued = CompletableDeferred<Unit>()
-        var queuedForHandoff = false
+        var queuedForLater = false
         val request = mutex.withLock {
             when {
                 cancelled -> null
-                pendingHandoffJobs.isNotEmpty() -> {
+                pendingHandoffJobs.isNotEmpty() || mutationDepth > 0 -> {
                     queuedRefreshWaiters = queuedRefreshWaiters + queued
-                    queuedForHandoff = true
+                    queuedForLater = true
                     null
                 }
                 else -> launchRequestLocked(MessageRequestToken.Kind.REFRESH)
             }
         }
-        if (request != null) waitForAuthoritativeRefresh(request) else if (queuedForHandoff) queued.await()
+        if (request != null) {
+            waitForAuthoritativeRefresh(request)
+        } else if (queuedForLater) {
+            queued.await()
+        }
     }
     /** Applies one optimistic inbox mutation without replacing data received by other owners. */
     suspend fun updateThreads(transform: (List<ThreadSummary>) -> List<ThreadSummary>) {
@@ -131,13 +136,17 @@ internal class MessageConnectionOwner(
     }
 
     /** Fences loads started during the POST before the authoritative response is reconciled. */
-    suspend fun endInboxMutation() {
+    suspend fun endInboxMutation(): Job? = withContext(NonCancellable) {
         cancelAndJoin(mutex.withLock { invalidatePublicationLocked() })
         mutex.withLock {
             mutationDepth = (mutationDepth - 1).coerceAtLeast(0)
-            if (mutationDepth == 0 && pollingEnabled && readyToPollLocked()) {
+            if (mutationDepth != 0) return@withLock null
+            val queuedRefresh = launchQueuedRefreshLocked()
+            if (queuedRefresh != null) return@withLock queuedRefresh
+            if (pollingEnabled && readyToPollLocked()) {
                 launchRequestLocked(MessageRequestToken.Kind.POLL)
             }
+            null
         }
     }
 
@@ -366,6 +375,7 @@ internal class MessageConnectionOwner(
             if (cancelled || generation != handoff.generation || _snapshot.value.connection != replacement) null
             else {
                 pendingHandoffJobs = pendingHandoffJobs - handoff.jobs.toSet()
+                handoffResumeGeneration = handoff.generation
                 HandoffReceipt(handoff.generation)
             }
         }
@@ -373,26 +383,44 @@ internal class MessageConnectionOwner(
 
     suspend fun resumeAfterHandoff(receipt: HandoffReceipt) {
         mutex.withLock {
-            if (generation != receipt.generation || cancelled || pendingHandoffJobs.isNotEmpty() ||
-                activeToken != null || retryJob != null
+            if (generation != receipt.generation ||
+                handoffResumeGeneration != receipt.generation ||
+                cancelled ||
+                pendingHandoffJobs.isNotEmpty() ||
+                activeToken != null ||
+                retryJob != null
             ) return
+            handoffResumeGeneration = null
+            if (launchQueuedRefreshLocked() != null) return
             val kind = when {
-                queuedRefreshWaiters.isNotEmpty() -> MessageRequestToken.Kind.REFRESH
                 _snapshot.value.phase != MessageConnectionSnapshot.Phase.READY ->
                     MessageRequestToken.Kind.INITIAL
                 pollingEnabled -> MessageRequestToken.Kind.POLL
                 else -> null
             }
-            val request = kind?.let(::launchRequestLocked)
-            if (kind == MessageRequestToken.Kind.REFRESH) {
-                val waiters = queuedRefreshWaiters
-                queuedRefreshWaiters = emptyList()
-                request?.let { launched ->
-                    scope.launch {
-                        waitForAuthoritativeRefresh(launched)
-                        waiters.forEach { it.complete(Unit) }
+            kind?.let(::launchRequestLocked)
+        }
+    }
+
+    private fun launchQueuedRefreshLocked(): Job? {
+        if (queuedRefreshWaiters.isEmpty()) return null
+        val request = launchRequestLocked(MessageRequestToken.Kind.REFRESH) ?: return null
+        return scope.launch {
+            try {
+                waitForAuthoritativeRefresh(request)
+            } finally {
+                val completedWaiters = mutex.withLock {
+                    if (mutationDepth == 0 &&
+                        pendingHandoffJobs.isEmpty() &&
+                        handoffResumeGeneration == null &&
+                        activeToken?.kind != MessageRequestToken.Kind.REFRESH
+                    ) {
+                        queuedRefreshWaiters.also { queuedRefreshWaiters = emptyList() }
+                    } else {
+                        emptyList()
                     }
                 }
+                completedWaiters.forEach { it.complete(Unit) }
             }
         }
     }
@@ -415,6 +443,7 @@ internal class MessageConnectionOwner(
             activeToken = null
             val jobs = pendingHandoffJobs + retiredRequestJobs + listOfNotNull(activeRequest, retryJob)
             pendingHandoffJobs = emptySet()
+            handoffResumeGeneration = null
             retiredRequestJobs = emptySet()
             activeRequest = null
             retryJob = null

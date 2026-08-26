@@ -6,6 +6,7 @@ import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.ui.messages.threadInboxAction
 import com.atomikpanda.groundcontrol.ui.specs.specInboxAction
+import com.atomikpanda.groundcontrol.ui.specs.specInboxItemKey
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -37,5 +38,10 @@ class InboxActionVisibilityTest {
             InboxAction.RESTORE,
             specInboxAction(pinned.copy(inboxState = InboxState.ARCHIVED)),
         )
+    }
+
+    @Test fun spec_inbox_item_keys_include_the_workspace_connection() {
+        assertEquals("workspace-a:spec", specInboxItemKey("workspace-a", "spec"))
+        assertEquals("workspace-b:spec", specInboxItemKey("workspace-b", "spec"))
     }
 }

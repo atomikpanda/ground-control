@@ -1063,9 +1063,9 @@ class MessagesViewModelTest {
                 }
                 request.url.encodedPath.endsWith("/threads") &&
                     request.url.parameters["inbox"] == "archived" -> {
+                    archivedRefreshes += 1
                     archivedRefreshStarted.complete(Unit)
-                    if (++archivedRefreshes == 1) awaitCancellation()
-                    else respond("[]", HttpStatusCode.OK, jsonHdr)
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
                 }
                 request.url.encodedPath.endsWith("/threads") ->
                     respond("""[{"id":"t1","subject":"thread","pinned":false}]""", HttpStatusCode.OK, jsonHdr)
@@ -1076,10 +1076,14 @@ class MessagesViewModelTest {
         vm.refresh().join()
         val mutation = vm.mutateInbox(connA.id, "t1", InboxAction.PIN)
         mutationStarted.await()
-        vm.selectInboxTab(InboxTab.ARCHIVED)
-        archivedRefreshStarted.await()
+        val archivedRefresh = vm.selectInboxTab(InboxTab.ARCHIVED)!!
+        runCurrent()
+        assertTrue(!archivedRefreshStarted.isCompleted)
         releaseMutation.complete(Unit)
+        archivedRefreshStarted.await()
         mutation.join()
+        archivedRefresh.join()
+        assertEquals(1, archivedRefreshes)
 
         val archivedContent = vm.state.value as MessagesUiState.Content
         assertEquals(InboxTab.ARCHIVED, archivedContent.tab)

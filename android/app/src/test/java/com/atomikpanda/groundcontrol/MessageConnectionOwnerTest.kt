@@ -13,6 +13,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.runCurrent
@@ -516,6 +517,165 @@ class MessageConnectionOwnerTest {
         owner.cancel()
         refresh.join()
         assertTrue(refresh.isCompleted)
+    }
+
+    @Test fun refresh_requested_during_mutation_waits_for_one_authoritative_successor() = runTest {
+        val refreshStarted = CompletableDeferred<Unit>()
+        val releaseRefresh = CompletableDeferred<Unit>()
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                refreshStarted.complete(Unit)
+                releaseRefresh.await()
+                MessageFullLoad(listOf(thread("server")), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+
+        owner.beginInboxMutation()
+        val refresh = owner.refresh()
+        runCurrent()
+        assertFalse(refreshStarted.isCompleted)
+        assertFalse(refresh.isCompleted)
+
+        owner.endInboxMutation()
+        refreshStarted.await()
+        releaseRefresh.complete(Unit)
+        refresh.join()
+
+        assertEquals(listOf("server"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+    }
+
+    @Test fun cancelled_mutation_cleanup_still_removes_the_publication_fence() = runTest {
+        val mutexEntered = CompletableDeferred<Unit>()
+        val releaseMutex = CompletableDeferred<Unit>()
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = { MessageFullLoad(listOf(thread("after")), emptyList()) },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+        owner.beginInboxMutation()
+        val holder = backgroundScope.launch {
+            owner.holdMutexForTest(mutexEntered, releaseMutex)
+        }
+        mutexEntered.await()
+
+        val cleanup = backgroundScope.launch { owner.endInboxMutation() }
+        runCurrent()
+        cleanup.cancel()
+        releaseMutex.complete(Unit)
+        holder.join()
+        cleanup.join()
+
+        owner.refresh().join()
+        assertEquals(listOf("after"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+    }
+
+    @Test fun queued_refresh_waits_through_a_second_mutation_for_the_final_successor() = runTest {
+        val firstRefreshStarted = CompletableDeferred<Unit>()
+        val firstRefreshCancelled = CompletableDeferred<Unit>()
+        var loads = 0
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = {
+                loads += 1
+                if (loads == 1) {
+                    firstRefreshStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        firstRefreshCancelled.complete(Unit)
+                    }
+                }
+                MessageFullLoad(listOf(thread("server")), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+
+        owner.beginInboxMutation()
+        val refresh = owner.refresh()
+        runCurrent()
+        assertFalse(firstRefreshStarted.isCompleted)
+        owner.endInboxMutation()
+        firstRefreshStarted.await()
+
+        owner.beginInboxMutation()
+        firstRefreshCancelled.await()
+        runCurrent()
+        assertFalse(
+            "queued refresh completed=${refresh.isCompleted}, cancelled=${refresh.isCancelled}",
+            refresh.isCompleted,
+        )
+
+        owner.endInboxMutation()?.join()
+        refresh.join()
+
+        assertEquals(2, loads)
+        assertEquals(listOf("server"), owner.snapshot.value.threads.getOrThrow().map { it.id })
+    }
+    @Test fun queued_refresh_waits_for_the_replacement_owner_after_handoff() = runTest {
+        val oldRefreshStarted = CompletableDeferred<Unit>()
+        val oldRefreshCancelled = CompletableDeferred<Unit>()
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = { requestConnection ->
+                if (requestConnection == connection) {
+                    oldRefreshStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        oldRefreshCancelled.complete(Unit)
+                    }
+                }
+                MessageFullLoad(listOf(thread("replacement")), emptyList())
+            },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+
+        owner.beginInboxMutation()
+        val refresh = owner.refresh()
+        runCurrent()
+        owner.endInboxMutation()
+        oldRefreshStarted.await()
+
+        val receipt = owner.handoffTo(replacement)!!
+        oldRefreshCancelled.await()
+        runCurrent()
+        assertFalse(refresh.isCompleted)
+
+        owner.resumeAfterHandoff(receipt)
+        refresh.join()
+        assertEquals(replacement, owner.snapshot.value.connection)
+        assertEquals(
+            listOf("replacement"),
+            owner.snapshot.value.threads.getOrThrow().map { it.id },
+        )
+    }
+
+    @Test fun mutation_end_reports_only_full_refresh_successors_not_resumed_polls() = runTest {
+        val owner = MessageConnectionOwner(
+            connection = connection,
+            fullLoad = { MessageFullLoad(listOf(thread("ready")), emptyList()) },
+            poll = { _, _ -> awaitCancellation() },
+            scope = backgroundScope,
+        )
+        val initial = owner.beginForTest(MessageRequestToken.Kind.INITIAL)
+        owner.completeForTest(
+            initial,
+            Result.success(MessageFullLoad(listOf(thread("ready")), emptyList())),
+        )
+        owner.startPolling().join()
+        runCurrent()
+
+        owner.beginInboxMutation()
+        val successor = owner.endInboxMutation()
+
+        assertEquals(null, successor)
+        owner.cancel()
     }
 
     @Test fun poll_removed_ids_remove_threads_without_resetting_cursor() = runTest {

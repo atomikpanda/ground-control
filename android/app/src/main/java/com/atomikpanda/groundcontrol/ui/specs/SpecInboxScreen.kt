@@ -105,7 +105,10 @@ fun SpecInboxScreen(vm: SpecInboxViewModel, onSpecClick: (connectionId: String, 
                                             modifier = Modifier.padding(16.dp, 4.dp),
                                         )
                                     }
-                                    items(block.specs, key = { it.id }) { spec ->
+                                    items(
+                                        block.specs,
+                                        key = { spec -> specInboxItemKey(section.connectionId, spec.id) },
+                                    ) { spec ->
                                         SpecInboxRow(
                                             spec = spec,
                                             onClick = { onSpecClick(section.connectionId, spec.id) },
@@ -131,6 +134,9 @@ fun SpecInboxScreen(vm: SpecInboxViewModel, onSpecClick: (connectionId: String, 
         PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))
     }
 }
+
+internal fun specInboxItemKey(connectionId: String, specId: String): String =
+    "$connectionId:$specId"
 
 /** Inbox action that remains effective after pin precedence is applied. */
 internal fun specInboxAction(spec: SpecSummary): InboxAction? = when {

@@ -12,6 +12,7 @@ import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.groupForStatus
 import com.atomikpanda.groundcontrol.data.orderedGroups
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,11 +56,13 @@ class SpecInboxViewModel(
     private var refreshRevision = 0L
     private var mutationEpoch = 0L
     private var mutationsInFlight = 0
+    private var refreshesInFlight = 0
+    private var refreshPending = false
+    private var queuedRefreshWaiters = emptyList<CompletableDeferred<Unit>>()
     private val mutationLocks = mutableMapOf<String, Mutex>()
     private val mutationLocksMutex = Mutex()
 
-
-
+    private fun scope(): CoroutineScope = testScope ?: viewModelScope
 
     /** Returns the Job so callers (tests) can join/await completion if needed. */
     fun refresh(): Job? {
@@ -68,32 +71,66 @@ class SpecInboxViewModel(
             _state.value = InboxUiState.EmptyConfig
             return null
         }
+        if (mutationsInFlight > 0) {
+            refreshPending = true
+            val queued = CompletableDeferred<Unit>()
+            queuedRefreshWaiters = queuedRefreshWaiters + queued
+            return scope().launch { queued.await() }
+        }
+        return launchRefresh(connections)
+    }
+
+    private fun launchRefresh(connections: List<WorkspaceConnection>): Job {
         val requestTab = tab
         val requestQuery = searchQuery
         val publicationEpoch = mutationEpoch
         val revision = ++refreshRevision
+        refreshesInFlight += 1
         if (_state.value !is InboxUiState.Content) _state.value = InboxUiState.Loading
-        return (testScope ?: viewModelScope).launch {
-            val results = repo.listAllSpecs(connections, requestTab.filter, requestQuery)
-            if (
-                revision != refreshRevision ||
-                publicationEpoch != mutationEpoch ||
-                mutationsInFlight != 0 ||
-                requestTab != tab ||
-                requestQuery != searchQuery
-            ) return@launch
-            _state.value = InboxUiState.Content(
-                sections = results.map { ws ->
-                    WorkspaceSection(
-                        workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
-                        connectionId = ws.connection.id,
-                        groups = ws.specs.map { specs -> toGroupBlocks(specs, requestTab) },
-                    )
-                },
-                tab = requestTab,
-                searchQuery = requestQuery,
-            )
+        return scope().launch {
+            try {
+                val results = repo.listAllSpecs(connections, requestTab.filter, requestQuery)
+                if (
+                    revision != refreshRevision ||
+                    publicationEpoch != mutationEpoch ||
+                    mutationsInFlight != 0 ||
+                    requestTab != tab ||
+                    requestQuery != searchQuery
+                ) return@launch
+                _state.value = InboxUiState.Content(
+                    sections = results.map { ws ->
+                        WorkspaceSection(
+                            workspaceName = ws.connection.workspaceName.ifBlank { ws.connection.baseUrl },
+                            connectionId = ws.connection.id,
+                            groups = ws.specs.map { specs -> toGroupBlocks(specs, requestTab) },
+                        )
+                    },
+                    tab = requestTab,
+                    searchQuery = requestQuery,
+                )
+            } finally {
+                refreshesInFlight -= 1
+                completeQueuedRefreshWaitersIfSettled()
+            }
         }
+    }
+
+    private fun launchPendingRefresh(): Job? {
+        if (mutationsInFlight != 0 || !refreshPending) return null
+        refreshPending = false
+        val request = refresh()
+        if (request == null) {
+            queuedRefreshWaiters.forEach { it.complete(Unit) }
+            queuedRefreshWaiters = emptyList()
+            return null
+        }
+        return scope().launch { request.join() }
+    }
+
+    private fun completeQueuedRefreshWaitersIfSettled() {
+        if (mutationsInFlight != 0 || refreshPending || refreshesInFlight != 0) return
+        queuedRefreshWaiters.forEach { it.complete(Unit) }
+        queuedRefreshWaiters = emptyList()
     }
 
     fun selectInboxTab(tab: InboxTab): Job? {
@@ -111,7 +148,13 @@ class SpecInboxViewModel(
     }
     private fun publishInboxSelection() {
         val current = _state.value as? InboxUiState.Content ?: return
-        _state.value = current.copy(tab = tab, searchQuery = searchQuery)
+        _state.value = current.copy(
+            sections = current.sections.map { section ->
+                section.copy(groups = Result.success(emptyList()))
+            },
+            tab = tab,
+            searchQuery = searchQuery,
+        )
     }
 
 
@@ -137,30 +180,33 @@ class SpecInboxViewModel(
      */
     fun mutateInbox(connectionId: String, specId: String, action: InboxAction): Job {
         val mutationId = UUID.randomUUID().toString()
-        return (testScope ?: viewModelScope).launch {
+        return scope().launch {
             val conn = connectionsProvider().findByConnectionId(connectionId) ?: return@launch
             val canonicalConnectionId = conn.id
             mutationLock("$canonicalConnectionId:$specId").withLock {
                 replaceConnectionAlias(connectionId, conn)
                 val original = findSpec(canonicalConnectionId, specId) ?: return@withLock
+                var refreshAfterFailure = false
+                var successor: Job? = null
                 mutationEpoch += 1
                 mutationsInFlight += 1
-                applyMutation(canonicalConnectionId, specId, action)
+                if (refreshesInFlight > 0) refreshPending = true
                 try {
+                    applyMutation(canonicalConnectionId, specId, action)
                     val response = repo.mutateSpecInbox(conn, specId, action, mutationId)
-                    mutationEpoch += 1
-                    mutationsInFlight -= 1
                     reconcileMutation(canonicalConnectionId, original, response)
                 } catch (cancelled: CancellationException) {
-                    mutationEpoch += 1
-                    mutationsInFlight -= 1
                     throw cancelled
                 } catch (_: Throwable) {
+                    rollbackMutation(canonicalConnectionId, original, action)
+                    refreshAfterFailure = true
+                } finally {
                     mutationEpoch += 1
                     mutationsInFlight -= 1
-                    rollbackMutation(canonicalConnectionId, original, action)
-                    refresh()?.join()
+                    if (refreshAfterFailure) refreshPending = true
+                    successor = launchPendingRefresh()
                 }
+                if (refreshAfterFailure) successor?.join()
             }
         }
     }
@@ -248,7 +294,7 @@ class SpecInboxViewModel(
                         val specs = blocks.flatMap { it.specs }
                         transform(specs)
                             .takeIf { it.isNotEmpty() }
-                            ?.let(::toGroupBlocks)
+                            ?.let { toGroupBlocks(it, tab) }
                             ?: emptyList()
                     },
                 )

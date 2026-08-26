@@ -17,6 +17,7 @@ import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.QueueRepository
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.SpecDetailRepository
+import com.atomikpanda.groundcontrol.data.SpecRepository
 import com.atomikpanda.groundcontrol.data.TasksRepository
 import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -115,6 +116,7 @@ class GroundControlConnectionStateUiTest {
             home = HomeFeedRepository(api),
             queue = QueueRepository(api),
             detail = SpecDetailRepository(api),
+            specs = SpecRepository(api),
             tasks = TasksRepository(api),
             threads = ThreadsRepository(api),
         )
@@ -132,5 +134,36 @@ class GroundControlConnectionStateUiTest {
 
         composeRule.onNodeWithText("Only A").assertIsDisplayed()
         assertFalse(composeRule.onAllNodesWithText("Only B").fetchSemanticsNodes().isNotEmpty())
+    }
+
+    @Test fun queue_browse_specs_opens_the_active_and_archived_spec_inbox() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = FakeSource(
+            ConnectionState.Ready(
+                listOf(WorkspaceConnection("a", "http://a:47100", workspaceName = "ws-a")),
+            ),
+        )
+        val jsonHeaders = headersOf(HttpHeaders.ContentType, "application/json")
+        val api = SpecApi(HttpClient(MockEngine {
+            respond("[]", HttpStatusCode.OK, jsonHeaders)
+        }) { mshipDefaults() })
+        val dependencies = GroundControlDependencies(
+            connections = ConnectionsRepository(context),
+            hosts = HostsRepository(context),
+            connectionStateSource = source,
+            api = api,
+            home = HomeFeedRepository(api),
+            queue = QueueRepository(api),
+            detail = SpecDetailRepository(api),
+            tasks = TasksRepository(api),
+            specs = SpecRepository(api),
+            threads = ThreadsRepository(api),
+        )
+
+        composeRule.setContent { GroundControlContent(context, dependencies) }
+        composeRule.onNodeWithText("Queue").performClick()
+        composeRule.onNodeWithText("Browse specs").performClick()
+        composeRule.onNodeWithText("Search active specs").assertIsDisplayed()
+        composeRule.onNodeWithText("Archived").assertIsDisplayed()
     }
 }

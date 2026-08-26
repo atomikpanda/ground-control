@@ -333,20 +333,25 @@ class MessagesViewModel(
             mutationLock("$canonicalConnectionId:$threadId").withLock {
                 val original = findThread(canonicalConnectionId, threadId) ?: return@withLock
                 val owner = owners[canonicalConnectionId]
-                val sourceTab = tab
+                var refreshAfterFailure = false
+                var queuedRefresh: Job? = null
                 owner?.beginInboxMutation()
-                applyThreadMutation(canonicalConnectionId, threadId, action)
                 try {
-                    val response = repo.mutateThreadInbox(connection, threadId, action, mutationId)
-                    reconcileThreadMutation(canonicalConnectionId, original, response)
-                    owner?.endInboxMutation()
-                } catch (cancelled: CancellationException) {
-                    owner?.endInboxMutation()
-                    throw cancelled
-                } catch (_: Throwable) {
-                    rollbackThreadMutation(canonicalConnectionId, original, action)
-                    owner?.endInboxMutation()
-                    refresh().join()
+                    applyThreadMutation(canonicalConnectionId, threadId, action)
+                    try {
+                        val response = repo.mutateThreadInbox(connection, threadId, action, mutationId)
+                        reconcileThreadMutation(canonicalConnectionId, original, response)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        rollbackThreadMutation(canonicalConnectionId, original, action)
+                        refreshAfterFailure = true
+                    }
+                } finally {
+                    queuedRefresh = owner?.endInboxMutation()
+                }
+                if (refreshAfterFailure) {
+                    queuedRefresh?.join() ?: refresh().join()
                 }
             }
         }

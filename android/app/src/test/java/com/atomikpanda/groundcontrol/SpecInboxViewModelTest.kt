@@ -24,6 +24,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.setMain
 import kotlin.coroutines.cancellation.CancellationException
 import org.junit.After
@@ -290,10 +291,12 @@ class SpecInboxViewModelTest {
         val heldPostStarted = CompletableDeferred<Unit>()
         val releasePost = CompletableDeferred<Unit>()
         var holdNextGet = false
+        var archived = false
         val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
             if (request.url.encodedPath.contains("/inbox/")) {
                 heldPostStarted.complete(Unit)
                 releasePost.await()
+                archived = true
                 respond(
                     """{"id":"b","title":"B","status":"needs_review","inbox_state":"archived"}""",
                     HttpStatusCode.OK,
@@ -308,7 +311,7 @@ class SpecInboxViewModelTest {
                         """[{"id":"b","title":"B","status":"needs_review"}]"""
                     }
                     request.url.parameters["q"] == "b" ->
-                        """[{"id":"b","title":"B","status":"needs_review"}]"""
+                        if (archived) "[]" else """[{"id":"b","title":"B","status":"needs_review"}]"""
                     else -> """[{"id":"fresh","title":"Fresh","status":"needs_review"}]"""
                 }
                 respond(body, HttpStatusCode.OK, jsonHdr)
@@ -334,6 +337,274 @@ class SpecInboxViewModelTest {
 
         vm.onSearchQueryChange("")?.join()
         assertEquals(listOf("fresh"), specIds(vm))
+    }
+
+    @Test fun refresh_requested_during_mutation_waits_for_one_authoritative_successor() = runTest {
+        val mutationStarted = CompletableDeferred<Unit>()
+        val releaseMutation = CompletableDeferred<Unit>()
+        var specGets = 0
+        val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.contains("/inbox/") -> {
+                    mutationStarted.complete(Unit)
+                    releaseMutation.await()
+                    respond(
+                        """{"id":"target","title":"Target","status":"needs_review","inbox_state":"archived"}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                request.url.encodedPath.endsWith("/specs") -> {
+                    specGets += 1
+                    respond(
+                        if (specGets == 1) {
+                            """[{"id":"target","title":"Target","status":"needs_review"}]"""
+                        } else {
+                            """[{"id":"other","title":"Other","status":"needs_review"}]"""
+                        },
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, backgroundScope)
+
+        vm.refresh()!!.join()
+        val mutation = vm.mutateInbox("conn-7", "target", InboxAction.ARCHIVE)
+        mutationStarted.await()
+        val refresh = vm.refresh()!!
+        runCurrent()
+        assertTrue(!refresh.isCompleted)
+        assertEquals(1, specGets)
+
+        releaseMutation.complete(Unit)
+        refresh.join()
+        mutation.join()
+
+        assertEquals(2, specGets)
+        assertEquals(listOf("other"), specIds(vm))
+    }
+
+    @Test fun tab_switch_during_mutation_clears_old_rows_and_uses_the_successor_snapshot() = runTest {
+        val mutationStarted = CompletableDeferred<Unit>()
+        val releaseMutation = CompletableDeferred<Unit>()
+        var specGets = 0
+        val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.contains("/inbox/") -> {
+                    mutationStarted.complete(Unit)
+                    releaseMutation.await()
+                    respond(
+                        """{"id":"a","title":"A","status":"needs_review","inbox_state":"archived"}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                request.url.encodedPath.endsWith("/specs") -> {
+                    specGets += 1
+                    respond(
+                        if (request.url.parameters["inbox"] == "archived") {
+                            """[{"id":"a","title":"A","status":"needs_review","inbox_state":"archived"}]"""
+                        } else {
+                            """[
+                                {"id":"a","title":"A","status":"needs_review"},
+                                {"id":"b","title":"B","status":"approved"}
+                            ]""".trimIndent()
+                        },
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, backgroundScope)
+
+        vm.refresh()!!.join()
+        val mutation = vm.mutateInbox("conn-7", "a", InboxAction.ARCHIVE)
+        mutationStarted.await()
+        val archivedRefresh = vm.selectInboxTab(InboxTab.ARCHIVED)!!
+        runCurrent()
+
+        val switched = vm.state.value as InboxUiState.Content
+        assertEquals(InboxTab.ARCHIVED, switched.tab)
+        assertTrue(specIds(vm).isEmpty())
+        assertTrue(!archivedRefresh.isCompleted)
+
+        releaseMutation.complete(Unit)
+        archivedRefresh.join()
+        mutation.join()
+
+        val groups = (vm.state.value as InboxUiState.Content)
+            .sections.single().groups.getOrThrow()
+        assertEquals(2, specGets)
+        assertEquals(listOf(SpecGroup.ARCHIVED), groups.map { it.group })
+        assertEquals(listOf("a"), groups.single().specs.map { it.id })
+    }
+
+    @Test fun queued_refresh_waits_through_concurrent_mutations_for_the_final_snapshot() = runTest {
+        val firstMutationStarted = CompletableDeferred<Unit>()
+        val releaseFirstMutation = CompletableDeferred<Unit>()
+        val firstSuccessorStarted = CompletableDeferred<Unit>()
+        val releaseFirstSuccessor = CompletableDeferred<Unit>()
+        val secondMutationStarted = CompletableDeferred<Unit>()
+        val releaseSecondMutation = CompletableDeferred<Unit>()
+        var specGets = 0
+        val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/inbox/archive") &&
+                    request.url.encodedPath.contains("/a/") -> {
+                    firstMutationStarted.complete(Unit)
+                    releaseFirstMutation.await()
+                    respond(
+                        """{"id":"a","title":"A","status":"needs_review","inbox_state":"archived"}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                request.url.encodedPath.endsWith("/inbox/archive") -> {
+                    secondMutationStarted.complete(Unit)
+                    releaseSecondMutation.await()
+                    respond(
+                        """{"id":"b","title":"B","status":"approved","inbox_state":"archived"}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                request.url.encodedPath.endsWith("/specs") -> {
+                    specGets += 1
+                    when (specGets) {
+                        1 -> respond(
+                            """[
+                                {"id":"a","title":"A","status":"needs_review"},
+                                {"id":"b","title":"B","status":"approved"}
+                            ]""".trimIndent(),
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                        2 -> {
+                            firstSuccessorStarted.complete(Unit)
+                            releaseFirstSuccessor.await()
+                            respond(
+                                """[{"id":"stale","title":"Stale","status":"draft"}]""",
+                                HttpStatusCode.OK,
+                                jsonHdr,
+                            )
+                        }
+                        else -> respond(
+                            """[{"id":"final","title":"Final","status":"needs_review"}]""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                    }
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, backgroundScope)
+
+        vm.refresh()!!.join()
+        val firstMutation = vm.mutateInbox("conn-7", "a", InboxAction.ARCHIVE)
+        firstMutationStarted.await()
+        val refresh = vm.refresh()!!
+        runCurrent()
+        assertTrue(!firstSuccessorStarted.isCompleted)
+        releaseFirstMutation.complete(Unit)
+        firstSuccessorStarted.await()
+
+        val secondMutation = vm.mutateInbox("conn-7", "b", InboxAction.ARCHIVE)
+        secondMutationStarted.await()
+        releaseFirstSuccessor.complete(Unit)
+        runCurrent()
+        assertTrue(!refresh.isCompleted)
+
+        releaseSecondMutation.complete(Unit)
+        refresh.join()
+        firstMutation.join()
+        secondMutation.join()
+
+        assertEquals(3, specGets)
+        assertEquals(listOf("final"), specIds(vm))
+    }
+
+    @Test fun queued_refresh_waits_for_a_newer_direct_refresh_to_publish() = runTest {
+        val mutationStarted = CompletableDeferred<Unit>()
+        val releaseMutation = CompletableDeferred<Unit>()
+        val queuedSuccessorStarted = CompletableDeferred<Unit>()
+        val releaseQueuedSuccessor = CompletableDeferred<Unit>()
+        val directRefreshStarted = CompletableDeferred<Unit>()
+        val releaseDirectRefresh = CompletableDeferred<Unit>()
+        var specGets = 0
+        val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.contains("/inbox/") -> {
+                    mutationStarted.complete(Unit)
+                    releaseMutation.await()
+                    respond(
+                        """{"id":"target","title":"Target","status":"needs_review","inbox_state":"archived"}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                request.url.encodedPath.endsWith("/specs") -> {
+                    specGets += 1
+                    when (specGets) {
+                        1 -> respond(
+                            """[{"id":"target","title":"Target","status":"needs_review"}]""",
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
+                        2 -> {
+                            queuedSuccessorStarted.complete(Unit)
+                            releaseQueuedSuccessor.await()
+                            respond(
+                                """[{"id":"stale","title":"Stale","status":"needs_review"}]""",
+                                HttpStatusCode.OK,
+                                jsonHdr,
+                            )
+                        }
+                        else -> {
+                            directRefreshStarted.complete(Unit)
+                            releaseDirectRefresh.await()
+                            respond(
+                                """[{"id":"final","title":"Final","status":"needs_review"}]""",
+                                HttpStatusCode.OK,
+                                jsonHdr,
+                            )
+                        }
+                    }
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, backgroundScope)
+
+        vm.refresh()!!.join()
+        val mutation = vm.mutateInbox("conn-7", "target", InboxAction.ARCHIVE)
+        mutationStarted.await()
+        val queuedRefresh = vm.refresh()!!
+        runCurrent()
+        releaseMutation.complete(Unit)
+        queuedSuccessorStarted.await()
+
+        val directRefresh = vm.onSearchQueryChange("final")!!
+        directRefreshStarted.await()
+        releaseQueuedSuccessor.complete(Unit)
+        runCurrent()
+        assertTrue(!queuedRefresh.isCompleted)
+
+        releaseDirectRefresh.complete(Unit)
+        directRefresh.join()
+        queuedRefresh.join()
+        mutation.join()
+
+        assertEquals(listOf("final"), specIds(vm))
     }
 
     @Test fun lifecycle_archived_spec_restored_to_active_stays_in_active_inbox() = runTest {
@@ -432,8 +703,7 @@ class SpecInboxViewModelTest {
                     }
                     request.url.encodedPath.endsWith("/specs") -> when (++specRequests) {
                         1 -> respond("[$original]", HttpStatusCode.OK, jsonHdr)
-                        2 -> respond("[]", HttpStatusCode.OK, jsonHdr)
-                        3 -> {
+                        2 -> {
                             correctiveRefreshStarted.complete(Unit)
                             releaseCorrectiveRefresh.await()
                             respond("[]", HttpStatusCode.OK, jsonHdr)
@@ -449,7 +719,9 @@ class SpecInboxViewModelTest {
             vm.refresh()!!.join()
             val mutation = vm.mutateInbox("conn-7", "s", action)
             mutationStarted.await()
-            vm.selectInboxTab(InboxTab.ARCHIVED)!!.join()
+            val archivedRefresh = vm.selectInboxTab(InboxTab.ARCHIVED)!!
+            runCurrent()
+            assertTrue(!correctiveRefreshStarted.isCompleted)
             releaseMutation.complete(Unit)
             correctiveRefreshStarted.await()
 
@@ -457,6 +729,7 @@ class SpecInboxViewModelTest {
             assertTrue(specIds(vm).isEmpty())
 
             releaseCorrectiveRefresh.complete(Unit)
+            archivedRefresh.join()
             mutation.join()
             assertTrue(specIds(vm).isEmpty())
 
