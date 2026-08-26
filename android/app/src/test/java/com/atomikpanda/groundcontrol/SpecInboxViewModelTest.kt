@@ -366,4 +366,40 @@ class SpecInboxViewModelTest {
         assertEquals(listOf("archived"), groups.single().specs.map { it.id })
     }
 
+    @Test fun discarded_refresh_does_not_revert_selected_inbox_metadata() = runTest {
+        val staleRefreshStarted = CompletableDeferred<Unit>()
+        val releaseStaleRefresh = CompletableDeferred<Unit>()
+        var requests = 0
+        val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine {
+            requests += 1
+            if (requests == 2) {
+                staleRefreshStarted.complete(Unit)
+                releaseStaleRefresh.await()
+                respond(
+                    """[{"id":"stale","title":"Stale","status":"archived","inbox_state":"archived"}]""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            } else {
+                respond(
+                    """[{"id":"fresh","title":"Fresh","status":"archived","inbox_state":"archived"}]""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            }
+        }) { mshipDefaults() })), {
+            listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+        }, backgroundScope)
+
+        vm.refresh()!!.join()
+        val archivedRefresh = vm.selectInboxTab(InboxTab.ARCHIVED)!!
+        staleRefreshStarted.await()
+        vm.onSearchQueryChange("needle")!!.join()
+        releaseStaleRefresh.complete(Unit)
+        archivedRefresh.join()
+
+        val content = vm.state.value as InboxUiState.Content
+        assertEquals(InboxTab.ARCHIVED, content.tab)
+        assertEquals("needle", content.searchQuery)
+    }
 }

@@ -171,4 +171,24 @@ class QueueRepositoryTest {
 
         assertEquals(null, error.hostId)
     }
+
+    @Test fun thread_requests_are_scoped_to_the_active_inbox() = runTest {
+        val threadFilters = mutableListOf<String?>()
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads") -> {
+                    threadFilters += request.url.parameters["inbox"]
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/specs") ||
+                    request.url.encodedPath.endsWith("/plan-assumptions") ->
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }) { mshipDefaults() })
+
+        QueueRepository(api).load(listOf(WorkspaceConnection("c1", "http://h:47100", null, "ws")))
+
+        assertEquals(listOf("active"), threadFilters)
+    }
 }

@@ -11,9 +11,25 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.ConnectionStateSource
+import com.atomikpanda.groundcontrol.data.ConnectionsRepository
+import com.atomikpanda.groundcontrol.data.HomeFeedRepository
+import com.atomikpanda.groundcontrol.data.HostsRepository
+import com.atomikpanda.groundcontrol.data.QueueRepository
+import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.SpecDetailRepository
+import com.atomikpanda.groundcontrol.data.TasksRepository
+import com.atomikpanda.groundcontrol.data.ThreadsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.mshipDefaults
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -63,5 +79,58 @@ class GroundControlConnectionStateUiTest {
         composeRule.onNodeWithText("Recovered workspace").assertIsDisplayed()
         assertTrue(composeRule.onAllNodesWithText("Relay account").fetchSemanticsNodes().isEmpty())
         assertSame(activity, composeRule.activity)
+    }
+
+    @Test fun home_selection_and_state_filter_transfer_to_threads_without_changing_home_owner_metadata() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = FakeSource(
+            ConnectionState.Ready(
+                listOf(
+                    WorkspaceConnection("a", "http://a:47100", workspaceName = "ws-a"),
+                    WorkspaceConnection("b", "http://b:47100", workspaceName = "ws-b"),
+                ),
+            ),
+        )
+        val jsonHeaders = headersOf(HttpHeaders.ContentType, "application/json")
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.parameters["wait"] == "1" -> kotlinx.coroutines.awaitCancellation()
+                request.url.encodedPath.endsWith("/threads") -> respond(
+                    if (request.url.host == "a") {
+                        """[{"id":"a-unread","subject":"Only A","unseen":true}]"""
+                    } else {
+                        """[{"id":"b-unread","subject":"Only B","unseen":true}]"""
+                    },
+                    HttpStatusCode.OK,
+                    jsonHeaders,
+                )
+                else -> respond("[]", HttpStatusCode.OK, jsonHeaders)
+            }
+        }) { mshipDefaults() })
+        val dependencies = GroundControlDependencies(
+            connections = ConnectionsRepository(context),
+            hosts = HostsRepository(context),
+            connectionStateSource = source,
+            api = api,
+            home = HomeFeedRepository(api),
+            queue = QueueRepository(api),
+            detail = SpecDetailRepository(api),
+            tasks = TasksRepository(api),
+            threads = ThreadsRepository(api),
+        )
+
+        composeRule.setContent { GroundControlContent(context, dependencies) }
+        composeRule.waitUntil {
+            composeRule.onAllNodesWithText("ws-a").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("ws-a").performClick()
+        composeRule.onNodeWithText("Unread").performClick()
+        composeRule.onNodeWithText("Threads").performClick()
+        composeRule.waitUntil {
+            composeRule.onAllNodesWithText("Only A").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithText("Only A").assertIsDisplayed()
+        assertFalse(composeRule.onAllNodesWithText("Only B").fetchSemanticsNodes().isNotEmpty())
     }
 }
