@@ -402,4 +402,63 @@ class SpecInboxViewModelTest {
         assertEquals(InboxTab.ARCHIVED, content.tab)
         assertEquals("needle", content.searchQuery)
     }
+
+    @Test fun failed_pin_and_unpin_after_tab_switch_refresh_current_tab_before_completing_and_restore_source_state() = runTest {
+        suspend fun assertFailedMutationRestoresSource(
+            action: InboxAction,
+            initiallyPinned: Boolean,
+        ) {
+            val mutationStarted = CompletableDeferred<Unit>()
+            val releaseMutation = CompletableDeferred<Unit>()
+            val correctiveRefreshStarted = CompletableDeferred<Unit>()
+            val releaseCorrectiveRefresh = CompletableDeferred<Unit>()
+            var specRequests = 0
+            val original = """{"id":"s","title":"Original","status":"needs_review","inbox_state":"active","pinned":$initiallyPinned}"""
+            val vm = SpecInboxViewModel(SpecRepository(SpecApi(HttpClient(MockEngine { request ->
+                when {
+                    request.url.encodedPath.contains("/inbox/") -> {
+                        mutationStarted.complete(Unit)
+                        releaseMutation.await()
+                        respond("failure", HttpStatusCode.InternalServerError)
+                    }
+                    request.url.encodedPath.endsWith("/specs") -> when (++specRequests) {
+                        1 -> respond("[$original]", HttpStatusCode.OK, jsonHdr)
+                        2 -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                        3 -> {
+                            correctiveRefreshStarted.complete(Unit)
+                            releaseCorrectiveRefresh.await()
+                            respond("[]", HttpStatusCode.OK, jsonHdr)
+                        }
+                        else -> respond("[$original]", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                }
+            }) { mshipDefaults() })), {
+                listOf(WorkspaceConnection("conn-7", "http://h:47100", null, "ws-a"))
+            }, backgroundScope)
+
+            vm.refresh()!!.join()
+            val mutation = vm.mutateInbox("conn-7", "s", action)
+            mutationStarted.await()
+            vm.selectInboxTab(InboxTab.ARCHIVED)!!.join()
+            releaseMutation.complete(Unit)
+            correctiveRefreshStarted.await()
+
+            assertTrue(!mutation.isCompleted)
+            assertTrue(specIds(vm).isEmpty())
+
+            releaseCorrectiveRefresh.complete(Unit)
+            mutation.join()
+            assertTrue(specIds(vm).isEmpty())
+
+            vm.selectInboxTab(InboxTab.ACTIVE)!!.join()
+            val groups = (vm.state.value as InboxUiState.Content).sections.single().groups.getOrThrow()
+            val restored = groups.single().specs.single()
+            assertEquals(SpecGroup.NEEDS_REVIEW, groups.single().group)
+            assertEquals(initiallyPinned, restored.pinned)
+        }
+
+        assertFailedMutationRestoresSource(InboxAction.PIN, initiallyPinned = false)
+        assertFailedMutationRestoresSource(InboxAction.UNPIN, initiallyPinned = true)
+    }
 }
