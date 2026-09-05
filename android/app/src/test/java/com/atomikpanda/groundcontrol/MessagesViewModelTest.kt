@@ -160,14 +160,16 @@ class MessagesViewModelTest {
         )
         var canonicalWaitCalls = 0
         var polledHost: String? = null
-        var retiredPollCancelled = false
+        val retiredPollStarted = CompletableDeferred<Unit>()
+        val retiredPollCancelled = CompletableDeferred<Unit>()
         val vm = MessagesViewModel(repoWith { req ->
             when {
                 req.url.parameters["wait"] == "1" && req.url.host == "old" -> {
                     try {
+                        retiredPollStarted.complete(Unit)
                         awaitCancellation()
                     } finally {
-                        retiredPollCancelled = true
+                        retiredPollCancelled.complete(Unit)
                     }
                 }
                 req.url.parameters["wait"] == "1" -> {
@@ -185,7 +187,7 @@ class MessagesViewModelTest {
 
         vm.selectWorkspace(retired.id)
         vm.startLivePolling()
-        runCurrent()
+        retiredPollStarted.await()
         connections.value = com.atomikpanda.groundcontrol.data.ConnectionState.Ready(listOf(canonical))
         runCurrent()
         vm.selectWorkspace(retired.id)
@@ -196,7 +198,7 @@ class MessagesViewModelTest {
                 current.filteredThreads.firstOrNull()?.thread?.id == "t1"
         } as MessagesUiState.Content
         assertEquals("new", polledHost)
-        assertTrue(retiredPollCancelled)
+        retiredPollCancelled.await()
         assertEquals(canonical.id, content.selectedConnectionId)
         assertEquals(listOf(canonical.id), content.sections.map { it.connectionId }.distinct())
         assertEquals(listOf(canonical.id), content.filteredThreads.map { it.connectionId }.distinct())
