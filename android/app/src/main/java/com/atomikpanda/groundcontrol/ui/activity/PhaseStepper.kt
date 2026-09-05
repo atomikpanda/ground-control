@@ -22,6 +22,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
@@ -51,8 +53,8 @@ fun phaseStepFor(taskPhase: String?, done: Boolean): PhaseStep = when {
 
 /**
  * Horizontal 5-dot stepper. Completed stages read in the approval hue, the current stage pulses in
- * the primary color, future stages are muted. `compact = true` drops the labels for tight rows
- * (e.g. the spec-detail header).
+ * the primary color, future stages are muted. Compact steppers retain the current phase label so
+ * activity is communicated without relying on dot color alone.
  */
 @Composable
 fun PhaseStepper(current: PhaseStep, modifier: Modifier = Modifier, compact: Boolean = false) {
@@ -64,34 +66,50 @@ fun PhaseStepper(current: PhaseStep, modifier: Modifier = Modifier, compact: Boo
         label = "phaseAlpha",
     )
     val dot = if (compact) 8.dp else 12.dp
-    Row(
-        modifier.fillMaxWidth().padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp)
+            .semantics { contentDescription = "Current phase: ${current.label}" },
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        PhaseStep.entries.forEachIndexed { i, step ->
-            val isDone = i < current.ordinal
-            val isCurrent = i == current.ordinal
-            val tint = when {
-                isDone -> colors.approval
-                isCurrent -> MaterialTheme.colorScheme.primary
-                else -> colors.muted
-            }
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.weight(1f),
-            ) {
-                Box(
-                    Modifier
-                        .size(dot)
-                        .clip(CircleShape)
-                        .alpha(if (isCurrent) pulse else 1f)
-                        .background(tint),
-                )
-                if (!compact) {
-                    Text(step.label, style = MonoStyle, color = tint)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PhaseStep.entries.forEachIndexed { i, step ->
+                val isDone = i < current.ordinal
+                val isCurrent = i == current.ordinal
+                val tint = when {
+                    isDone -> colors.approval
+                    isCurrent -> MaterialTheme.colorScheme.primary
+                    else -> colors.muted
+                }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Box(
+                        Modifier
+                            .size(dot)
+                            .clip(CircleShape)
+                            .alpha(if (isCurrent) pulse else 1f)
+                            .background(tint),
+                    )
+                    if (!compact) {
+                        Text(step.label, style = MonoStyle, color = tint)
+                    }
                 }
             }
+        }
+        if (compact) {
+            Text(
+                current.label,
+                style = MonoStyle,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }

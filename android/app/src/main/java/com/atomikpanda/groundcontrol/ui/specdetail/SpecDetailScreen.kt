@@ -265,7 +265,7 @@ private fun CriterionRow(
                 Icon(
                     Icons.Filled.Check,
                     "approve",
-                    tint = if (c.verdict == "approved") LocalSemanticColors.current.approval else MaterialTheme.colorScheme.outline,
+                    tint = if (c.verdict == "approved") LocalSemanticColors.current.approval else MaterialTheme.colorScheme.onSurface,
                 )
             }
             IconToggleButton(
@@ -275,7 +275,7 @@ private fun CriterionRow(
                 Icon(
                     Icons.Filled.Flag,
                     "flag",
-                    tint = if (c.verdict == "flagged") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
+                    tint = if (c.verdict == "flagged") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                 )
             }
         } else {

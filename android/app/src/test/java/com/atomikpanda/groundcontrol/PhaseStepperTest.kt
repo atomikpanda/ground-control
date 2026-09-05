@@ -21,4 +21,5 @@ class PhaseStepperTest {
     @Test fun unknown_phase_degrades_to_dispatched() {
         assertEquals(PhaseStep.DISPATCHED, phaseStepFor("weird", false))
     }
+
 }

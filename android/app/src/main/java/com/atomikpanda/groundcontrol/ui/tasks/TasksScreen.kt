@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItem
@@ -23,6 +22,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
+import com.atomikpanda.groundcontrol.data.WorkspaceAvailabilityTone
+import com.atomikpanda.groundcontrol.data.legacyRequestLabel
+import com.atomikpanda.groundcontrol.data.legacyRequestTone
 
 /**
  * Pull-to-refresh uses the material3 1.2.1 API (`PullToRefreshContainer` +
@@ -78,7 +80,20 @@ fun TasksScreen(vm: TasksViewModel, onTaskClick: (connectionId: String, slug: St
                                 }
                             }
                         },
-                        onFailure = { item { AssistChip(onClick = {}, label = { Text("unreachable") }, modifier = Modifier.padding(16.dp, 4.dp)) } },
+                        onFailure = { failure ->
+                            item {
+                                Text(
+                                    legacyRequestLabel(failure),
+                                    color = if (legacyRequestTone(failure) == WorkspaceAvailabilityTone.ACTIONABLE) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(16.dp, 4.dp),
+                                )
+                            }
+                        },
                     )
                 }
             }

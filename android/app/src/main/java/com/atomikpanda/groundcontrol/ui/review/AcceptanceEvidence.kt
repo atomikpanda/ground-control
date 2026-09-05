@@ -18,18 +18,68 @@ import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 
+private val commitSha = Regex("^[0-9a-fA-F]{7,64}$")
+private val githubName = Regex("^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+private val pullNumber = Regex("^[1-9][0-9]*$")
+
+/**
+ * Resolves a commit evidence ref to GitHub's canonical repository commit route.
+ *
+ * A bare SHA is only attributable when every supplied PR URL is a well-formed GitHub pull-request
+ * URL for the same repository. Query parameters and trailing path separators are ignored; fragments
+ * and every other URL shape are rejected rather than creating a potentially misleading link.
+ */
+private fun commitEvidenceUrl(ref: String, prUrls: List<String>): String? {
+    if (!commitSha.matches(ref)) return null
+
+    var repository: String? = null
+    for (prUrl in prUrls) {
+        val candidate = repositoryForPullRequestUrl(prUrl) ?: return null
+        if (repository == null) {
+            repository = candidate
+        } else if (repository != candidate) {
+            return null
+        }
+    }
+    return repository?.let { "$it/commit/$ref" }
+}
+
+private fun repositoryForPullRequestUrl(prUrl: String): String? {
+    val uri = runCatching { java.net.URI(prUrl.trim()) }.getOrNull() ?: return null
+    if (
+        !uri.scheme.equals("https", ignoreCase = true) ||
+        !uri.host.equals("github.com", ignoreCase = true) ||
+        uri.port != -1 ||
+        uri.userInfo != null ||
+        uri.fragment != null
+    ) {
+        return null
+    }
+
+    val segments = uri.rawPath.orEmpty().trimEnd('/').split('/').filter(String::isNotEmpty)
+    if (
+        segments.size != 4 ||
+        !githubName.matches(segments[0]) ||
+        !githubName.matches(segments[1]) ||
+        segments[2] != "pull" ||
+        !pullNumber.matches(segments[3])
+    ) {
+        return null
+    }
+    return "https://github.com/${segments[0].lowercase()}/${segments[1].lowercase()}"
+}
+
 /**
  * The URL to open when a piece of acceptance-criterion evidence is tapped, or null when it
  * isn't tappable.
  *
- * - commit: opens the commit inside its PR — but only when the item has exactly one PR url
- *   (a bare commit SHA can't be attributed to a repo on multi-repo items): `<pr>/commits/<sha>`.
- *   Still valid on a merged PR (GitHub keeps a merged PR's commits).
+ * - commit: opens its canonical GitHub repository commit URL when its SHA and repository
+ *   attribution are unambiguous.
  * - artifact: opens the ref when it is an http(s) URL, else not tappable.
  * - test: never tappable (the ref is an internal test-run id).
  */
 fun evidenceOpenUrl(kind: String, ref: String, prUrls: List<String>): String? = when (kind) {
-    "commit" -> prUrls.singleOrNull()?.let { "${it.trimEnd('/')}/commits/$ref" }
+    "commit" -> commitEvidenceUrl(ref, prUrls)
     "artifact" -> ref.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     else -> null
 }

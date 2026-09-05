@@ -74,15 +74,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.CoachMarkStore
+import com.atomikpanda.groundcontrol.data.WorkspaceAvailabilityTone
 import com.atomikpanda.groundcontrol.data.WorkspaceError
 import com.atomikpanda.groundcontrol.data.WorkspaceErrorAction
 import com.atomikpanda.groundcontrol.data.workspaceErrorLabel
+import com.atomikpanda.groundcontrol.data.workspaceErrorTone
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard as DecisionPromptCard
 import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
 import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
 import com.atomikpanda.groundcontrol.ui.specdetail.unansweredLeadText
-import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -188,7 +189,11 @@ fun QueueScreen(
                     if (card == null) {
                         Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             if (s.errors.isNotEmpty()) { WorkspaceErrorLine(s.errors, onRePair); Spacer(Modifier.height(8.dp)) }
-                            Text("You're all caught up ✓", textAlign = TextAlign.Center)
+                            Text(
+                                if (s.errors.isEmpty()) "You're all caught up ✓"
+                                else "No queue items from available workspaces",
+                                textAlign = TextAlign.Center,
+                            )
                         }
                     } else {
                         // Fixed header + weighted (bounded) card region + pinned Skip footer, so long
@@ -411,17 +416,31 @@ private fun BoxScope.DragStamp(
     )
 }
 
-/** AC11: a compact per-workspace error banner (mirrors HomeScreen's error chips). */
+/** A compact availability summary: offline/stale hosts are context, while
+ * identity, authentication, and genuine degradation remain conspicuous. */
 @Composable
 private fun WorkspaceErrorLine(errors: List<WorkspaceError>, onRePair: () -> Unit) {
+    val (neutral, actionable) = errors.partition {
+        workspaceErrorTone(it) == WorkspaceAvailabilityTone.NEUTRAL
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            errors.joinToString(separator = " · ", transform = ::workspaceErrorLabel),
-            color = MaterialTheme.colorScheme.error,
-            style = MaterialTheme.typography.bodySmall,
-            textAlign = TextAlign.Center,
-        )
-        if (errors.any { it.action == WorkspaceErrorAction.RE_PAIR }) {
+        if (neutral.isNotEmpty()) {
+            Text(
+                "Availability: ${neutral.joinToString(" · ", transform = ::workspaceErrorLabel)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (actionable.isNotEmpty()) {
+            Text(
+                actionable.joinToString(separator = " · ", transform = ::workspaceErrorLabel),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (actionable.any { it.action == WorkspaceErrorAction.RE_PAIR }) {
             TextButton(onClick = onRePair) { Text("Re-pair in Settings") }
         }
     }
@@ -601,8 +620,9 @@ private fun QueueCardMeta(meta: SpecCardMeta) {
     }
 }
 
-/** The two-toggle Check/Flag idiom reused from SpecDetailScreen's CriterionRow: Check tints
- *  primary when approved, Flag tints error when flagged, both outline otherwise. */
+/** The two-toggle Check/Flag idiom reused from SpecDetailScreen's CriterionRow:
+ * selected states retain their semantic colors; actionable unselected controls
+ * use the readable on-surface color. */
 @Composable
 private fun VerdictToggles(
     approved: Boolean,
@@ -615,14 +635,14 @@ private fun VerdictToggles(
         Icon(
             Icons.Filled.Check,
             "approve",
-            tint = if (approved) LocalSemanticColors.current.approval else MaterialTheme.colorScheme.outline,
+            tint = if (approved) LocalSemanticColors.current.approval else MaterialTheme.colorScheme.onSurface,
         )
     }
     IconToggleButton(checked = flagged, enabled = enabled, onCheckedChange = { onFlag() }) {
         Icon(
             Icons.Filled.Flag,
             "flag",
-            tint = if (flagged) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
+            tint = if (flagged) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
         )
     }
 }

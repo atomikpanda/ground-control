@@ -83,6 +83,7 @@ class QueueViewModel(
     val state: StateFlow<QueueUiState> = _state.asStateFlow()
 
     private val resolvedKeys = mutableSetOf<String>()
+    private val resolvedQuestionSnapshots = mutableSetOf<QuestionsCardSnapshot>()
     private val deferredKeys = LinkedHashSet<String>()
     private val mutationJobs = mutableMapOf<String, MutableSet<Job>>()
     private var connById: Map<String, WorkspaceConnection> = emptyMap()
@@ -95,6 +96,17 @@ class QueueViewModel(
 
     private fun scope(): CoroutineScope = testScope ?: viewModelScope
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
+
+    private fun QueueV2Card.isResolved(): Boolean =
+        if (this is QuestionsCard) snapshot in resolvedQuestionSnapshots else key in resolvedKeys
+
+    private fun resolve(card: QueueV2Card) {
+        if (card is QuestionsCard) resolvedQuestionSnapshots.add(card.snapshot) else resolvedKeys.add(card.key)
+    }
+
+    private fun restore(card: QueueV2Card) {
+        if (card is QuestionsCard) resolvedQuestionSnapshots.remove(card.snapshot) else resolvedKeys.remove(card.key)
+    }
     private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
     private fun current(conn: WorkspaceConnection): Boolean =
         (connectionState.value as? ConnectionState.Ready)?.connections?.find { it.id == conn.id } == conn
@@ -231,8 +243,8 @@ class QueueViewModel(
         }
         connById = connections.associateBy { it.id }
         lastConnections = connections
-        val prev = content()
-        if (prev == null) _state.value = QueueUiState.Loading
+        val initial = content()
+        if (initial == null) _state.value = QueueUiState.Loading
         return scope().launch {
             val feed = repo.load(connections)
             val currentHosts = hosts.first()
@@ -244,39 +256,50 @@ class QueueViewModel(
                 lastFeedErrors = feed.errors
                 lastHosts = currentHosts
                 val errors = renderedErrors()
-                val fresh = feed.cards.filterNot { it.key in resolvedKeys }
-                if (prev == null) {
+                val staleQuestionSlots = feed.cards
+                    .filterIsInstance<QuestionsCard>()
+                    .filter { it.snapshot in resolvedQuestionSnapshots }
+                    .mapTo(mutableSetOf()) { it.key }
+                val fresh = feed.cards.filterNot { it.isResolved() }
+                val previous = content()
+                if (previous == null) {
                     _state.value = QueueUiState.Content(
                         cards = fresh, resolved = 0,
                         errors = errors, undo = null, inFlight = false,
                     )
                 } else {
-                    val head = prev.current
-                    val merged = mergeKeepingHead(head, fresh)
-                    _state.value = prev.copy(cards = merged, errors = errors)
+                    val merged = mergeKeepingHead(previous.cards, fresh, staleQuestionSlots)
+                    _state.value = previous.copy(cards = merged, errors = errors)
                 }
             }
         }
     }
 
-    /** Keep [head] at position 0 (don't yank focus); urgency-sort the active rest of [fresh] behind
-     *  it, and keep any deferred cards pinned to the back in their original defer order.
+    /** Keep the current head at position 0 (don't yank focus); urgency-sort the active rest of
+     *  [fresh] behind it, and keep deferred cards pinned to the back in their original defer order.
      *
-     *  Freezing the head instance exists to protect an in-progress interaction (checking a criterion,
-     *  answering a question) from being clobbered mid-edit by a live poll. A [PlanAssumptionCard] has
-     *  no such in-place interaction — it only deep-links out (see [QueueHints.OPEN_TASK]) — so freezing
-     *  it VERBATIM would hide its `pending` count changing, or leave it lingering after it resolves to
-     *  zero (the repo drops pending==0 from the feed entirely). But dropping it from stableHead
-     *  altogether re-exposes it to urgency sorting, so a higher-priority card arriving mid-refresh
-     *  yanks it from the head while the operator is viewing it. So it still occupies position 0 (no
-     *  yank) — but keeps the FRESH instance of itself (fresh `pending`, or removed entirely when it's
-     *  no longer in [fresh]), rather than the stale one. Other card types keep the stale instance
-     *  verbatim, since their in-place edits (verdicts, answers) would otherwise be clobbered by a
-     *  fetch that doesn't know about them yet. */
-    private fun mergeKeepingHead(head: QueueV2Card?, fresh: List<QueueV2Card>): List<QueueV2Card> {
-        val stableHead = if (head is PlanAssumptionCard) fresh.firstOrNull { it.key == head.key } else head
+     *  The interaction-bearing prose and criteria heads stay frozen while an operator edits them.
+     *  A question card instead has a stable per-spec identity, so a newer response replaces its
+     *  contents in place; a response explicitly suppressed as pre-answer keeps the locally patched
+     *  card even when it was not the head. Plan assumptions likewise keep their current slot but use
+     *  the fresh instance because they have no in-place edits. */
+    private fun mergeKeepingHead(
+        previous: List<QueueV2Card>,
+        fresh: List<QueueV2Card>,
+        staleQuestionSlots: Set<String>,
+    ): List<QueueV2Card> {
+        val head = previous.firstOrNull()
+        val stableHead = when (head) {
+            is QuestionsCard -> fresh.firstOrNull { it.key == head.key } ?: head
+            is PlanAssumptionCard -> fresh.firstOrNull { it.key == head.key }
+            else -> head
+        }
         val rest = fresh.filter { it.key != head?.key }
-        val (deferred, active) = rest.partition { it.key in deferredKeys }
+        val preservedQuestions = previous
+            .filterIsInstance<QuestionsCard>()
+            .filter { it.key != head?.key && it.key in staleQuestionSlots }
+            .filter { previousCard -> rest.none { it.key == previousCard.key } }
+        val (deferred, active) = (rest + preservedQuestions).partition { it.key in deferredKeys }
         val order = deferredKeys.toList()
         return listOfNotNull(stableHead) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
     }
@@ -338,7 +361,7 @@ class QueueViewModel(
                 } else {
                     publishIfCurrent(conn) {
                         // this card's items ARE approved; its siblings still await review — advance past it only
-                        resolvedKeys.add(card.key)
+                        resolve(card)
                         deferredKeys.remove(card.key)
                         advancePast(card, armUndo = true)
                     }
@@ -444,7 +467,20 @@ class QueueViewModel(
             runCatching { repo.answerQuestion(conn, specId, questionId, answer) }
                 .onSuccess { review ->
                     if (review.openQuestions.any { it.answer.isNullOrBlank() }) {
-                        publishIfCurrent(conn) { updateQuestionsCard(connectionId, specId, review) }
+                        publishIfCurrent(conn) {
+                            // Suppress this exact pre-answer response if an in-flight refresh returns it.
+                            // A later prompt revision for this spec has a different snapshot and remains actionable.
+                            content()?.cards
+                                ?.filterIsInstance<QuestionsCard>()
+                                ?.firstOrNull {
+                                    it.connectionId == connectionId && it.specId == specId
+                                }
+                                ?.let {
+                                    resolvedQuestionSnapshots.add(it.snapshot)
+                                    deferredKeys.remove(it.key)
+                                }
+                            updateQuestionsCard(connectionId, specId, review)
+                        }
                     } else {
                         val card = synchronized(ConnectionStatePublicationFence.lock) {
                             if (!current(conn)) null else {
@@ -480,7 +516,7 @@ class QueueViewModel(
             runCatching { repo.answerDecision(conn, card.threadId, optionText) }
                 .onSuccess {
                     publishIfCurrent(conn) {
-                        resolvedKeys.add(card.key)
+                        resolve(card)
                         deferredKeys.remove(card.key)
                         advancePast(card, armUndo = true)
                     }
@@ -509,7 +545,7 @@ class QueueViewModel(
     fun undo() {
         val c = content() ?: return
         val card = c.undo ?: return
-        resolvedKeys.remove(card.key)
+        restore(card)
         _state.value = c.copy(cards = listOf(card) + c.cards, resolved = (c.resolved - 1).coerceAtLeast(0), undo = null, actionError = null)
     }
 
@@ -524,13 +560,12 @@ class QueueViewModel(
         specId: String,
         afterResolve: () -> Unit,
     ): Boolean = publishIfCurrent(conn) {
-        val keys = content()
+        val cards = content()
             ?.cards
             ?.filter { it.connectionId == connectionId && it.specId() == specId }
-            ?.map { it.key }
             .orEmpty()
-        resolvedKeys.addAll(keys)
-        deferredKeys.removeAll(keys.toSet())
+        cards.forEach(::resolve)
+        deferredKeys.removeAll(cards.mapTo(mutableSetOf()) { it.key })
         afterResolve()
     }
 
@@ -613,7 +648,7 @@ class QueueViewModel(
                 it.key != card.key && it.connectionId == connectionId && it.specId() == specId
             }
             if (!last) {
-                resolvedKeys.add(card.key)
+                resolve(card)
                 deferredKeys.remove(card.key)
                 removeCard(card)
             }
@@ -672,13 +707,12 @@ class QueueViewModel(
                     actionError = "Approve blocked — this spec still needs review.",
                 )
             } else {
-                val keys = content()
+                val cards = content()
                     ?.cards
                     ?.filter { it.connectionId == connectionId && it.specId() == specId }
-                    ?.map { it.key }
                     .orEmpty()
-                resolvedKeys.addAll(keys)
-                deferredKeys.removeAll(keys.toSet())
+                cards.forEach(::resolve)
+                deferredKeys.removeAll(cards.mapTo(mutableSetOf()) { it.key })
                 // 409 reconciled to "already approved" → the spec still shipped, so confirm it by name.
                 removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
             }

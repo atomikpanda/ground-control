@@ -25,6 +25,7 @@ import com.atomikpanda.groundcontrol.ui.queue.queueCardHint
 import com.atomikpanda.groundcontrol.ui.queue.sortQueue
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -90,6 +91,26 @@ class QueueCardTest {
 
         val questions = cards.filterIsInstance<QuestionsCard>().single()
         assertEquals(listOf("q2"), questions.items.map { it.id })   // only the unanswered one
+    }
+
+    @Test fun question_card_keeps_its_spec_identity_but_versions_each_response() {
+        val original = cardsFromSpec(
+            conn,
+            spec(
+                questions = listOf(ReviewQuestion("q1", "Original prompt")),
+                updatedAt = "2026-06-01T00:00:00Z",
+            ),
+        ).filterIsInstance<QuestionsCard>().single()
+        val reopened = cardsFromSpec(
+            conn,
+            spec(
+                questions = listOf(ReviewQuestion("q1", "Reopened prompt")),
+                updatedAt = "2026-06-02T00:00:00Z",
+            ),
+        ).filterIsInstance<QuestionsCard>().single()
+
+        assertEquals(original.key, reopened.key)
+        assertNotEquals(original.snapshot, reopened.snapshot)
     }
 
     @Test fun criteria_card_items_carry_each_criterions_evidence() {
@@ -196,6 +217,34 @@ class QueueCardTest {
         assertEquals("Pick one", card.text)
         assertEquals(listOf("X", "Y"), card.decision.options)
         assertEquals(QueueTier.URGENT, card.tier)
+    }
+
+    @Test fun marking_a_thread_seen_does_not_answer_its_decision() {
+        val seen = threadWithDecision().copy(agentSeenAt = "2026-06-02T00:05:00Z")
+
+        assertTrue(decisionCardFrom(conn, seen) != null)
+    }
+
+    @Test fun human_reply_resolves_an_earlier_decision() {
+        val answered = threadWithDecision().copy(messages = threadWithDecision().messages + Message(
+            id = "m3", role = "human", text = "X",
+        ))
+
+        assertNull(decisionCardFrom(conn, answered))
+    }
+
+    @Test fun later_agent_decision_after_a_human_reply_is_a_new_card() {
+        val thread = threadWithDecision().copy(messages = threadWithDecision().messages + listOf(
+            Message(id = "m3", role = "human", text = "X"),
+            Message(
+                id = "m4", role = "agent", text = "Pick again", kind = "decision",
+                decision = Decision(options = listOf("A", "B")),
+            ),
+        ))
+
+        val card = decisionCardFrom(conn, thread)!!
+        assertEquals("Pick again", card.text)
+        assertTrue(card.key.endsWith(":m4"))
     }
 
     @Test fun thread_without_a_decision_yields_null() {

@@ -134,4 +134,35 @@ class DoneViewModelTest {
         assertEquals("commit", c.criteria[0].evidence[0].kind)
         assertEquals(listOf("http://pr/1"), c.prUrls)
     }
+
+    @Test fun load_retains_summary_metadata_when_task_detail_is_unavailable() = runTest {
+        val summaryItemJson = """
+            {"id":"wi-1","kind":"feature","title":"T","phase":"done",
+             "task_slugs":["archived-task"],"updated_at":"2026-07-02T00:00:00Z",
+             "affected_repos":["mothership","ground-control"],
+             "pr_urls":["https://github.example/mship/pull/1","https://github.example/mship/pull/2"]}
+        """.trimIndent()
+        val handler: MockRequestHandler = { req ->
+            when {
+                req.url.encodedPath.endsWith("/items/wi-1") && req.method == HttpMethod.Get ->
+                    respond(summaryItemJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+
+        val vm = vm(this, handler)
+        vm.load().join()
+        val c = (vm.state.value as DoneUiState.Content).c
+
+        assertEquals(0, c.tasks.size)
+        assertEquals(listOf("mothership", "ground-control"), c.reposTouched)
+        assertEquals(
+            listOf(
+                "https://github.example/mship/pull/1",
+                "https://github.example/mship/pull/2",
+            ),
+            c.prUrls,
+        )
+        assertEquals(c.prUrls, c.summaryPrUrls)
+    }
 }

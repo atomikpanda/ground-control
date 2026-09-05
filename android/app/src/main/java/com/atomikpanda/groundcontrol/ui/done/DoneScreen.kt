@@ -95,6 +95,9 @@ private fun DoneContentView(c: DoneContent) {
         item { HeaderSection(c.item, c.completedAt) }
         item { ReposTouchedRow(c.reposTouched) }
         items(c.tasks, key = { it.slug }) { task -> TaskRow(task, colors) }
+        if (c.summaryPrUrls.isNotEmpty()) {
+            item { SummaryPrLinksRow(c.summaryPrUrls) }
+        }
         c.review?.let { review -> item { SpecLine(review) } }
         acceptanceCriteriaSection(c.criteria, c.prUrls)
     }
@@ -121,6 +124,23 @@ private fun ReposTouchedRow(reposTouched: List<String>) {
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.fillMaxWidth().padding(16.dp, 8.dp),
     )
+}
+
+
+@Composable
+private fun SummaryPrLinksRow(prUrls: List<String>) {
+    val uriHandler = LocalUriHandler.current
+    Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+        Text("Pull requests", style = MaterialTheme.typography.bodyMedium)
+        prUrls.forEachIndexed { index, url ->
+            Text(
+                "PR ${index + 1} ↗",
+                modifier = Modifier.clickable { uriHandler.openUri(url) },
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
 }
 
 @Composable

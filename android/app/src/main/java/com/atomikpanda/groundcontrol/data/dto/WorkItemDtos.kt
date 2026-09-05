@@ -19,6 +19,8 @@ data class WorkItemSummary(
     @SerialName("phase_override") val phaseOverride: String? = null,
     @SerialName("active_phase") val activePhase: String? = null,
     @SerialName("active_last_activity_at") val activeLastActivityAt: String? = null,
+    @SerialName("affected_repos") val affectedRepos: List<String> = emptyList(),
+    @SerialName("pr_urls") val prUrls: List<String> = emptyList(),
 )
 
 /** Body for POST /items/{id}/unattended — toggles cloud-runner eligibility. */

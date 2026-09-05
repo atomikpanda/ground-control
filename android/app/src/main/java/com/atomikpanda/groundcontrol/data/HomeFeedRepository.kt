@@ -15,6 +15,36 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
+/**
+ * Whether an availability problem requires operator attention rather than a
+ * quiet "we do not know" presentation. The source data remains [WorkspaceError];
+ * this only prevents each surface inventing its own urgency rules.
+ */
+enum class WorkspaceAvailabilityTone { NEUTRAL, ACTIONABLE }
+
+private val ACTIONABLE_LADDER_STATES = setOf(
+    HostLadderState.PENDING_APPROVAL,
+    HostLadderState.CONTENDED,
+    HostLadderState.WORKSPACE_DEGRADED,
+    HostLadderState.RUNNER_DEGRADED,
+)
+
+fun workspaceErrorTone(error: WorkspaceError): WorkspaceAvailabilityTone = when {
+    error.action != null -> WorkspaceAvailabilityTone.ACTIONABLE
+    error.ladderState in ACTIONABLE_LADDER_STATES -> WorkspaceAvailabilityTone.ACTIONABLE
+    else -> WorkspaceAvailabilityTone.NEUTRAL
+}
+
+/** Legacy list endpoints do not carry host ladder context, but must not hide a
+ * recoverable credential failure behind a generic availability message. */
+fun legacyRequestTone(error: Throwable): WorkspaceAvailabilityTone =
+    if (error is RePairNeededException) WorkspaceAvailabilityTone.ACTIONABLE
+    else WorkspaceAvailabilityTone.NEUTRAL
+
+fun legacyRequestLabel(error: Throwable): String =
+    if (error is RePairNeededException) "Re-pair needed — open Settings"
+    else "Unavailable"
+
 /** Operator recovery offered for a non-retryable workspace failure. */
 enum class WorkspaceErrorAction { RE_PAIR }
 
@@ -76,15 +106,15 @@ fun applyHostLadder(
     }
 }
 
-/** The one wording for an error row, wherever it renders. */
+/** The one concise availability label for Home and Queue. */
 fun workspaceErrorLabel(error: WorkspaceError): String {
     val cause = error.ladderState?.let(::ladderLabel)
     return when {
         error.action == WorkspaceErrorAction.RE_PAIR -> "Re-pair needed — open Settings"
         error.workspaceCount > 1 && cause != null -> "$cause — ${error.workspaceCount} workspaces"
-        error.workspaceCount > 1 -> "Host offline — ${error.workspaceCount} workspaces"
+        error.workspaceCount > 1 -> "Availability unavailable — ${error.workspaceCount} workspaces"
         cause != null -> cause
-        else -> "${error.workspaceName} unreachable"
+        else -> "${error.workspaceName} unavailable"
     }
 }
 
