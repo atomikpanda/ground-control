@@ -220,11 +220,20 @@ private fun WorkspaceAvailabilitySummary(errors: List<WorkspaceError>, onRePair:
             )
         }
         actionable.forEach { error ->
-            AssistChip(
-                onClick = if (error.action == WorkspaceErrorAction.RE_PAIR) onRePair else ({}),
-                label = { Text(workspaceErrorLabel(error), color = MaterialTheme.colorScheme.error) },
-                modifier = Modifier.padding(top = 4.dp),
-            )
+            if (error.action == WorkspaceErrorAction.RE_PAIR) {
+                AssistChip(
+                    onClick = onRePair,
+                    label = { Text(workspaceErrorLabel(error), color = MaterialTheme.colorScheme.error) },
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            } else {
+                Text(
+                    workspaceErrorLabel(error),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
     }
 }

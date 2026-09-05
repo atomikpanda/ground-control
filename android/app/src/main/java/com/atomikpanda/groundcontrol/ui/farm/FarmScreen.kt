@@ -137,7 +137,7 @@ private fun FarmCard(
             // (Compose gives the inner Switch's own gesture detector priority for taps on it).
             Column {
                 Text(subLine(item), style = MonoStyle)
-                if (item.phase == "done") {
+                if (item.effectivePhase() == "done") {
                     if (item.affectedRepos.isNotEmpty()) {
                         Text(
                             "repos: ${item.affectedRepos.joinToString(", ")}",

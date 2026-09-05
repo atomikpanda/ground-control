@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.RePairNeededException
@@ -149,6 +150,10 @@ class HomeFeedHostErrorTest {
 
     @Test fun legacy_auth_failures_remain_actionable() {
         assertEquals(WorkspaceAvailabilityTone.NEUTRAL, legacyRequestTone(IllegalStateException()))
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            legacyRequestTone(AuthException("unauthorized")),
+        )
         assertEquals(
             WorkspaceAvailabilityTone.ACTIONABLE,
             legacyRequestTone(RePairNeededException("https://host")),

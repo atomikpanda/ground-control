@@ -111,6 +111,10 @@ class QueueCardTest {
 
         assertEquals(original.key, reopened.key)
         assertNotEquals(original.snapshot, reopened.snapshot)
+        assertNotEquals(
+            original.promptSnapshot(original.items.single()),
+            reopened.promptSnapshot(reopened.items.single()),
+        )
     }
 
     @Test fun criteria_card_items_carry_each_criterions_evidence() {

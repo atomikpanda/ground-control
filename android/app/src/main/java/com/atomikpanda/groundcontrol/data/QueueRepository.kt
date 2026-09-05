@@ -51,7 +51,7 @@ class QueueRepository(private val api: SpecApi) {
                             conn.id,
                             conn.displayName(),
                             conn.hostId.takeIf { conn.hasStableIdentityTuple() },
-                            action = WorkspaceErrorAction.RE_PAIR.takeIf { error is RePairNeededException },
+                            action = rePairActionFor(error),
                         ),
                     )
                 },

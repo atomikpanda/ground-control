@@ -180,6 +180,18 @@ class QueueRepositoryTest {
         assertEquals(WorkspaceErrorAction.RE_PAIR, feed.errors.single().action)
     }
 
+    @Test fun direct_401_is_surfaced_as_a_re_pair_action() = runTest {
+        val unauthorizedApi = SpecApi(HttpClient(MockEngine {
+            respond("""{"detail":"unauthorized"}""", HttpStatusCode.Unauthorized, jsonHdr)
+        }) { mshipDefaults() })
+
+        val feed = QueueRepository(unauthorizedApi).load(
+            listOf(WorkspaceConnection("c1", "http://host:47100", null, "ws")),
+        )
+
+        assertEquals(WorkspaceErrorAction.RE_PAIR, feed.errors.single().action)
+    }
+
     @Test fun a_legacy_url_host_id_does_not_claim_a_fleet_host_error() = runTest {
         val legacy = WorkspaceConnection(
             id = "legacy",

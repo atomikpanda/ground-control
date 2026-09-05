@@ -993,6 +993,269 @@ class QueueViewModelTest {
         assertEquals(listOf("q2", "q3"), questions.single().items.map { it.id })
     }
 
+    @Test fun old_question_answer_response_cannot_replace_or_autoapprove_a_newer_question_snapshot() = runTest {
+        val answerStarted = CompletableDeferred<Unit>()
+        val releaseAnswer = CompletableDeferred<Unit>()
+        var newerFeed = false
+        var approveCalls = 0
+        val handler: MockRequestHandler = { request ->
+            val path = request.url.encodedPath
+            when {
+                path.endsWith("/answer") -> {
+                    answerStarted.complete(Unit)
+                    releaseAnswer.await()
+                    respond(
+                        """{"id":"s1","status":"needs_review","open_questions":[
+                            {"id":"q1","text":"Original?","answer":"yes"}]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                path.endsWith("/approve") -> {
+                    approveCalls += 1
+                    respond("{}", HttpStatusCode.OK, jsonHdr)
+                }
+                path.endsWith("/specs") ->
+                    respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/s1") -> {
+                    val questions = if (newerFeed) {
+                        """[{"id":"q1","text":"Original?","answer":null},
+                            {"id":"q2","text":"Newer?","answer":null}]"""
+                    } else {
+                        """[{"id":"q1","text":"Original?","answer":null}]"""
+                    }
+                    respond(
+                        """{"id":"s1","title":"S1","status":"needs_review","body":"",
+                            "updated_at":"2026-01-01T00:00:00Z","open_questions":$questions}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                path.endsWith("/threads") || path.endsWith("/plan-assumptions") ->
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(backgroundScope, connsA, handler)
+
+        vm.refresh()?.join()
+        val answer = vm.answerQuestion("a", "s1", "q1", "yes")!!
+        answerStarted.await()
+        newerFeed = true
+        vm.refresh()?.join()
+        releaseAnswer.complete(Unit)
+        answer.join()
+
+        val question = vm.stateContent().cards.filterIsInstance<QuestionsCard>().single()
+        assertEquals(listOf("q2"), question.items.map { it.id })
+        assertEquals(0, approveCalls)
+    }
+
+    @Test fun accepted_question_revision_suppresses_mixed_stale_feed_but_keeps_later_reopen() = runTest {
+        val answerStarted = CompletableDeferred<Unit>()
+        val releaseAnswer = CompletableDeferred<Unit>()
+        var feedRevision = 1
+        val handler: MockRequestHandler = { request ->
+            val path = request.url.encodedPath
+            when {
+                path.endsWith("/answer") -> {
+                    answerStarted.complete(Unit)
+                    releaseAnswer.await()
+                    respond(
+                        """{"id":"s1","status":"needs_review","updated_at":"2026-01-01T01:00:00Z",
+                            "open_questions":[{"id":"q1","text":"First?","answer":"yes"}]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                path.endsWith("/specs") ->
+                    respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/s1") -> {
+                    val (updatedAt, questions) = when (feedRevision) {
+                        1 -> "2026-01-01T00:00:00Z" to
+                            """[{"id":"q1","text":"First?","answer":null}]"""
+                        2 -> "2026-01-01T02:30:00+02:00" to
+                            """[{"id":"q1","text":"First?","answer":null},
+                                {"id":"q2","text":"Second?","answer":null}]"""
+                        else -> "2026-01-01T02:00:00.000001+01:00" to
+                            """[{"id":"q1","text":"First?","answer":null},
+                                {"id":"q2","text":"Second?","answer":null}]"""
+                    }
+                    respond(
+                        """{"id":"s1","title":"S1","status":"needs_review","body":"",
+                            "updated_at":"$updatedAt","open_questions":$questions}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                path.endsWith("/threads") || path.endsWith("/plan-assumptions") ->
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(backgroundScope, connsA, handler)
+
+        vm.refresh()?.join() // R1: submitted q1
+        val answer = vm.answerQuestion("a", "s1", "q1", "yes")!!
+        answerStarted.await()
+        feedRevision = 2
+        vm.refresh()?.join() // R2: stale mixed q1 + q2
+        releaseAnswer.complete(Unit)
+        answer.join() // R3: answer acknowledgement
+
+        vm.refresh()?.join() // R2 again must not resurrect q1
+        assertEquals(
+            listOf("q2"),
+            vm.stateContent().cards.filterIsInstance<QuestionsCard>().single().items.map { it.id },
+        )
+
+        feedRevision = 4
+        vm.refresh()?.join() // R4: later reopening of q1
+        assertEquals(
+            listOf("q1", "q2"),
+            vm.stateContent().cards.filterIsInstance<QuestionsCard>().single().items.map { it.id },
+        )
+    }
+
+    @Test fun newer_question_snapshot_survives_the_answer_triggered_approve_response() = runTest {
+        val approveStarted = CompletableDeferred<Unit>()
+        val releaseApprove = CompletableDeferred<Unit>()
+        var newerFeed = false
+        val handler: MockRequestHandler = { request ->
+            val path = request.url.encodedPath
+            when {
+                path.endsWith("/answer") ->
+                    respond(
+                        """{"id":"s1","status":"needs_review","open_questions":[
+                            {"id":"q1","text":"Original?","answer":"yes"}]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                path.endsWith("/approve") -> {
+                    approveStarted.complete(Unit)
+                    releaseApprove.await()
+                    respond("""{"id":"s1","status":"approved"}""", HttpStatusCode.OK, jsonHdr)
+                }
+                path.endsWith("/specs") ->
+                    respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/s1") -> {
+                    val question = if (newerFeed) {
+                        """{"id":"q2","text":"Newer?","answer":null}"""
+                    } else {
+                        """{"id":"q1","text":"Original?","answer":null}"""
+                    }
+                    val updatedAt = if (newerFeed) "2026-01-02T00:00:00Z" else "2026-01-01T00:00:00Z"
+                    respond(
+                        """{"id":"s1","title":"S1","status":"needs_review","body":"",
+                            "updated_at":"$updatedAt","open_questions":[$question]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                path.endsWith("/threads") || path.endsWith("/plan-assumptions") ->
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(backgroundScope, connsA, handler)
+
+        vm.refresh()?.join()
+        val answer = vm.answerQuestion("a", "s1", "q1", "yes")!!
+        approveStarted.await()
+        newerFeed = true
+        vm.refresh()?.join()
+        releaseApprove.complete(Unit)
+        answer.join()
+
+        assertEquals(
+            listOf("q2"),
+            vm.stateContent().cards.filterIsInstance<QuestionsCard>().single().items.map { it.id },
+        )
+    }
+
+    @Test fun successful_question_feed_removes_missing_head_but_failed_feed_preserves_it() = runTest {
+        var failFeed = false
+        var remotelyAnswered = false
+        val handler: MockRequestHandler = { request ->
+            val path = request.url.encodedPath
+            when {
+                path.endsWith("/specs") && failFeed -> throw java.io.IOException("offline")
+                path.endsWith("/specs") ->
+                    respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/s1") -> {
+                    val questions = if (remotelyAnswered) "[]" else """[{"id":"q1","text":"First?","answer":null}]"""
+                    respond(
+                        """{"id":"s1","title":"S1","status":"needs_review","body":"",
+                            "updated_at":"2026-01-01T00:00:00Z","open_questions":$questions}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                path.endsWith("/threads") || path.endsWith("/plan-assumptions") ->
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(backgroundScope, connsA, handler)
+
+        vm.refresh()?.join()
+        failFeed = true
+        vm.refresh()?.join()
+        assertEquals(listOf("q1"), vm.stateContent().cards.filterIsInstance<QuestionsCard>().single().items.map { it.id })
+
+        failFeed = false
+        remotelyAnswered = true
+        vm.refresh()?.join()
+        assertTrue(vm.stateContent().cards.none { it is QuestionsCard })
+    }
+
+    @Test fun stale_mixed_question_feed_cannot_resurrect_an_acknowledged_prompt() = runTest {
+        var staleMixedFeed = false
+        val handler: MockRequestHandler = { request ->
+            val path = request.url.encodedPath
+            when {
+                path.endsWith("/answer") ->
+                    respond(
+                        """{"id":"s1","status":"needs_review","open_questions":[
+                            {"id":"q1","text":"First?","answer":"yes"},
+                            {"id":"q2","text":"Second?","answer":null}]}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                path.endsWith("/specs") ->
+                    respond("""[{"id":"s1","title":"S1","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
+                path.contains("/specs/s1") -> {
+                    val questions = if (staleMixedFeed) {
+                        """[{"id":"q1","text":"First?","answer":null},
+                            {"id":"q2","text":"Second?","answer":null},
+                            {"id":"q3","text":"New?","answer":null}]"""
+                    } else {
+                        """[{"id":"q1","text":"First?","answer":null},
+                            {"id":"q2","text":"Second?","answer":null}]"""
+                    }
+                    respond(
+                        """{"id":"s1","title":"S1","status":"needs_review","body":"",
+                            "updated_at":"2026-01-01T00:00:00Z","open_questions":$questions}""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                path.endsWith("/threads") || path.endsWith("/plan-assumptions") ->
+                    respond("[]", HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        val vm = vm(backgroundScope, connsA, handler)
+
+        vm.refresh()?.join()
+        vm.answerQuestion("a", "s1", "q1", "yes")?.join()
+        staleMixedFeed = true
+        vm.refresh()?.join()
+
+        val questions = vm.stateContent().cards.filterIsInstance<QuestionsCard>().single()
+        assertEquals(listOf("q2", "q3"), questions.items.map { it.id })
+    }
+
     private fun QueueViewModel.stateContent(): QueueUiState.Content = state.value as QueueUiState.Content
     @Test fun connection_state_loading_error_empty_add_and_remove_reuse_one_owner() = runTest {
         val source = MutableStateFlow<ConnectionState>(ConnectionState.Loading)

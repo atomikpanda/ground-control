@@ -92,9 +92,21 @@ data class QuestionItem(
     val answer: String? = null,
 )
 
+/** The identity/version of one unanswered prompt. Resolution is tracked at this boundary rather
+ * than for an entire card, so a stale response that also contains a different prompt cannot
+ * resurrect an acknowledged one. If both the accepted response and a later payload lack a usable
+ * revision, an otherwise identical reopened payload is indistinguishable from stale data. */
+data class QuestionPromptSnapshot(
+    val connectionId: String,
+    val specId: String,
+    val revision: String,
+    val questionId: String,
+    val text: String,
+)
+
 /** The version of a server response that populated a [QuestionsCard]. This is deliberately
-separate from the card's semantic identity: a completed response must not return from an
-in-flight poll, but an edited or reopened prompt for the same spec must remain actionable. */
+ * separate from the card's semantic identity: a completed response must not return from an
+ * in-flight poll, but an edited or reopened prompt for the same spec must remain actionable. */
 data class QuestionsCardSnapshot(
     val connectionId: String,
     val specId: String,
@@ -103,8 +115,8 @@ data class QuestionsCardSnapshot(
 )
 
 /** The still-unanswered open questions of a spec under review, as one multi-item card. [key]
-identifies that card's stable `(connectionId, specId)` slot in the queue. [snapshot] identifies
-the specific server response so stale-answer suppression does not hide newer prompt content. */
+ * identifies that card's stable `(connectionId, specId)` slot in the queue. [snapshot] identifies
+ * the specific server response so stale-answer suppression does not hide newer prompt content. */
 data class QuestionsCard(
     override val connectionId: String,
     override val workspaceName: String,
@@ -116,6 +128,9 @@ data class QuestionsCard(
     override val tier: QueueTier get() = QueueTier.APPROVAL
     override val key: String get() = "questions:$connectionId:$specId"
     val snapshot = QuestionsCardSnapshot(connectionId, specId, waitingSince, items)
+
+    fun promptSnapshot(item: QuestionItem): QuestionPromptSnapshot =
+        QuestionPromptSnapshot(connectionId, specId, waitingSince, item.id, item.text)
 }
 
 /** An open decision on a thread — the prompt [text] plus its [decision] options,

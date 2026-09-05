@@ -26,8 +26,11 @@ model exposed over `mship serve`.
 
 ### Daily review
 
-- Queue removes answered prompts, including when a refreshed thread summary is
-  stale. Merely viewing a prompt does not answer it; later questions remain actionable.
+- Queue reconciles decisions against later human replies, even when a stale summary
+  still marks them as needing a decision. Merely viewing a prompt does not answer it.
+  Spec questions are reconciled per prompt and acknowledged server revision; later
+  revisions and changed prompts remain actionable. An identical reopened prompt
+  without a newer server revision is indistinguishable from a stale response.
 - Expected offline workspaces use neutral availability text. Re-pairing and
   other actionable failures stay visible without blocking healthy workspaces.
 - Projects preserves each workspace's identity and opens that workspace directly.

@@ -14,6 +14,7 @@ import com.atomikpanda.groundcontrol.data.applyHostLadder
 import com.atomikpanda.groundcontrol.data.dedupeHostErrors
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.dto.SpecReview
+import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -82,8 +83,34 @@ class QueueViewModel(
     private val _state = MutableStateFlow<QueueUiState>(QueueUiState.Loading)
     val state: StateFlow<QueueUiState> = _state.asStateFlow()
 
+    private data class AcknowledgedQuestionPrompt(
+        val prompt: QuestionPromptSnapshot,
+        val acceptedRevision: String?,
+    ) {
+        private val acceptedAt = acceptedRevision?.takeIf { it.isNotBlank() }?.let {
+            runCatching { Instant.parse(it) }.getOrNull()
+        }
+
+        fun matches(incoming: QuestionPromptSnapshot): Boolean {
+            if (
+                prompt.connectionId != incoming.connectionId ||
+                prompt.specId != incoming.specId ||
+                prompt.questionId != incoming.questionId ||
+                prompt.text != incoming.text
+            ) return false
+            val accepted = acceptedRevision
+            if (accepted.isNullOrBlank()) return prompt == incoming
+            val incomingAt = runCatching { Instant.parse(incoming.revision) }.getOrNull()
+            return when {
+                acceptedAt != null && incomingAt != null -> incomingAt <= acceptedAt
+                incoming.revision == accepted -> true
+                else -> prompt == incoming
+            }
+        }
+    }
+
     private val resolvedKeys = mutableSetOf<String>()
-    private val resolvedQuestionSnapshots = mutableSetOf<QuestionsCardSnapshot>()
+    private val resolvedQuestionPrompts = mutableSetOf<AcknowledgedQuestionPrompt>()
     private val deferredKeys = LinkedHashSet<String>()
     private val mutationJobs = mutableMapOf<String, MutableSet<Job>>()
     private var connById: Map<String, WorkspaceConnection> = emptyMap()
@@ -97,15 +124,28 @@ class QueueViewModel(
     private fun scope(): CoroutineScope = testScope ?: viewModelScope
     private fun content(): QueueUiState.Content? = _state.value as? QueueUiState.Content
 
-    private fun QueueV2Card.isResolved(): Boolean =
-        if (this is QuestionsCard) snapshot in resolvedQuestionSnapshots else key in resolvedKeys
+    private fun QueueV2Card.isResolved(): Boolean = this !is QuestionsCard && key in resolvedKeys
+
+    private fun isResolvedQuestionPrompt(prompt: QuestionPromptSnapshot): Boolean =
+        resolvedQuestionPrompts.any { it.matches(prompt) }
 
     private fun resolve(card: QueueV2Card) {
-        if (card is QuestionsCard) resolvedQuestionSnapshots.add(card.snapshot) else resolvedKeys.add(card.key)
+        if (card is QuestionsCard) {
+            resolvedQuestionPrompts.addAll(
+                card.items.map { AcknowledgedQuestionPrompt(card.promptSnapshot(it), acceptedRevision = null) },
+            )
+        } else {
+            resolvedKeys.add(card.key)
+        }
     }
 
     private fun restore(card: QueueV2Card) {
-        if (card is QuestionsCard) resolvedQuestionSnapshots.remove(card.snapshot) else resolvedKeys.remove(card.key)
+        if (card is QuestionsCard) {
+            val prompts = card.items.map(card::promptSnapshot).toSet()
+            resolvedQuestionPrompts.removeAll { it.prompt in prompts }
+        } else {
+            resolvedKeys.remove(card.key)
+        }
     }
     private fun conn(card: QueueV2Card): WorkspaceConnection = connById.getValue(card.connectionId)
     private fun current(conn: WorkspaceConnection): Boolean =
@@ -256,11 +296,18 @@ class QueueViewModel(
                 lastFeedErrors = feed.errors
                 lastHosts = currentHosts
                 val errors = renderedErrors()
-                val staleQuestionSlots = feed.cards
-                    .filterIsInstance<QuestionsCard>()
-                    .filter { it.snapshot in resolvedQuestionSnapshots }
-                    .mapTo(mutableSetOf()) { it.key }
-                val fresh = feed.cards.filterNot { it.isResolved() }
+                val fresh = feed.cards.mapNotNull { card ->
+                    when (card) {
+                        is QuestionsCard -> {
+                            val unanswered = card.items.filter { item ->
+                                !isResolvedQuestionPrompt(card.promptSnapshot(item))
+                            }
+                            card.copy(items = unanswered).takeIf { unanswered.isNotEmpty() }
+                        }
+                        else -> card.takeUnless { it.isResolved() }
+                    }
+                }
+                val failedConnectionIds = feed.errors.mapTo(mutableSetOf()) { it.connectionId }
                 val previous = content()
                 if (previous == null) {
                     _state.value = QueueUiState.Content(
@@ -268,7 +315,7 @@ class QueueViewModel(
                         errors = errors, undo = null, inFlight = false,
                     )
                 } else {
-                    val merged = mergeKeepingHead(previous.cards, fresh, staleQuestionSlots)
+                    val merged = mergeKeepingHead(previous.cards, fresh, failedConnectionIds)
                     _state.value = previous.copy(cards = merged, errors = errors)
                 }
             }
@@ -279,27 +326,24 @@ class QueueViewModel(
      *  [fresh] behind it, and keep deferred cards pinned to the back in their original defer order.
      *
      *  The interaction-bearing prose and criteria heads stay frozen while an operator edits them.
-     *  A question card instead has a stable per-spec identity, so a newer response replaces its
-     *  contents in place; a response explicitly suppressed as pre-answer keeps the locally patched
-     *  card even when it was not the head. Plan assumptions likewise keep their current slot but use
-     *  the fresh instance because they have no in-place edits. */
+     *  A question card instead adopts its fresh per-spec response, including disappearing when a
+     *  successful feed no longer has open questions. A failed workspace retains its prior cards,
+     *  because an error is not evidence that its queue was emptied. Plan assumptions likewise keep
+     *  their current slot but use the fresh instance because they have no in-place edits. */
     private fun mergeKeepingHead(
         previous: List<QueueV2Card>,
         fresh: List<QueueV2Card>,
-        staleQuestionSlots: Set<String>,
+        failedConnectionIds: Set<String>,
     ): List<QueueV2Card> {
+        val available = fresh + previous.filter { it.connectionId in failedConnectionIds }
         val head = previous.firstOrNull()
         val stableHead = when (head) {
-            is QuestionsCard -> fresh.firstOrNull { it.key == head.key } ?: head
-            is PlanAssumptionCard -> fresh.firstOrNull { it.key == head.key }
+            is QuestionsCard -> available.firstOrNull { it.key == head.key }
+            is PlanAssumptionCard -> available.firstOrNull { it.key == head.key }
             else -> head
         }
-        val rest = fresh.filter { it.key != head?.key }
-        val preservedQuestions = previous
-            .filterIsInstance<QuestionsCard>()
-            .filter { it.key != head?.key && it.key in staleQuestionSlots }
-            .filter { previousCard -> rest.none { it.key == previousCard.key } }
-        val (deferred, active) = (rest + preservedQuestions).partition { it.key in deferredKeys }
+        val rest = available.filter { it.key != head?.key }
+        val (deferred, active) = rest.partition { it.key in deferredKeys }
         val order = deferredKeys.toList()
         return listOfNotNull(stableHead) + sortQueue(active) + deferred.sortedBy { order.indexOf(it.key) }
     }
@@ -453,48 +497,67 @@ class QueueViewModel(
         }
     }
 
-    /** Per-item answer inside a QuestionsCard. While unanswered questions remain, the card updates in
-     *  place (showing only the still-unanswered ones). When the LAST question is answered the card is
-     *  done, so it completes like a fully-acted chunk ([finalizeInPlaceCard]) instead of lingering with
-     *  answered items (which would also starve the spec's last-chunk auto-approve). Scoped to
-     *  (connectionId, specId) — spec ids are workspace-local, not globally unique. */
+    /** Per-item answer inside a QuestionsCard. The submitted prompt snapshot is captured before the
+     * POST: a response may only update or finalize that same snapshot, never a newer feed response
+     * for the same spec. While unanswered questions remain, the card updates in place (showing only
+     * the still-unanswered ones). When the LAST question is answered the card is done, so it
+     * completes like a fully-acted chunk ([finalizeInPlaceCard]) instead of lingering with answered
+     * items (which would also starve the spec's last-chunk auto-approve). Scoped to
+     * (connectionId, specId) — spec ids are workspace-local, not globally unique. */
     fun answerQuestion(connectionId: String, specId: String, questionId: String, answer: String): Job? {
         val c = content() ?: return null
         val conn = connById[connectionId] ?: return null
-        c.cards.filterIsInstance<QuestionsCard>().firstOrNull { it.connectionId == connectionId && it.specId == specId } ?: return null
+        val submittedCard = c.cards.filterIsInstance<QuestionsCard>().firstOrNull {
+            it.connectionId == connectionId && it.specId == specId
+        } ?: return null
+        val submittedPrompt = submittedCard.items.firstOrNull { it.id == questionId }
+            ?.let(submittedCard::promptSnapshot) ?: return null
         if (!publishIfCurrent(conn) { _state.value = c.copy(inFlight = true, actionError = null) }) return null
         return mutation(conn) {
             runCatching { repo.answerQuestion(conn, specId, questionId, answer) }
                 .onSuccess { review ->
-                    if (review.openQuestions.any { it.answer.isNullOrBlank() }) {
-                        publishIfCurrent(conn) {
-                            // Suppress this exact pre-answer response if an in-flight refresh returns it.
-                            // A later prompt revision for this spec has a different snapshot and remains actionable.
-                            content()?.cards
-                                ?.filterIsInstance<QuestionsCard>()
-                                ?.firstOrNull {
-                                    it.connectionId == connectionId && it.specId == specId
-                                }
-                                ?.let {
-                                    resolvedQuestionSnapshots.add(it.snapshot)
-                                    deferredKeys.remove(it.key)
-                                }
-                            updateQuestionsCard(connectionId, specId, review)
+                    var cardToFinalize: QuestionsCard? = null
+                    publishIfCurrent(conn) {
+                        val current = content() ?: return@publishIfCurrent
+                        // The write confirms this prompt even if a refresh replaced its surrounding
+                        // card. Reconcile just that prompt from the replacement; never replay this
+                        // response over newer questions.
+                        resolvedQuestionPrompts.add(
+                            AcknowledgedQuestionPrompt(submittedPrompt, review.updatedAt),
+                        )
+                        val currentCard = current.cards.filterIsInstance<QuestionsCard>().firstOrNull {
+                            it.connectionId == connectionId && it.specId == specId
                         }
-                    } else {
-                        val card = synchronized(ConnectionStatePublicationFence.lock) {
-                            if (!current(conn)) null else {
-                                content()?.cards?.firstOrNull {
-                                    it is QuestionsCard && it.connectionId == connectionId && it.specId == specId
+                        if (currentCard == null || currentCard.snapshot != submittedCard.snapshot) {
+                            val cards = current.cards.mapNotNull { card ->
+                                if (card is QuestionsCard &&
+                                    card.connectionId == connectionId &&
+                                    card.specId == specId
+                                ) {
+                                    val unanswered = card.items.filter {
+                                        !isResolvedQuestionPrompt(card.promptSnapshot(it))
+                                    }
+                                    card.copy(items = unanswered).takeIf { unanswered.isNotEmpty() }
+                                } else {
+                                    card
                                 }
                             }
+                            _state.value = current.copy(cards = cards, inFlight = false)
+                            return@publishIfCurrent
                         }
-                        if (card != null) finalizeInPlaceCard(card, conn, connectionId, specId)
-                        else publishIfCurrent(conn) {
-                            val current = content() ?: return@publishIfCurrent
-                            _state.value = current.copy(inFlight = false)
+                        if (review.openQuestions.any { it.answer.isNullOrBlank() }) {
+                            deferredKeys.remove(currentCard.key)
+                            updateQuestionsCard(connectionId, specId, review)
+                        } else {
+                            resolvedQuestionPrompts.addAll(
+                                currentCard.items.map {
+                                    AcknowledgedQuestionPrompt(currentCard.promptSnapshot(it), review.updatedAt)
+                                },
+                            )
+                            cardToFinalize = currentCard
                         }
                     }
+                    cardToFinalize?.let { finalizeInPlaceCard(it, conn, connectionId, specId) }
                 }
                 .onFailure {
                     publishIfCurrent(conn) {
@@ -553,17 +616,27 @@ class QueueViewModel(
 
     /** Mark every currently-queued card of ([connectionId], [specId]) resolved (so it stays gone across
      *  refreshes). Scoped to the connection: spec ids are workspace-local, so acting on one workspace's
-     *  spec must not resolve another workspace's same-id cards. */
+     *  spec must not resolve another workspace's same-id cards. A question completion carries its exact
+     *  [expectedQuestionSnapshot] through the asynchronous spec approval, so a refreshed prompt cannot
+     *  be removed when that approval returns. */
     private inline fun resolveSpec(
         conn: WorkspaceConnection,
         connectionId: String,
         specId: String,
+        expectedQuestionSnapshot: QuestionsCardSnapshot? = null,
         afterResolve: () -> Unit,
     ): Boolean = publishIfCurrent(conn) {
-        val cards = content()
-            ?.cards
-            ?.filter { it.connectionId == connectionId && it.specId() == specId }
-            .orEmpty()
+        val current = content() ?: return@publishIfCurrent
+        if (expectedQuestionSnapshot != null) {
+            val currentQuestion = current.cards.filterIsInstance<QuestionsCard>().firstOrNull {
+                it.connectionId == connectionId && it.specId == specId
+            }
+            if (currentQuestion?.snapshot != expectedQuestionSnapshot) {
+                _state.value = current.copy(inFlight = false)
+                return@publishIfCurrent
+            }
+        }
+        val cards = current.cards.filter { it.connectionId == connectionId && it.specId() == specId }
         cards.forEach(::resolve)
         deferredKeys.removeAll(cards.mapTo(mutableSetOf()) { it.key })
         afterResolve()
@@ -641,9 +714,18 @@ class QueueViewModel(
         connectionId: String,
         specId: String,
     ) {
-        val isLastChunk = synchronized(ConnectionStatePublicationFence.lock) {
-            if (!current(conn)) return
-            val current = content() ?: return
+        val isLastChunk: Boolean? = synchronized(ConnectionStatePublicationFence.lock) {
+            if (!current(conn)) return@synchronized null
+            val current = content() ?: return@synchronized null
+            if (card is QuestionsCard) {
+                val currentCard = current.cards.filterIsInstance<QuestionsCard>().firstOrNull {
+                    it.connectionId == connectionId && it.specId == specId
+                }
+                if (currentCard?.snapshot != card.snapshot) {
+                    _state.value = current.copy(inFlight = false)
+                    return@synchronized null
+                }
+            }
             val last = current.cards.none {
                 it.key != card.key && it.connectionId == connectionId && it.specId() == specId
             }
@@ -654,10 +736,15 @@ class QueueViewModel(
             }
             last
         }
-        if (!isLastChunk) return
+        if (isLastChunk != true) return
         runCatching { repo.approve(conn, specId) }
             .onSuccess {
-                resolveSpec(conn, connectionId, specId) {
+                resolveSpec(
+                    conn,
+                    connectionId,
+                    specId,
+                    expectedQuestionSnapshot = (card as? QuestionsCard)?.snapshot,
+                ) {
                     // Whole spec just shipped via in-place finalize → confirm by name, matching the swipe path.
                     removeSpecCards(connectionId, specId, card.specTitle().ifBlank { specId })
                 }

@@ -35,18 +35,22 @@ fun workspaceErrorTone(error: WorkspaceError): WorkspaceAvailabilityTone = when 
     else -> WorkspaceAvailabilityTone.NEUTRAL
 }
 
+/** Operator recovery offered for a non-retryable workspace failure. */
+enum class WorkspaceErrorAction { RE_PAIR }
+
+/** Maps every authentication rejection to the one operator recovery action. */
+fun rePairActionFor(error: Throwable): WorkspaceErrorAction? =
+    WorkspaceErrorAction.RE_PAIR.takeIf { error is AuthException }
+
 /** Legacy list endpoints do not carry host ladder context, but must not hide a
  * recoverable credential failure behind a generic availability message. */
 fun legacyRequestTone(error: Throwable): WorkspaceAvailabilityTone =
-    if (error is RePairNeededException) WorkspaceAvailabilityTone.ACTIONABLE
+    if (rePairActionFor(error) != null) WorkspaceAvailabilityTone.ACTIONABLE
     else WorkspaceAvailabilityTone.NEUTRAL
 
 fun legacyRequestLabel(error: Throwable): String =
-    if (error is RePairNeededException) "Re-pair needed — open Settings"
+    if (rePairActionFor(error) != null) "Re-pair needed — open Settings"
     else "Unavailable"
-
-/** Operator recovery offered for a non-retryable workspace failure. */
-enum class WorkspaceErrorAction { RE_PAIR }
 
 /** A workspace whose fetch failed (one or more sources errored). [hostId] is the
  * host it lives on (#471) — null for a manually paired connection. */
@@ -152,8 +156,8 @@ class HomeFeedRepository(private val api: SpecApi) {
         runCatching(block).onFailure { if (it is CancellationException) throw it }
 
     private fun actionFor(results: List<Result<*>>): WorkspaceErrorAction? =
-        WorkspaceErrorAction.RE_PAIR.takeIf {
-            results.any { it.exceptionOrNull() is RePairNeededException }
+        results.firstNotNullOfOrNull { result ->
+            result.exceptionOrNull()?.let(::rePairActionFor)
         }
 
     private suspend fun loadOne(conn: WorkspaceConnection): ConnResult = coroutineScope {

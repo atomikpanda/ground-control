@@ -264,7 +264,10 @@ class ConsoleViewModelTest {
         val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
         val oldSendStarted = CompletableDeferred<Unit>()
         val releaseOldSend = CompletableDeferred<Unit>()
-        var replacementLoads = 0
+        val replacementItemJson = """
+            {"id":"wi-1","kind":"feature","title":"Replacement item","phase":"in_flight",
+             "task_slugs":["a"],"thread_ids":["t1"],"spec_id":null}
+        """.trimIndent()
         val handler: MockRequestHandler = { request ->
             when {
                 request.url.encodedPath.endsWith("/items/wi-1/messages") &&
@@ -275,8 +278,11 @@ class ConsoleViewModelTest {
                 }
                 request.url.encodedPath.endsWith("/items/wi-1") &&
                     request.method == HttpMethod.Get -> {
-                    if (request.url.host == "new") replacementLoads += 1
-                    respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                    respond(
+                        if (request.url.host == "new") replacementItemJson else itemJson,
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
                 }
                 request.url.encodedPath.endsWith("/tasks/a") ->
                     respond(taskJson, HttpStatusCode.OK, jsonHdr)
@@ -301,8 +307,9 @@ class ConsoleViewModelTest {
         assertTrue(vm.sending.value)
 
         connections.value = ConnectionState.Ready(listOf(replacement))
-        runCurrent()
-        vm.state.first { replacementLoads == 1 && it is ConsoleUiState.Content }
+        vm.state.first {
+            it is ConsoleUiState.Content && it.c.item.title == "Replacement item"
+        }
         releaseOldSend.complete(Unit)
         staleSend.join()
         assertEquals(false, vm.sending.value)
