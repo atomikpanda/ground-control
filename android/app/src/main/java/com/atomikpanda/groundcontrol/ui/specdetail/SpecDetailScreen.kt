@@ -3,6 +3,8 @@ package com.atomikpanda.groundcontrol.ui.specdetail
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
@@ -376,7 +378,7 @@ private fun AskQuestionRow(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
     val actions = availableActions(s.detail.status)
@@ -400,13 +402,14 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (SpecAction.REQUEST_CHANGES in actions)
                     OutlinedButton(enabled = !busy, onClick = { showReason = true }) { Text("Request changes") }
                 if (SpecAction.APPROVE in actions) {
-                    // Approve and its overflow are siblings in the ActionBar Row (spaced), not stacked in a
-                    // Box — a Box would place both at TopStart and overlap them. The menu anchors to the
-                    // overflow via its own Box.
+                    // Keep the overflow menu anchored to its own Box as actions wrap.
                     Button(enabled = !busy, onClick = { showApproveConfirm = true }) { Text("Approve") }
                     Box {
                         IconButton(enabled = !busy, onClick = { menu = true }) {
