@@ -46,8 +46,6 @@ class DoneViewModelTest {
         {"id":"wi-1","kind":"feature","title":"T","phase":"done",
          "task_slugs":["a"],"spec_id":null,"updated_at":"2026-07-02T00:00:00Z"}
     """.trimIndent()
-    private val itemWithSpecJson =
-        """{"id":"wi-1","kind":"chore","title":"T","phase":"done","spec_id":"spec-1"}"""
 
     private val taskJson = """
         {"slug":"a","description":"do the thing","phase":"done","branch":"feat/a",
