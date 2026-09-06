@@ -6,6 +6,7 @@ import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Evidence
 import com.atomikpanda.groundcontrol.data.dto.SpecRecord
 import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.data.dto.lastResolvedMessageIndex
 import com.atomikpanda.groundcontrol.ui.home.displayName
 
 /** Urgency tiers for the Queue. Lower ordinal = higher urgency. */
@@ -241,14 +242,13 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
 }
 
 /** A [DecisionCard] for a thread whose latest unanswered structured decision is still open, or null.
- *  A human reply answers every earlier decision; only a later agent decision becomes a new prompt.
+ *  A human reply or explicit Done resolves earlier decisions; a later decision is a new prompt.
  *  This mirrors the server's `needs_decision` semantics and deliberately does not treat read state
  *  as an answer. */
 fun decisionCardFrom(conn: WorkspaceConnection, thread: Thread): DecisionCard? {
-    val lastHuman = thread.messages.indexOfLast { it.role == "human" }
     val msg = thread.messages
-        .subList(lastHuman + 1, thread.messages.size)
-        .lastOrNull { it.kind == "decision" && it.decision != null }
+        .subList(thread.lastResolvedMessageIndex() + 1, thread.messages.size)
+        .lastOrNull { it.role == "agent" && it.kind == "decision" && it.decision != null }
         ?: return null
     val decision = msg.decision ?: return null
     return DecisionCard(

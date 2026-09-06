@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.os.Build
 import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
+import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.notify.activeDecision
 import com.atomikpanda.groundcontrol.notify.decisionActionOptions
 import com.atomikpanda.groundcontrol.notify.decisionOptionsBody
@@ -79,7 +80,7 @@ class NotificationFormatTest {
             msg("m1", role = "human"),
             msg("m2", role = "agent", kind = "decision", decision = d),
         )
-        assertEquals(d, activeDecision(messages))
+        assertEquals(d, activeDecision(Thread(id = "t", messages = messages)))
     }
 
     @Test fun active_decision_null_when_a_human_replied_after_it() {
@@ -88,7 +89,24 @@ class NotificationFormatTest {
             msg("m1", role = "agent", kind = "decision", decision = d),
             msg("m2", role = "human"),
         )
-        assertNull(activeDecision(messages))
+        assertNull(activeDecision(Thread(id = "t", messages = messages)))
+    }
+
+    @Test fun done_removes_old_decision_actions_but_keeps_later_prompts() {
+        val oldDecision = Decision(options = listOf("Merge", "Wait"))
+        val newDecision = Decision(options = listOf("Deploy", "Later"))
+        val thread = Thread(
+            id = "t",
+            messages = listOf(
+                msg("old", role = "agent", kind = "decision", decision = oldDecision),
+                msg("closeout", role = "agent"),
+            ),
+            resolvedThroughMessageId = "closeout",
+        )
+        assertNull(activeDecision(thread))
+        assertEquals(newDecision, activeDecision(thread.copy(
+            messages = thread.messages + msg("new", role = "agent", kind = "decision", decision = newDecision),
+        )))
     }
 
     // --- decision action options -------------------------------------------

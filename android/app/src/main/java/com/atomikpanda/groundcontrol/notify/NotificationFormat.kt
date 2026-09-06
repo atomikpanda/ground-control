@@ -2,6 +2,8 @@ package com.atomikpanda.groundcontrol.notify
 
 import com.atomikpanda.groundcontrol.data.dto.Decision
 import com.atomikpanda.groundcontrol.data.dto.Message
+import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.data.dto.lastResolvedMessageIndex
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.net.URLEncoder
@@ -42,14 +44,14 @@ fun recentMessages(messages: List<Message>, limit: Int = 6): List<Message> =
     if (messages.size <= limit) messages else messages.subList(messages.size - limit, messages.size)
 
 /**
- * The active (still-unanswered) decision: the most recent `decision` message that has no human
- * reply after it. Mirrors the in-app rule (ConversationScreen / ConsoleViewModel) so the
- * notification offers option buttons only when the app itself would.
+ * The most recent decision not covered by a human reply or explicit Done.
+ * Uses the same resolution boundary as the conversation and Queue.
  */
-fun activeDecision(messages: List<Message>): Decision? {
-    val lastHuman = messages.indexOfLast { it.role == "human" }
-    return messages.drop(lastHuman + 1).lastOrNull { it.kind == "decision" }?.decision
-}
+fun activeDecision(thread: Thread): Decision? =
+    thread.messages
+        .subList(thread.lastResolvedMessageIndex() + 1, thread.messages.size)
+        .lastOrNull { it.role == "agent" && it.kind == "decision" }
+        ?.decision
 
 /**
  * The option-action buttons to render for a decision, recommended option first, capped to [cap].

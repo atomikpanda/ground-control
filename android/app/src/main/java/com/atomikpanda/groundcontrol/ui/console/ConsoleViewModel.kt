@@ -13,6 +13,7 @@ import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
+import com.atomikpanda.groundcontrol.data.dto.lastResolvedMessageIndex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -135,14 +136,13 @@ class ConsoleViewModel(
         ConsoleUiState.Failed(e.message ?: "failed to load")
     }
 
-    /** Last unanswered decision message after the last human message (same rule as
+    /** Last decision message after the human-reply or explicit Done boundary (same rule as
      *  ConversationScreen) — carries both the `Decision` payload and its question `text`,
      *  since `DecisionCard` needs the question to render alongside the options. */
-    private fun activeDecisionMessage(thread: Thread): Message? {
-        val lastHuman = thread.messages.indexOfLast { it.role == "human" }
-        return thread.messages.drop(lastHuman + 1)
-            .lastOrNull { it.kind == "decision" }
-    }
+    private fun activeDecisionMessage(thread: Thread): Message? =
+        thread.messages
+            .subList(thread.lastResolvedMessageIndex() + 1, thread.messages.size)
+            .lastOrNull { it.role == "agent" && it.kind == "decision" }
 
     /** A decision-card option tap is a plain human reply; it must never touch the
      *  free-text Steer draft. */

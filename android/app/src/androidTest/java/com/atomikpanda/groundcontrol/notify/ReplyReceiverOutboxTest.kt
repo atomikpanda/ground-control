@@ -1,6 +1,10 @@
 package com.atomikpanda.groundcontrol.notify
 
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
+import androidx.core.content.ContextCompat
 import android.os.Bundle
 import androidx.core.app.RemoteInput
 import androidx.room.Room
@@ -10,6 +14,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -501,18 +508,32 @@ class ReplyReceiverOutboxTest {
             { listOf(WorkspaceConnection("canonical", "https://example", "token", "workspace")) },
             {},
         )
-        val receiver = ReplyReceiver({ ReplyOutboxIntake(outbox) }, CoroutineScope(Dispatchers.IO))
-        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().runOnMainSync {
-            receiver.onReceive(context, validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A"))
+        val receiverJob = SupervisorJob()
+        val receiver = ReplyReceiver({ ReplyOutboxIntake(outbox) }, CoroutineScope(receiverJob + Dispatchers.IO))
+        val action = "${context.packageName}.TEST_GATED_REPLY"
+        ContextCompat.registerReceiver(context, receiver, IntentFilter(action), ContextCompat.RECEIVER_NOT_EXPORTED)
+        try {
+            context.sendBroadcast(
+                validIntent().setAction(action).setPackage(context.packageName)
+                    .putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A"),
+            )
+            assertTrue(enqueueReached.await(5, TimeUnit.SECONDS))
+            val mainResponsive = CountDownLatch(1)
+            Handler(Looper.getMainLooper()).post { mainResponsive.countDown() }
+            assertTrue(mainResponsive.await(5, TimeUnit.SECONDS))
+            assertEquals(1L, releaseEnqueue.count)
+        } finally {
+            releaseEnqueue.countDown()
+            runBlocking { withTimeout(5000) { receiverJob.children.toList().joinAll() } }
+            receiverJob.cancel()
+            context.unregisterReceiver(receiver)
+            database.close()
         }
-        assertTrue(enqueueReached.await(5, TimeUnit.SECONDS))
-        assertEquals(1L, releaseEnqueue.count)
-        releaseEnqueue.countDown()
-        database.close()
     }
     @Test fun receiver_enqueues_durable_intake_without_waiting_for_migration_reset() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val submitted = CompletableDeferred<Unit>()
+        val receiverJob = SupervisorJob()
         val receiver = ReplyReceiver(
             intakeFactory = {
                 object : ReplyIntake {
@@ -522,15 +543,23 @@ class ReplyReceiverOutboxTest {
                     }
                 }
             },
-            scope = CoroutineScope(Dispatchers.Unconfined),
+            scope = CoroutineScope(receiverJob + Dispatchers.Unconfined),
         )
+        val action = "${context.packageName}.TEST_REPLY_DURING_RESET"
+        ContextCompat.registerReceiver(context, receiver, IntentFilter(action), ContextCompat.RECEIVER_NOT_EXPORTED)
         ReplyStartupGate.beginReset()
-        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().runOnMainSync {
-            receiver.onReceive(context, validIntent().putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A"))
+        try {
+            context.sendBroadcast(
+                validIntent().setAction(action).setPackage(context.packageName)
+                    .putExtra(ReplyReceiver.EXTRA_OPTION_TEXT, "A"),
+            )
+            withTimeout(5000) { submitted.await() }
+        } finally {
+            ReplyStartupGate.finishReset()
+            withTimeout(5000) { receiverJob.children.toList().joinAll() }
+            receiverJob.cancel()
+            context.unregisterReceiver(receiver)
         }
-
-        submitted.await()
-        ReplyStartupGate.finishReset()
     }
 
     private fun validIntent() = Intent().apply {

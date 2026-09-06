@@ -43,6 +43,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.WorkspaceAvailabilityTone
@@ -80,6 +81,13 @@ fun HomeScreen(
         // even if the user never opens the Threads drill-in list (startLivePolling is idempotent
         // per connection, so MessagesScreen calling it again later is safe).
         messagesVm.startLivePolling()
+    }
+    LifecycleResumeEffect(vm, messagesVm) {
+        // Home and its sticky threads card use independent state, so both must reflect a
+        // conversation's read or Done acknowledgement when the user returns.
+        vm.refresh()
+        messagesVm.refresh()
+        onPauseOrDispose { }
     }
 
     Scaffold(

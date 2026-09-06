@@ -45,9 +45,9 @@ import kotlinx.coroutines.launch
  *  "question" semantic color. Tapping an option reuses the same send path as
  *  the free-text compose bar ([onOption] is wired to `vm.send` by the caller).
  *
- *  [resolved] marks a decision that a human has already answered (a human
- *  message exists later in the thread) — its options are disabled and it's
- *  visually muted so it reads as history rather than a live prompt.
+ *  [resolved] marks a decision that was answered by a human reply or explicitly
+ *  acknowledged through Done. Its options are disabled and it is visually muted
+ *  so it reads as history rather than a live prompt.
  *
  *  Two extra affordances layer on top of the base tap-to-send behavior:
  *  - Every option carries a small "add comment" icon (chosen over a
@@ -106,7 +106,7 @@ internal fun DecisionCard(
                 )
                 if (resolved) {
                     Text(
-                        "Answered",
+                        "Resolved",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

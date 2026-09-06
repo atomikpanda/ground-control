@@ -52,6 +52,7 @@ import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.findByConnectionId
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import com.atomikpanda.groundcontrol.notify.AndroidNeedsYouCanceller
+import com.atomikpanda.groundcontrol.notify.AndroidReplyCapabilityRetirer
 import com.atomikpanda.groundcontrol.ui.home.HomeScreen
 import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
@@ -567,6 +568,7 @@ internal fun GroundControlContent(
                         ConversationViewModel(
                             threadsRepo, connectionId, threadId, connectionStateSource.state,
                             canceller = AndroidNeedsYouCanceller(context.applicationContext),
+                            retireReplyCapability = AndroidReplyCapabilityRetirer(context.applicationContext)::retire,
                         )
                     }
                     ConversationScreen(

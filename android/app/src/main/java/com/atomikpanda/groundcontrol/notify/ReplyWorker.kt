@@ -40,7 +40,7 @@ internal fun buildReplyNotificationEvent(
     preview = preview,
     updatedAt = thread?.updatedAt ?: "",
     messages = thread?.messages ?: emptyList(),
-    decision = activeDecision(thread?.messages ?: emptyList()),
+    decision = thread?.let(::activeDecision),
 )
 
 internal data class LegacyReplyInput(

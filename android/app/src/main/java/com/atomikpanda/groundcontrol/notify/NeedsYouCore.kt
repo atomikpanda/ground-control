@@ -69,8 +69,7 @@ class NeedsYouReconciler(
                 }
             }
             suspend fun eventForThread(): NeedsYouEvent {
-                val messages = runCatching { repo.getThread(conn, t.id).messages }
-                    .getOrDefault(emptyList())
+                val thread = runCatching { repo.getThread(conn, t.id) }.getOrNull()
                 return NeedsYouEvent(
                     connectionId = conn.id,
                     baseUrl = conn.baseUrl,
@@ -79,8 +78,8 @@ class NeedsYouReconciler(
                     subject = t.subject,
                     preview = t.lastMessage,
                     updatedAt = t.updatedAt ?: "",
-                    messages = messages,
-                    decision = activeDecision(messages),
+                    messages = thread?.messages.orEmpty(),
+                    decision = thread?.let(::activeDecision),
                 )
             }
             if (retiredNotified) {

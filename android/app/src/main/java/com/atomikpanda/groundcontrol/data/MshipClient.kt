@@ -33,6 +33,7 @@ import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.Thread
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
+import com.atomikpanda.groundcontrol.data.dto.ResolveThreadBody
 import com.atomikpanda.groundcontrol.data.dto.ThreadsWaitResponse
 import com.atomikpanda.groundcontrol.data.dto.UnattendedBody
 import com.atomikpanda.groundcontrol.data.dto.VerdictBody
@@ -740,6 +741,11 @@ class SpecApi(private val client: HttpClient) {
 
     suspend fun postMessage(conn: WorkspaceConnection, id: String, text: String): Thread =
         client.post("${conn.baseUrl}/threads/$id/messages") { auth(conn); jsonBody(NewMessageBody(text)) }.bodyAfterHostContact()
+
+    suspend fun resolveThread(conn: WorkspaceConnection, id: String, throughMessageId: String): Thread =
+        client.post("${conn.baseUrl}/threads/$id/resolve") {
+            auth(conn); jsonBody(ResolveThreadBody(throughMessageId))
+        }.bodyAfterHostContact()
 
     suspend fun markThreadSeen(conn: WorkspaceConnection, id: String, seenAt: String?) {
         client.post("${conn.baseUrl}/threads/$id/seen") {
