@@ -2,7 +2,8 @@ package com.atomikpanda.groundcontrol.ui.specdetail
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -27,14 +28,19 @@ fun readinessChips(sum: Summary): List<ReadinessChip> = listOf(
 )
 
 /**
- * Readiness summary as a row of non-interactive, per-role colored pills (approved/flagged/unanswered).
+ * Readiness summary as wrapping, non-interactive, per-role colored pills (approved/flagged/unanswered).
  * Built as tinted [Surface]s rather than a disabled `AssistChip` — a disabled chip renders a flat gray
  * container for every role (only the label picks up color), which would make the three read identically.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ReadinessChipsRow(sum: Summary, modifier: Modifier = Modifier) {
     val colors = LocalSemanticColors.current
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(
+        modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         readinessChips(sum).forEach { chip ->
             val tint = when (chip.role) {
                 ChipRole.APPROVED -> colors.approval
