@@ -227,25 +227,43 @@ class ConsoleViewModelTest {
         assertTrue(postedTexts[0].contains("go"))
     }
 
-    @Test fun fetch_surfaces_focused_task_activity_for_the_stepper() = runTest {
-        val taskWithActivity = """
-            {"slug":"a","phase":"dev","branch":"feat/a","finished_at":null,
-             "last_activity_at":"2026-07-13T12:00:00Z"}
+    @Test fun fetch_aggregates_latest_valid_activity_and_keeps_unknown_task_activity_unknown() = runTest {
+        val multiTaskItem = """
+            {"id":"wi-1","kind":"feature","title":"T","phase":"in_flight",
+             "task_slugs":["a","b","c","missing"],"thread_ids":["t1"],"spec_id":null,
+             "attention":{"needs_decision":true,"blocked":true,"blocked_tasks":1}}
         """.trimIndent()
         val vm = vm(this) { req ->
             when {
-                req.url.encodedPath.endsWith("/items/wi-1") -> respond(itemJson, HttpStatusCode.OK, jsonHdr)
-                req.url.encodedPath.endsWith("/tasks/a") -> respond(taskWithActivity, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/items/wi-1") -> respond(multiTaskItem, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") -> respond(
+                    """{"slug":"a","phase":"dev","branch":"feat/a","last_activity_at":"2026-07-13T12:00:00Z"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+                req.url.encodedPath.endsWith("/tasks/b") -> respond(
+                    """{"slug":"b","phase":"blocked","branch":"feat/b","last_activity_at":"2026-07-14T12:00:00Z","blocked_reason":"Awaiting API credentials"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+                req.url.encodedPath.endsWith("/tasks/c") -> respond(
+                    """{"slug":"c","phase":"plan","branch":"feat/c","last_activity_at":"not-a-timestamp"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
                 req.url.encodedPath.endsWith("/journal/a") -> respond(journalJson, HttpStatusCode.OK, jsonHdr)
                 req.url.encodedPath.endsWith("/threads/t1") -> respond(threadJson, HttpStatusCode.OK, jsonHdr)
                 else -> respondError(HttpStatusCode.NotFound)
             }
         }
         vm.load().join()
-        val c = (vm.state.value as ConsoleUiState.Content).c
-        val focused = c.tasks.first()
-        assertEquals("dev", focused.phase)
-        assertEquals("2026-07-13T12:00:00Z", focused.lastActivityAt)
+
+        val summary = ((vm.state.value as ConsoleUiState.Content).c).summary
+        assertEquals("2026-07-14T12:00:00Z", summary.latestActivityAt)
+        assertEquals(listOf("c", "missing"), summary.activityUnknownTaskSlugs)
+        assertEquals("b", summary.blockers.single().taskSlug)
+        assertEquals("Awaiting API credentials", summary.blockers.single().reason)
+        assertTrue(summary.userInputPending)
     }
 
     @Test fun send_after_state_replacement_posts_to_the_current_workspace() = runTest {

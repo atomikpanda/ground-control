@@ -52,11 +52,9 @@ fun NewThreadScreen(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
-    // Preselect the scoped workspace once connections are available.
-    LaunchedEffect(state.connections, initialConnectionId) {
-        initialConnectionId
-            ?.let { state.connections.findByConnectionId(it) }
-            ?.let { vm.onSelectConnection(it.id) }
+    // Route scope is applied exactly once by the ViewModel. It must not reset a later user pick.
+    LaunchedEffect(initialConnectionId) {
+        if (initialConnectionId != null) vm.initializeSelection(initialConnectionId)
     }
 
     // Navigate when creation succeeds
@@ -109,8 +107,9 @@ fun NewThreadScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Workspace picker: only shown when >1 connection; auto-selected when exactly 1.
-            if (state.connections.size > 1) {
+            // Capture keeps its scope visible; a missing selection must be consciously replaced,
+            // even if only one different workspace remains.
+            if (state.isPersistentCapture || state.connections.size > 1 || state.selectedConnectionId == null) {
                 val selected = state.selectedConnectionId
                     ?.let { state.connections.findByConnectionId(it) }
                 WorkspacePickerDropdown(
@@ -163,6 +162,16 @@ fun NewThreadScreen(
                     CircularProgressIndicator(Modifier.size(18.dp))
                 } else {
                     Text(submitLabel)
+                }
+            }
+
+            if (state.isPersistentCapture) {
+                OutlinedButton(
+                    onClick = vm::discardCaptureDraft,
+                    enabled = !state.inFlight,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Discard draft")
                 }
             }
 

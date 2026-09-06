@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.OffsetDateTime
 import kotlin.coroutines.cancellation.CancellationException
 
 data class ConsoleContent(
@@ -35,6 +37,21 @@ data class ConsoleContent(
     val activeDecision: Decision?,       // last unanswered decision on the work-item thread
     val activeDecisionText: String?,     // the active decision message's question text
     val threadId: String?,
+    val summary: ConsoleStatusSummary,
+)
+
+data class ConsoleStatusSummary(
+    val phase: String,
+    val latestActivityAt: String?,
+    val activityUnknownTaskSlugs: List<String>,
+    val blockers: List<ConsoleTaskBlocker>,
+    val blockerReasonUnavailable: Boolean,
+    val userInputPending: Boolean,
+)
+
+data class ConsoleTaskBlocker(
+    val taskSlug: String,
+    val reason: String,
 )
 
 sealed interface ConsoleUiState {
@@ -113,21 +130,23 @@ class ConsoleViewModel(
         val conn = snapshot.connection
         val item = api.getItem(conn, itemId)
         coroutineScope {
-            val tasks = item.taskSlugs.map { async { runCatching { api.getTask(conn, it) }.getOrNull() } }
+            val taskRequests = item.taskSlugs.map { async { runCatching { api.getTask(conn, it) }.getOrNull() } }
             val threadId = item.threadIds.firstOrNull()
             val thread = threadId?.let { runCatching { api.getThread(conn, it) }.getOrNull() }
             val journal = item.taskSlugs.firstOrNull()
                 ?.let { runCatching { api.getJournal(conn, it) }.getOrNull() } ?: emptyList()
             val review = item.specId?.let { runCatching { api.getReview(conn, it).summary }.getOrNull() }
             val activeDecisionMessage = thread?.let { activeDecisionMessage(it) }
+            val tasks = taskRequests.awaitAll().filterNotNull()
             ConsoleUiState.Content(ConsoleContent(
                 item = item,
-                tasks = tasks.awaitAll().filterNotNull(),
+                tasks = tasks,
                 journal = journal,
                 review = review,
                 activeDecision = activeDecisionMessage?.decision,
                 activeDecisionText = activeDecisionMessage?.text,
                 threadId = threadId,
+                summary = statusSummary(item, tasks, activeDecisionMessage != null),
             ))
         }
     } catch (e: CancellationException) {
@@ -135,6 +154,50 @@ class ConsoleViewModel(
     } catch (e: Exception) {
         ConsoleUiState.Failed(e.message ?: "failed to load")
     }
+
+    private fun statusSummary(
+        item: WorkItemSummary,
+        tasks: List<TaskSummary>,
+        hasActiveDecision: Boolean,
+    ): ConsoleStatusSummary {
+        val tasksBySlug = tasks.associateBy(TaskSummary::slug)
+        val activityByTask = item.taskSlugs.associateWith { slug ->
+            tasksBySlug[slug]?.lastActivityAt?.let { rawTimestamp ->
+                parseActivityTimestamp(rawTimestamp)?.let { it to rawTimestamp }
+            }
+        }
+        val blockers = tasks.mapNotNull { task ->
+            task.blockedReason?.trim()?.takeIf(String::isNotEmpty)?.let { reason ->
+                ConsoleTaskBlocker(task.slug, reason)
+            }
+        }
+        val knownBlockerCount = blockers.size
+        val reportedBlockerCount = item.attention.blockedTasks.coerceAtLeast(
+            if (item.attention.blocked) 1 else 0,
+        )
+        return ConsoleStatusSummary(
+            phase = item.activePhase?.takeIf(String::isNotBlank)
+                ?: item.phase.takeIf(String::isNotBlank)
+                ?: "Unknown",
+            latestActivityAt = activityByTask.values
+                .filterNotNull()
+                .maxByOrNull { it.first }
+                ?.second,
+            activityUnknownTaskSlugs = activityByTask
+                .filterValues { it == null }
+                .keys
+                .toList(),
+            blockers = blockers,
+            blockerReasonUnavailable = reportedBlockerCount > knownBlockerCount,
+            userInputPending = hasActiveDecision ||
+                item.attention.needsDecision ||
+                item.attention.needsApproval,
+        )
+    }
+
+    private fun parseActivityTimestamp(value: String): Instant? =
+        runCatching { Instant.parse(value) }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(value).toInstant() }.getOrNull()
 
     /** Last decision message after the human-reply or explicit Done boundary (same rule as
      *  ConversationScreen) — carries both the `Decision` payload and its question `text`,
