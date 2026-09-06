@@ -81,14 +81,14 @@ fun DoneScreen(vm: DoneViewModel, title: String, onBack: () -> Unit) {
                         color = LocalSemanticColors.current.error,
                         modifier = Modifier.padding(24.dp),
                     )
-                is DoneUiState.Content -> DoneContentView(s.c)
+                is DoneUiState.Content -> DoneContentView(s.c, vm)
             }
         }
     }
 }
 
 @Composable
-private fun DoneContentView(c: DoneContent) {
+private fun DoneContentView(c: DoneContent, vm: DoneViewModel) {
     val colors = LocalSemanticColors.current
 
     LazyColumn(Modifier.fillMaxSize()) {
@@ -99,7 +99,9 @@ private fun DoneContentView(c: DoneContent) {
             item { SummaryPrLinksRow(c.summaryPrUrls) }
         }
         c.review?.let { review -> item { SpecLine(review) } }
-        acceptanceCriteriaSection(c.criteria, c.prUrls)
+        acceptanceCriteriaSection(c.criteria, c.prUrls) { ref ->
+            vm.loadEvidence(requireNotNull(c.item.specId), ref)
+        }
     }
 }
 
@@ -107,12 +109,12 @@ private fun DoneContentView(c: DoneContent) {
 private fun HeaderSection(item: WorkItemSummary, completedAt: String?) {
     Column(Modifier.fillMaxWidth().padding(16.dp, 12.dp)) {
         Text(item.title, style = MaterialTheme.typography.titleLarge)
-        Text(item.kind, style = MonoStyle, color = MaterialTheme.colorScheme.outline)
+        Text(item.kind, style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
         ExternalLinksRow(item.externalLinks, Modifier.padding(top = 4.dp))
         Text(
             "Completed ${completedAt ?: "—"}",
             style = MonoStyle,
-            color = MaterialTheme.colorScheme.outline,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -150,7 +152,7 @@ private fun TaskRow(task: TaskSummary, colors: SemanticColors) {
         headlineContent = { Text(task.slug, style = MonoStyle) },
         supportingContent = {
             Column {
-                Text(task.branch, style = MonoStyle, color = MaterialTheme.colorScheme.outline)
+                Text(task.branch, style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (task.testResults.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         task.testResults.forEach { (repo, status) ->

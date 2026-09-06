@@ -66,6 +66,13 @@ class DoneViewModel(
 
     fun load(): Job = routeConnection.current()?.let(::load) ?: scope.launch { }
 
+    suspend fun loadEvidence(specId: String, ref: String): ByteArray {
+        val snapshot = routeConnection.current() ?: error("Connection unavailable")
+        val bytes = api.getEvidenceBlob(snapshot.connection, specId, ref)
+        if (!routeConnection.isCurrent(snapshot)) throw CancellationException("Connection changed")
+        return bytes
+    }
+
     private fun load(snapshot: RouteConnectionSnapshot): Job = scope.launch {
         val next = fetch(snapshot)
         routeConnection.publishIfCurrent(snapshot) { _state.value = next }

@@ -652,17 +652,15 @@ private fun QuestionAnswerRow(item: QuestionItem, enabled: Boolean, onAnswer: (S
     var draft by remember(item.id) { mutableStateOf(item.answer ?: "") }
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(item.text, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                enabled = enabled,
-                label = { Text(if (item.answer.isNullOrBlank()) "answer" else "edit answer") },
-            )
-            TextButton(onClick = { if (draft.isNotBlank()) onAnswer(draft) }, enabled = enabled) { Text("Send") }
-        }
+        MultilineComposeInput(
+            value = draft,
+            onValueChange = { draft = it },
+            onSend = { if (draft.isNotBlank()) onAnswer(draft) },
+            placeholder = if (item.answer.isNullOrBlank()) "answer" else "edit answer",
+            enabled = enabled,
+            inFlight = !enabled,
+            sendDescription = "Send answer",
+        )
     }
 }
 

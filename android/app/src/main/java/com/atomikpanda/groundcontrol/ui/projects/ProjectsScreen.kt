@@ -57,8 +57,12 @@ fun ProjectsScreen(
                 ListItem(
                     leadingContent = { WorkspaceBadge(row.identity, size = 32.dp) },
                     headlineContent = { Text(row.name, style = MaterialTheme.typography.titleMedium) },
-                    // The ladder's verdict (#471), rendered wherever a workspace is listed.
-                    supportingContent = row.state?.let { { Text(ladderLabel(it)) } },
+                    supportingContent = {
+                        Column {
+                            Text(row.hostLabel, style = MaterialTheme.typography.bodySmall)
+                            row.state?.let { Text(ladderLabel(it)) }
+                        }
+                    },
                     trailingContent = {
                         IconButton(onClick = { editing = row }) {
                             Icon(Icons.Filled.Edit, contentDescription = "Edit ${row.name} identity")

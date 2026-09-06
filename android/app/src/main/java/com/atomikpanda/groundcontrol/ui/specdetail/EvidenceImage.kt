@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
@@ -135,7 +136,11 @@ private fun EvidenceZoomDialog(bytes: ByteArray, image: EvidenceImageRef, onDism
                     it,
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(16.dp)
+                        .background(Color.Black.copy(alpha = 0.8f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                 )
             }
         }

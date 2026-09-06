@@ -294,16 +294,13 @@ class MessagesViewModel(
     }
 
     fun selectWorkspace(connectionId: String?) {
-        if (_state.value !is MessagesUiState.Content) return
-        selectedConnectionId = connectionId
         selectedConnectionId = latestConnections.findByConnectionId(connectionId ?: "")?.id ?: connectionId
-        renderOwners()
+        if (_state.value is MessagesUiState.Content) renderOwners()
     }
 
     fun selectStateFilter(filter: ThreadStateFilter) {
-        if (_state.value !is MessagesUiState.Content) return
         stateFilter = filter
-        renderOwners()
+        if (_state.value is MessagesUiState.Content) renderOwners()
     }
 
     fun selectInboxTab(tab: InboxTab): Job? {

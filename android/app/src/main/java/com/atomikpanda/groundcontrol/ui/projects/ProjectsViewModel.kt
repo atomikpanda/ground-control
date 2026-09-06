@@ -8,6 +8,7 @@ import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
 import com.atomikpanda.groundcontrol.data.HostsRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.displayLabel
 import com.atomikpanda.groundcontrol.data.emitAtStaleDeadlines
 import com.atomikpanda.groundcontrol.data.hasStableIdentityTuple
 import com.atomikpanda.groundcontrol.data.ladderFor
@@ -30,6 +31,7 @@ data class ProjectRow(
     /** The one ladder's verdict (#471); null for a manually paired row, which has
      *  no host and therefore nothing the ladder can honestly say. */
     val state: HostLadderState? = null,
+    val hostLabel: String = "",
 )
 
 /** Reuse the existing per-workspace detail route (GroundControlApp `workspace/{connectionId}`). */
@@ -44,16 +46,21 @@ fun projectRows(
     nowMillis: Long = 0L,
 ): List<ProjectRow> =
     connections.map { c ->
+        val host = hosts.firstOrNull { it.hostId == c.hostId }
         ProjectRow(
             connectionId = c.id,
             name = c.workspaceName.ifBlank { c.baseUrl },
             identity = resolveIdentity(c),
             route = workspaceRoute(c.id),
             state = if (c.hasStableIdentityTuple()) {
-                ladderFor(c, hosts.firstOrNull { it.hostId == c.hostId }, nowMillis)
+                ladderFor(c, host, nowMillis)
             } else {
                 null
             },
+            hostLabel = host?.displayLabel()
+                ?: c.hostId?.takeIf { it.isNotBlank() }
+                ?: runCatching { java.net.URI(c.baseUrl).host }.getOrNull()
+                ?: "Direct connection",
         )
     }
 

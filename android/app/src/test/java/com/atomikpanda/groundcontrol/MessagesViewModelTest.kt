@@ -555,6 +555,74 @@ class MessagesViewModelTest {
         assertEquals(4, all.filteredThreads.size)
     }
 
+    @Test fun home_selection_before_inbox_content_is_applied_to_first_content_and_survives_later_loads() = runTest {
+        val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
+        val canonical = WorkspaceConnection(
+            "canonical",
+            "http://canonical:47100",
+            null,
+            "ws",
+            legacyConnectionIds = listOf(retired.id),
+        )
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Loading)
+        val canonicalLoadStarted = CompletableDeferred<Unit>()
+        val otherLoadStarted = CompletableDeferred<Unit>()
+        val releaseCanonicalLoad = CompletableDeferred<Unit>()
+        val releaseOtherLoad = CompletableDeferred<Unit>()
+        val vm = MessagesViewModel(repoWith { request ->
+            when {
+                request.url.host == "canonical" && request.url.encodedPath.endsWith("/threads") -> {
+                    canonicalLoadStarted.complete(Unit)
+                    releaseCanonicalLoad.await()
+                    respond(
+                        """[{"id":"canonical-unread","subject":"canonical unread","unseen":true},
+                            {"id":"canonical-read","subject":"canonical read","unseen":false}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                request.url.host == "b" && request.url.encodedPath.endsWith("/threads") -> {
+                    otherLoadStarted.complete(Unit)
+                    releaseOtherLoad.await()
+                    respond(
+                        """[{"id":"other-unread","subject":"other unread","unseen":true}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+            }
+        }, connections, backgroundScope)
+
+        vm.selectWorkspace(retired.id)
+        vm.selectStateFilter(ThreadStateFilter.UNREAD)
+        connections.value = ConnectionState.Ready(listOf(canonical, connB))
+        canonicalLoadStarted.await()
+        otherLoadStarted.await()
+
+        releaseCanonicalLoad.complete(Unit)
+        val firstContent = vm.state.first { it is MessagesUiState.Content } as MessagesUiState.Content
+        assertEquals(canonical.id, firstContent.selectedConnectionId)
+        assertEquals(ThreadStateFilter.UNREAD, firstContent.stateFilter)
+        assertEquals(listOf("canonical-unread"), firstContent.filteredThreads.map { it.thread.id })
+
+        releaseOtherLoad.complete(Unit)
+        val afterOtherWorkspaceLoads = vm.state.first { candidate ->
+            val content = candidate as? MessagesUiState.Content ?: return@first false
+            content.sections
+                .singleOrNull { it.connectionId == connB.id }
+                ?.threads
+                ?.getOrNull()
+                ?.map { it.id } == listOf("other-unread")
+        } as MessagesUiState.Content
+        assertEquals(canonical.id, afterOtherWorkspaceLoads.selectedConnectionId)
+        assertEquals(ThreadStateFilter.UNREAD, afterOtherWorkspaceLoads.stateFilter)
+        assertEquals(
+            listOf("canonical-unread"),
+            afterOtherWorkspaceLoads.filteredThreads.map { it.thread.id },
+        )
+    }
+
     @Test fun filteredThreads_carries_the_owning_connectionId_per_thread() = runTest {
         val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connectionState(listOf(connA, connB)), backgroundScope)
         vm.refresh()?.join()

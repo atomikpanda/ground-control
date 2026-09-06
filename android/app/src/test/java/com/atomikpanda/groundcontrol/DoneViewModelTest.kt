@@ -1,6 +1,7 @@
 package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.done.DoneUiState
@@ -17,6 +18,10 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -24,6 +29,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -61,6 +67,28 @@ class DoneViewModelTest {
                 respond(taskJson, HttpStatusCode.OK, jsonHdr)
             else -> respondError(HttpStatusCode.NotFound)
         }
+    }
+
+    @Test fun evidence_from_a_replaced_connection_is_not_published() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conn)))
+        val api = SpecApi(HttpClient(MockEngine { req ->
+            if (req.url.encodedPath.endsWith("/evidence/image.png/blob")) {
+                entered.complete(Unit)
+                release.await()
+                respond(byteArrayOf(1, 2, 3), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/png"))
+            } else {
+                respondError(HttpStatusCode.NotFound)
+            }
+        }) { mshipDefaults() })
+        val vm = DoneViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
+        val result = async { runCatching { vm.loadEvidence("spec-1", "image.png") } }
+        entered.await()
+        connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
+        runCurrent()
+        release.complete(Unit)
+        assertTrue(result.await().exceptionOrNull() is kotlinx.coroutines.CancellationException)
     }
 
     @Test fun load_fans_out_and_computes_completion_summary() = runTest {
