@@ -26,6 +26,18 @@ model exposed over `mship serve`.
 
 ### Daily review
 
+- Capture opens in Home's selected workspace. A fresh all-workspace capture requires
+  an explicit destination; a removed destination never silently switches elsewhere.
+- Capture drafts persist their text, mode, and chosen destination in app-private
+  storage, separately for each Home capture context. Returning restores the draft
+  without sending it. Confirmed creation or **Discard draft** clears only that context.
+  Retrying an unchanged Brainstorm after an uncertain failure reuses its submission key.
+- Spec review starts with the workspace, lifecycle, and remaining acceptance criteria
+  and open questions. Section links jump into the original proposal and review content;
+  unavailable review data is not presented as zero remaining work.
+- Home questions open a focused decision view with the supplied choices and free-text
+  controls. It checks for a replaced or resolved prompt before submitting, shows a
+  response receipt, and preserves Home's workspace selection when you go Back.
 - Queue reconciles decisions against later human replies, even when a stale summary
   still marks them as needing a decision. Merely viewing a prompt does not answer it.
   Spec questions are reconciled per prompt and acknowledged server revision; later
@@ -37,11 +49,19 @@ model exposed over `mship serve`.
 - Done shows available repository and pull-request metadata. Mothership retains
   this metadata before task cleanup; previously deleted metadata is not reconstructed.
 - Commit evidence opens the repository's canonical commit page when its repository
-  is unambiguous. Compact in-flight indicators show the current phase label.
+  is unambiguous.
+- Task phase summaries show the current stage and its position without pulsing.
+  Missing phase data stays unavailable unless dispatch or completion is confirmed;
+  missing activity data is labeled explicitly.
+  The work console puts blockers and pending input before tasks, journal, and chat.
+  Latest activity considers every linked task; tasks with unknown timestamps remain
+  explicit, and pending decisions link to the available response controls.
+- Spec readiness chips and review actions wrap on narrow screens and at larger
+  text sizes instead of squeezing labels or hiding the spec content.
 
 ## Status
 
-Early scaffold. **Android first** (Kotlin + Jetpack Compose); iOS (Swift + SwiftUI) follows.
+**Android first** (Kotlin + Jetpack Compose); iOS (Swift + SwiftUI) follows.
 
 - [`android/`](android/) — the Android app (in development)
 - [`ios/`](ios/) — iOS app (planned)

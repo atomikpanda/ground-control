@@ -3,6 +3,8 @@ package com.atomikpanda.groundcontrol.ui.specdetail
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
@@ -67,14 +70,19 @@ import com.atomikpanda.groundcontrol.data.availableActions
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.data.dto.ReviewQuestion
 import com.atomikpanda.groundcontrol.data.isReviewInteractive
-import com.atomikpanda.groundcontrol.data.statusBanner
 import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SpecDetailScreen(vm: SpecDetailViewModel, title: String, identity: WorkspaceIdentity? = null, onBack: () -> Unit) {
+fun SpecDetailScreen(
+    vm: SpecDetailViewModel,
+    title: String,
+    identity: WorkspaceIdentity? = null,
+    workspaceName: String? = null,
+    onBack: () -> Unit,
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
 
@@ -111,7 +119,7 @@ fun SpecDetailScreen(vm: SpecDetailViewModel, title: String, identity: Workspace
                 is SpecDetailUiState.Unavailable ->
                     Text(s.message, Modifier.padding(24.dp))
                 is SpecDetailUiState.Error -> ErrorView(s, vm, onBack)
-                is SpecDetailUiState.Content -> ContentView(s, vm)
+                is SpecDetailUiState.Content -> ContentView(s, vm, identity, workspaceName)
             }
         }
     }
@@ -136,76 +144,86 @@ private fun ErrorView(s: SpecDetailUiState.Error, vm: SpecDetailViewModel, onBac
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
+private fun ContentView(
+    s: SpecDetailUiState.Content,
+    vm: SpecDetailViewModel,
+    identity: WorkspaceIdentity?,
+    workspaceName: String?,
+) {
     val d = s.detail
     val interactive = isReviewInteractive(d.status)
     val answerDrafts by vm.answerDrafts.collectAsStateWithLifecycle()
     val askDraft by vm.askDraft.collectAsStateWithLifecycle()
     val pull = rememberPullToRefreshState()
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     if (pull.isRefreshing) LaunchedEffect(true) { vm.load()?.join(); pull.endRefresh() }
 
+    // The overview is fixed at index zero. The other targets are computed from this exact list
+    // structure, so each in-page action reaches its heading even when optional sections are absent.
+    val proposalIndex = 1
+    val nonGoalsItemCount = if (d.nonGoals.isEmpty()) 0 else 1 + d.nonGoals.size
+    val risksItemCount = if (d.risks.isEmpty()) 0 else 1 + d.risks.size
+    val criteriaIndex = proposalIndex + 1 + nonGoalsItemCount + risksItemCount
+    val questionsIndex = criteriaIndex + if (d.criteria.isEmpty()) 0 else 1 + d.criteria.size
+    val showQuestionsSection = d.questions.isNotEmpty() || interactive
+
     Box(Modifier.fillMaxSize().nestedScroll(pull.nestedScrollConnection)) {
-        LazyColumn(Modifier.fillMaxSize()) {
-            d.unansweredLead?.let { lead ->
-                item { LeadBanner(lead, Modifier.padding(16.dp, 8.dp)) }
+        LazyColumn(Modifier.fillMaxSize(), state = listState) {
+            item(key = "overview") {
+                SpecOverview(
+                    detail = d,
+                    identity = identity,
+                    workspaceName = workspaceName,
+                    reviewUpdating = s.inFlight != null,
+                    showCriteriaAction = d.criteria.isNotEmpty(),
+                    showQuestionsAction = showQuestionsSection,
+                    onOpenProposal = { scope.launch { listState.animateScrollToItem(proposalIndex) } },
+                    onOpenCriteria = { scope.launch { listState.animateScrollToItem(criteriaIndex) } },
+                    onOpenQuestions = { scope.launch { listState.animateScrollToItem(questionsIndex) } },
+                )
             }
-            item {
-                Column(Modifier.padding(16.dp, 8.dp)) {
-                    val sum = d.summary
-                    statusBanner(d.status, d.taskSlug)?.let {
-                        Text(it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                    } ?: Text("● ${d.status}", style = MaterialTheme.typography.labelLarge)
-                    Text(
-                        "repos: ${d.affectedRepos.joinToString().ifBlank { "—" }}",
-                        style = MonoStyle,
-                    )
-                    ReadinessChipsRow(sum, Modifier.padding(top = 6.dp))
-                    if (d.taskSlug != null) {
-                        Spacer(Modifier.height(8.dp))
-                        PhaseStepper(phaseStepFor(d.taskPhase, d.taskFinished), compact = true)
-                        LiveChip(
-                            lastActivityIso = d.taskLastActivityAt,
-                            merged = d.taskFinished,
-                            nowMillis = System.currentTimeMillis(),
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                    }
-                }
+            item(key = "proposal") {
+                SectionLabel("PROPOSAL")
+                SpecBodyMarkdown(d.bodyMarkdown, Modifier.padding(16.dp, 4.dp))
             }
-            item { SpecBodyMarkdown(d.bodyMarkdown, Modifier.padding(16.dp, 4.dp)) }
             if (d.nonGoals.isNotEmpty()) {
-                item { SectionLabel("NON-GOALS") }
+                item(key = "non-goals") { SectionLabel("NON-GOALS") }
                 items(d.nonGoals) { BulletText(it) }
             }
             if (d.risks.isNotEmpty()) {
-                item { SectionLabel("RISKS") }
+                item(key = "risks") { SectionLabel("RISKS") }
                 items(d.risks) { BulletText(it) }
             }
             if (d.criteria.isNotEmpty()) {
-                item { SectionLabel("ACCEPTANCE CRITERIA") }
-                items(d.criteria, key = { it.id }) { criterion ->
+                item(key = "acceptance-criteria") { SectionLabel("ACCEPTANCE CRITERIA") }
+                items(d.criteria, key = { "criterion-${it.id}" }) { criterion ->
                     key(s.detail.id, s.connectionGeneration) {
                         CriterionRow(criterion, interactive, s, vm)
                     }
                 }
             }
-            item { SectionLabel("OPEN QUESTIONS") }
-            items(d.questions, key = { it.id }) { question ->
-                QuestionRow(
-                    q = question,
-                    interactive = interactive,
-                    inFlight = s.inFlight,
-                    draft = answerDrafts[question.id] ?: (question.answer ?: ""),
-                    onDraftChange = { vm.setAnswerDraft(question.id, it) },
-                    onSend = { vm.answer(question.id, it) },
-                )
-            }
-            if (interactive) item {
-                AskQuestionRow(
-                    draft = askDraft,
-                    onDraftChange = { vm.setAskDraft(it) },
-                    onSend = { vm.ask(it) },
-                )
+            if (showQuestionsSection) {
+                item(key = "open-questions") { SectionLabel("OPEN QUESTIONS") }
+                items(d.questions, key = { "question-${it.id}" }) { question ->
+                    QuestionRow(
+                        q = question,
+                        interactive = interactive,
+                        inFlight = s.inFlight,
+                        draft = answerDrafts[question.id] ?: (question.answer ?: ""),
+                        onDraftChange = { vm.setAnswerDraft(question.id, it) },
+                        onSend = { vm.answer(question.id, it) },
+                    )
+                }
+                if (interactive) {
+                    item(key = "ask-question") {
+                        AskQuestionRow(
+                            draft = askDraft,
+                            onDraftChange = { vm.setAskDraft(it) },
+                            onSend = { vm.ask(it) },
+                        )
+                    }
+                }
             }
         }
         PullToRefreshContainer(state = pull, modifier = Modifier.align(Alignment.TopCenter))
@@ -215,6 +233,105 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
     s.blockers?.let { BlockersDialog(it, vm) }
     s.dispatchResult?.let { DispatchResultDialog(it, vm) }
 }
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SpecOverview(
+    detail: SpecDetail,
+    identity: WorkspaceIdentity?,
+    workspaceName: String?,
+    reviewUpdating: Boolean,
+    showCriteriaAction: Boolean,
+    showQuestionsAction: Boolean,
+    onOpenProposal: () -> Unit,
+    onOpenCriteria: () -> Unit,
+    onOpenQuestions: () -> Unit,
+) {
+    val summary = detail.summary
+    val remainingCriteria = summary.flagged + summary.unreviewed
+    Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+        Text(detail.title, style = MaterialTheme.typography.titleLarge)
+        Row(
+            modifier = Modifier.padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            identity?.let {
+                WorkspaceBadge(it, size = 20.dp)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                workspaceName?.takeIf { it.isNotBlank() } ?: "Workspace unavailable",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            "Lifecycle: ${lifecycleLabel(detail.status)}",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        Text(
+            "Affected repositories: ${detail.affectedRepos.joinToString().ifBlank { "—" }}",
+            style = MonoStyle,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        detail.unansweredLead?.let { lead -> LeadBanner(lead, Modifier.padding(top = 12.dp)) }
+        Text(
+            if (reviewUpdating) {
+                "Review update in progress — remaining work will refresh when saved."
+            } else {
+                reviewSummaryText(detail, remainingCriteria)
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+        if (!reviewUpdating) {
+            ReadinessChipsRow(summary, Modifier.padding(top = 6.dp))
+        }
+        FlowRow(
+            modifier = Modifier.padding(top = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = onOpenProposal) { Text("Proposal") }
+            if (showCriteriaAction) {
+                OutlinedButton(onClick = onOpenCriteria) { Text("Acceptance criteria") }
+            }
+            if (showQuestionsAction) {
+                OutlinedButton(onClick = onOpenQuestions) { Text("Open questions") }
+            }
+        }
+        if (detail.taskSlug != null) {
+            Spacer(Modifier.height(12.dp))
+            PhaseStepper(phaseStepFor(detail.taskPhase, detail.taskFinished, dispatched = detail.status == "dispatched"))
+            LiveChip(
+                lastActivityIso = detail.taskLastActivityAt,
+                merged = detail.taskFinished,
+                nowMillis = System.currentTimeMillis(),
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+private fun reviewSummaryText(detail: SpecDetail, remainingCriteria: Int): String {
+    val criteria = if (detail.criteria.isEmpty()) {
+        "No acceptance criteria"
+    } else {
+        "$remainingCriteria of ${detail.criteria.size} acceptance criteria remaining"
+    }
+    val questions = if (detail.questions.isEmpty()) {
+        "No open questions"
+    } else {
+        "${detail.summary.unansweredQuestions} of ${detail.questions.size} open questions remaining"
+    }
+    return "$criteria · $questions"
+}
+
+private fun lifecycleLabel(status: String): String =
+    status.split("_").joinToString(" ") { word ->
+        word.replaceFirstChar { first -> first.uppercase() }
+    }
 
 /** ac1: a single, prominent lead atop a review-phase spec that has unanswered open questions,
  *  pointing the operator at the inline answer fields as the path to approval. Rendered only when
@@ -376,7 +493,7 @@ private fun AskQuestionRow(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
     val actions = availableActions(s.detail.status)
@@ -400,13 +517,14 @@ private fun ActionBar(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (SpecAction.REQUEST_CHANGES in actions)
                     OutlinedButton(enabled = !busy, onClick = { showReason = true }) { Text("Request changes") }
                 if (SpecAction.APPROVE in actions) {
-                    // Approve and its overflow are siblings in the ActionBar Row (spaced), not stacked in a
-                    // Box — a Box would place both at TopStart and overlap them. The menu anchors to the
-                    // overflow via its own Box.
+                    // Keep the overflow menu anchored to its own Box as actions wrap.
                     Button(enabled = !busy, onClick = { showApproveConfirm = true }) { Text("Approve") }
                     Box {
                         IconButton(enabled = !busy, onClick = { menu = true }) {

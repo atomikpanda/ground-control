@@ -1,5 +1,8 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.CaptureDraft
+import com.atomikpanda.groundcontrol.data.CaptureDraftPayload
+import com.atomikpanda.groundcontrol.data.CaptureDraftStore
 import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
@@ -41,6 +44,27 @@ class NewThreadViewModelTest {
     private val jsonHdr = headersOf(HttpHeaders.ContentType, "application/json")
     private fun conn(id: String) = WorkspaceConnection(id, "http://h-$id:47100", "tok", "ws-$id")
 
+    private class InMemoryCaptureDraftStore(
+        initial: Map<String?, CaptureDraft> = emptyMap(),
+    ) : CaptureDraftStore {
+        private val drafts = initial.toMutableMap()
+
+        override suspend fun load(contextId: String?): CaptureDraft? = drafts[contextId]
+
+        override suspend fun latestRevision(contextId: String?): Long = drafts[contextId]?.revision ?: 0L
+
+        override suspend fun save(contextId: String?, draft: CaptureDraft) {
+            val current = drafts[contextId]
+            if (current == null || current.revision < draft.revision || current == draft) {
+                drafts[contextId] = draft
+            }
+        }
+
+        override suspend fun clear(contextId: String?, expectedRevision: Long) {
+            if (drafts[contextId]?.revision == expectedRevision) drafts.remove(contextId)
+        }
+    }
+
     private fun vm(
         scope: CoroutineScope,
         conns: List<WorkspaceConnection>,
@@ -61,9 +85,10 @@ class NewThreadViewModelTest {
         assertFalse(canCreate(s.copy(text = "hello")))
     }
 
-    @Test fun single_connection_auto_selected() = runTest {
+    @Test fun ordinary_new_thread_single_connection_auto_selected() = runTest {
         val vm = vm(backgroundScope, listOf(conn("1"))); runCurrent(); vm.load()
         assertEquals("1", vm.state.value.selectedConnectionId)
+        assertTrue(canCreate(vm.state.value.copy(text = "hello")))
     }
 
     @Test fun multi_connection_requires_explicit_pick() = runTest {
@@ -403,4 +428,175 @@ class NewThreadViewModelTest {
         vm.create()?.join()
         assertTrue(path!!.endsWith("/capture"))
     }
+    @Test fun fresh_all_context_capture_requires_an_explicit_workspace_before_create() = runTest {
+        var requests = 0
+        val vm = NewThreadViewModel(
+            repo = ThreadsRepository(SpecApi(HttpClient(MockEngine {
+                requests += 1
+                respond(
+                    """{"id":"thread-1","subject":"Subject","awaiting_reply":false,"messages":[]}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            }) { mshipDefaults() })),
+            connectionState = connectionState(listOf(conn("workspace"))),
+            testScope = backgroundScope,
+            captureDraftStore = InMemoryCaptureDraftStore(),
+        )
+
+        runCurrent()
+        vm.onTextChange("Capture this idea")
+
+        assertNull(vm.state.value.selectedConnectionId)
+        assertFalse(canCreate(vm.state.value))
+        assertNull(vm.create())
+        assertEquals(0, requests)
+
+        vm.onSelectConnection("workspace")
+
+        assertTrue(canCreate(vm.state.value))
+        vm.create()?.join()
+        assertEquals(1, requests)
+        assertTrue(vm.state.value.message is NewThreadMessage.Created)
+    }
+
+    @Test fun fresh_scoped_capture_initializes_its_route_workspace() = runTest {
+        val vm = NewThreadViewModel(
+            repo = ThreadsRepository(SpecApi(HttpClient(MockEngine {
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            connectionState = connectionState(listOf(conn("workspace-a"), conn("workspace-b"))),
+            testScope = backgroundScope,
+            captureDraftStore = InMemoryCaptureDraftStore(),
+            captureContextId = "workspace-b",
+        )
+
+        runCurrent()
+
+        assertEquals("workspace-b", vm.state.value.selectedConnectionId)
+    }
+
+    @Test fun matching_context_draft_restores_its_intentional_destination_without_posting() = runTest {
+        var requests = 0
+        val store = InMemoryCaptureDraftStore(
+            mapOf(
+                "workspace-b" to CaptureDraft(
+                    subject = "",
+                    text = "Resume this idea",
+                    kind = CaptureKind.BRAINSTORM_SPEC.name,
+                    selectedConnectionId = "workspace-a",
+                    brainstormIdempotencyKey = "saved-key",
+                    attemptedBrainstorm = CaptureDraftPayload("workspace-a", null, "Resume this idea"),
+                    revision = 4,
+                ),
+            ),
+        )
+        val vm = NewThreadViewModel(
+            repo = ThreadsRepository(SpecApi(HttpClient(MockEngine {
+                requests += 1
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            connectionState = connectionState(listOf(conn("workspace-a"), conn("workspace-b"))),
+            testScope = backgroundScope,
+            captureDraftStore = store,
+            captureContextId = "workspace-b",
+        )
+
+        runCurrent()
+
+        assertEquals("Resume this idea", vm.state.value.text)
+        assertEquals(CaptureKind.BRAINSTORM_SPEC, vm.state.value.kind)
+        assertEquals("workspace-a", vm.state.value.selectedConnectionId)
+        assertEquals("saved-key", vm.state.value.brainstormIdempotencyKey)
+        assertEquals(0, requests)
+    }
+
+    @Test fun restored_brainstorm_retry_reuses_the_attempted_idempotency_key() = runTest {
+        val store = InMemoryCaptureDraftStore()
+        val bodies = mutableListOf<String>()
+        val firstVm = NewThreadViewModel(
+            repo = ThreadsRepository(SpecApi(HttpClient(MockEngine { request ->
+                bodies += (request.body as io.ktor.http.content.TextContent).text
+                respond("""{"detail":"timeout"}""", HttpStatusCode.InternalServerError, jsonHdr)
+            }) { mshipDefaults() })),
+            connectionState = connectionState(listOf(conn("workspace"))),
+            testScope = backgroundScope,
+            captureDraftStore = store,
+            captureContextId = "workspace",
+        )
+        runCurrent()
+        firstVm.onTextChange("A durable idea")
+        firstVm.onSelectKind(CaptureKind.BRAINSTORM_SPEC)
+
+        firstVm.create()?.join()
+        val keyAfterFailure = firstVm.state.value.brainstormIdempotencyKey
+        assertNotNull(keyAfterFailure)
+        assertTrue(firstVm.state.value.message is NewThreadMessage.Error)
+
+        val restoredVm = NewThreadViewModel(
+            repo = ThreadsRepository(SpecApi(HttpClient(MockEngine { request ->
+                bodies += (request.body as io.ktor.http.content.TextContent).text
+                respond("""{"id":"t1","subject":"s","messages":[]}""", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            connectionState = connectionState(listOf(conn("workspace"))),
+            testScope = backgroundScope,
+            captureDraftStore = store,
+            captureContextId = "workspace",
+        )
+        runCurrent()
+
+        assertEquals(keyAfterFailure, restoredVm.state.value.brainstormIdempotencyKey)
+        restoredVm.create()?.join()
+        runCurrent()
+
+        assertEquals(2, bodies.size)
+        assertTrue(bodies.all { it.contains("\"idempotency_key\":\"$keyAfterFailure\"") })
+        assertNull(store.load("workspace"))
+    }
+
+
+    @Test fun altered_brainstorm_payload_gets_a_new_idempotency_key() = runTest {
+        val bodies = mutableListOf<String>()
+        val vm = NewThreadViewModel(
+            repo = ThreadsRepository(SpecApi(HttpClient(MockEngine { request ->
+                bodies += (request.body as io.ktor.http.content.TextContent).text
+                respond("""{"detail":"timeout"}""", HttpStatusCode.InternalServerError, jsonHdr)
+            }) { mshipDefaults() })),
+            connectionState = connectionState(listOf(conn("workspace"))),
+            testScope = backgroundScope,
+            captureDraftStore = InMemoryCaptureDraftStore(),
+            captureContextId = "workspace",
+        )
+        runCurrent()
+        vm.onSelectKind(CaptureKind.BRAINSTORM_SPEC)
+        vm.onTextChange("first")
+        vm.create()?.join()
+        vm.onTextChange("altered")
+        vm.create()?.join()
+
+        val keys = bodies.map { body ->
+            Regex(""""idempotency_key":"([^"]+)"""").find(body)!!.groupValues[1]
+        }
+        assertEquals(2, keys.size)
+        assertFalse(keys[0] == keys[1])
+    }
+    @Test fun removed_selection_is_not_retargeted_to_the_only_remaining_workspace() = runTest {
+        val connections = connectionState(listOf(conn("one"), conn("two")))
+        val vm = NewThreadViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine {
+                respond("{}", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            connections,
+            backgroundScope,
+        )
+        runCurrent()
+        vm.onSelectConnection("one")
+
+        connections.value = ConnectionState.Ready(listOf(conn("two")))
+        runCurrent()
+
+        assertNull(vm.state.value.selectedConnectionId)
+        assertFalse(canCreate(vm.state.value.copy(text = "do not retarget")))
+    }
 }
+

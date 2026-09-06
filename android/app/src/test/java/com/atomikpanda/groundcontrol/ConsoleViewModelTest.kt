@@ -227,25 +227,135 @@ class ConsoleViewModelTest {
         assertTrue(postedTexts[0].contains("go"))
     }
 
-    @Test fun fetch_surfaces_focused_task_activity_for_the_stepper() = runTest {
-        val taskWithActivity = """
-            {"slug":"a","phase":"dev","branch":"feat/a","finished_at":null,
-             "last_activity_at":"2026-07-13T12:00:00Z"}
+    @Test fun fetch_aggregates_latest_valid_activity_and_keeps_unknown_task_activity_unknown() = runTest {
+        val multiTaskItem = """
+            {"id":"wi-1","kind":"feature","title":"T","phase":"in_flight",
+             "task_slugs":["a","b","c","missing"],"thread_ids":["t1"],"spec_id":null,
+             "active_last_activity_at":"2026-07-13T12:00:00Z",
+             "attention":{"needs_decision":true,"blocked":true,"blocked_tasks":1}}
         """.trimIndent()
         val vm = vm(this) { req ->
             when {
-                req.url.encodedPath.endsWith("/items/wi-1") -> respond(itemJson, HttpStatusCode.OK, jsonHdr)
-                req.url.encodedPath.endsWith("/tasks/a") -> respond(taskWithActivity, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/items/wi-1") -> respond(multiTaskItem, HttpStatusCode.OK, jsonHdr)
+                req.url.encodedPath.endsWith("/tasks/a") -> respond(
+                    """{"slug":"a","phase":"dev","branch":"feat/a","last_activity_at":"2026-07-13T12:00:00Z"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+                req.url.encodedPath.endsWith("/tasks/b") -> respond(
+                    """{"slug":"b","phase":"blocked","branch":"feat/b","last_activity_at":"2026-07-14T12:00:00Z","blocked_reason":"Awaiting API credentials"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+                req.url.encodedPath.endsWith("/tasks/c") -> respond(
+                    """{"slug":"c","phase":"plan","branch":"feat/c","last_activity_at":"not-a-timestamp"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
                 req.url.encodedPath.endsWith("/journal/a") -> respond(journalJson, HttpStatusCode.OK, jsonHdr)
                 req.url.encodedPath.endsWith("/threads/t1") -> respond(threadJson, HttpStatusCode.OK, jsonHdr)
                 else -> respondError(HttpStatusCode.NotFound)
             }
         }
         vm.load().join()
-        val c = (vm.state.value as ConsoleUiState.Content).c
-        val focused = c.tasks.first()
-        assertEquals("dev", focused.phase)
-        assertEquals("2026-07-13T12:00:00Z", focused.lastActivityAt)
+
+        val summary = ((vm.state.value as ConsoleUiState.Content).c).summary
+        assertEquals("2026-07-14T12:00:00Z", summary.latestActivityAt)
+        assertEquals(listOf("c", "missing"), summary.activityUnknownTaskSlugs)
+        assertEquals("b", summary.blockers.single().taskSlug)
+        assertEquals("Awaiting API credentials", summary.blockers.single().reason)
+        assertTrue(summary.userInputPending)
+    }
+
+    @Test fun item_activity_is_retained_when_its_task_detail_is_unavailable() = runTest {
+        val itemWithUnavailableTask = """
+            {"id":"wi-1","kind":"feature","title":"T","phase":"in_flight",
+             "task_slugs":["missing"],"thread_ids":[],"spec_id":null,
+             "active_last_activity_at":"2026-07-15T12:00:00Z"}
+        """.trimIndent()
+        val vm = vm(this) { request ->
+            if (request.url.encodedPath.endsWith("/items/wi-1")) {
+                respond(itemWithUnavailableTask, HttpStatusCode.OK, jsonHdr)
+            } else {
+                respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load().join()
+
+        val summary = ((vm.state.value as ConsoleUiState.Content).c).summary
+        assertEquals("2026-07-15T12:00:00Z", summary.latestActivityAt)
+        assertEquals(listOf("missing"), summary.activityUnknownTaskSlugs)
+    }
+
+    @Test fun malformed_item_activity_is_ignored_in_favor_of_valid_task_activity() = runTest {
+        val itemWithMalformedActivity = """
+            {"id":"wi-1","kind":"feature","title":"T","phase":"in_flight",
+             "task_slugs":["a"],"thread_ids":[],"spec_id":null,
+             "active_last_activity_at":"not-a-timestamp"}
+        """.trimIndent()
+        val vm = vm(this) { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1") ->
+                    respond(itemWithMalformedActivity, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/tasks/a") -> respond(
+                    """{"slug":"a","phase":"dev","branch":"feat/a","last_activity_at":"2026-07-16T12:00:00Z"}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load().join()
+
+        val summary = ((vm.state.value as ConsoleUiState.Content).c).summary
+        assertEquals("2026-07-16T12:00:00Z", summary.latestActivityAt)
+        assertEquals(emptyList<String>(), summary.activityUnknownTaskSlugs)
+    }
+
+    @Test fun rapid_option_submissions_post_once_then_reenable_after_failure() = runTest {
+        val firstPostStarted = CompletableDeferred<Unit>()
+        val releaseFirstPost = CompletableDeferred<Unit>()
+        val postedTexts = mutableListOf<String>()
+        val vm = vm(this) { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1/messages") &&
+                    request.method == HttpMethod.Post -> {
+                    postedTexts += (request.body as TextContent).text
+                    if (postedTexts.size == 1) {
+                        firstPostStarted.complete(Unit)
+                        releaseFirstPost.await()
+                        respondError(HttpStatusCode.InternalServerError)
+                    } else {
+                        respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                    }
+                }
+                request.url.encodedPath.endsWith("/items/wi-1") -> respond(itemJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/tasks/a") -> respond(taskJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/journal/a") -> respond(journalJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/threads/t1") -> respond(threadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load().join()
+
+        val first = vm.answerOption("Ship it")
+        val duplicate = vm.answerOption("Wait")
+        runCurrent()
+        firstPostStarted.await()
+        assertEquals(1, postedTexts.size)
+        assertTrue(vm.sending.value)
+
+        releaseFirstPost.complete(Unit)
+        first.join()
+        duplicate.join()
+        assertEquals(false, vm.sending.value)
+        assertEquals("Couldn't send — check your connection and try again.", vm.sendError.value)
+
+        vm.answerOption("Retry").join()
+        assertEquals(2, postedTexts.size)
+        assertTrue(postedTexts[1].contains("Retry"))
+        assertEquals(false, vm.sending.value)
+        assertNull(vm.sendError.value)
     }
 
     @Test fun send_after_state_replacement_posts_to_the_current_workspace() = runTest {
@@ -278,6 +388,25 @@ class ConsoleViewModelTest {
         vm.sendDraft().join()
 
         assertEquals(listOf("new"), postHosts)
+    }
+
+    @Test fun queued_option_is_not_posted_after_connection_removal() = runTest {
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conn)))
+        val postedTexts = mutableListOf<String>()
+        val vm = ConsoleViewModel(
+            SpecApi(HttpClient(MockEngine(defaultHandler(postedTexts))) { mshipDefaults() }),
+            conn.id,
+            "wi-1",
+            connections,
+            testScope = backgroundScope,
+        )
+        vm.load().join()
+        val queuedSend = vm.answerOption("Use cache")
+        connections.value = ConnectionState.Ready(emptyList())
+        queuedSend.join()
+
+        assertEquals(emptyList<String>(), postedTexts)
+        assertEquals(false, vm.sending.value)
     }
 
     @Test fun connection_replacement_resets_sending_and_fences_the_old_send() = runTest {
