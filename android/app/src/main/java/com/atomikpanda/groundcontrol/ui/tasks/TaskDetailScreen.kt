@@ -33,13 +33,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.PlanAssumptionFlag
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
+import com.atomikpanda.groundcontrol.ui.components.JournalEntryRow
+import com.atomikpanda.groundcontrol.ui.components.rememberJournalNow
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -95,6 +95,7 @@ private fun ErrorView(s: TaskDetailUiState.Error, vm: TaskDetailViewModel, onBac
 @Composable
 private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
     val task = s.task
+    val journalNow by rememberJournalNow()
     val pull = rememberPullToRefreshState()
     if (pull.isRefreshing) LaunchedEffect(true) { vm.load().join(); pull.endRefresh() }
 
@@ -262,7 +263,7 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
             // Journal timeline
             if (s.journal.isNotEmpty()) {
                 item { SectionLabel("JOURNAL") }
-                items(s.journal) { entry -> JournalEntryRow(entry) }
+                items(s.journal) { entry -> JournalEntryRow(entry, journalNow) }
             }
         }
         PullToRefreshContainer(state = pull, modifier = Modifier.align(Alignment.TopCenter))
@@ -300,43 +301,6 @@ private fun AssumptionRow(
     }
 }
 
-@Composable
-private fun JournalEntryRow(entry: JournalEntry) {
-    Column(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top,
-        ) {
-            Text(
-                entry.timestamp,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            // Labels: action, testState, repo
-            val labels = listOfNotNull(entry.action, entry.testState, entry.repo)
-            if (labels.isNotEmpty()) {
-                Text(
-                    labels.joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary,
-                )
-            }
-        }
-        Text(entry.message, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 2.dp))
-        // Highlight open question
-        entry.openQuestion?.takeIf { it.isNotBlank() }?.let { q ->
-            Text(
-                "? $q",
-                style = MaterialTheme.typography.bodySmall,
-                fontStyle = FontStyle.Italic,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.padding(top = 2.dp),
-            )
-        }
-    }
-}
 
 @Composable
 private fun SectionLabel(text: String) =
