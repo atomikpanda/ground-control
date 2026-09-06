@@ -37,7 +37,12 @@ model exposed over `mship serve`.
 - Done shows available repository and pull-request metadata. Mothership retains
   this metadata before task cleanup; previously deleted metadata is not reconstructed.
 - Commit evidence opens the repository's canonical commit page when its repository
-  is unambiguous. Compact in-flight indicators show the current phase label.
+  is unambiguous.
+- Task phase summaries show the current stage and its position without pulsing.
+  Missing phase data stays unavailable unless dispatch or completion is confirmed;
+  missing activity data is labeled explicitly.
+- Spec readiness chips and review actions wrap on narrow screens and at larger
+  text sizes instead of squeezing labels or hiding the spec content.
 
 ## Status
 
