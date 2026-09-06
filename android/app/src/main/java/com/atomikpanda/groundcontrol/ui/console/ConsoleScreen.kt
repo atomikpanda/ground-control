@@ -49,6 +49,7 @@ import com.atomikpanda.groundcontrol.ui.activity.PhaseStepper
 import com.atomikpanda.groundcontrol.ui.activity.phaseStepFor
 import com.atomikpanda.groundcontrol.ui.components.ExternalLinksRow
 import com.atomikpanda.groundcontrol.ui.components.JournalEntryRow
+import com.atomikpanda.groundcontrol.ui.components.rememberJournalNow
 import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
 import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard
@@ -121,6 +122,7 @@ fun ConsoleScreen(vm: ConsoleViewModel, title: String, identity: WorkspaceIdenti
 @Composable
 private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
     val colors = LocalSemanticColors.current
+    val journalNow by rememberJournalNow()
     val focusedTask = c.tasks.firstOrNull()
     val activeDecision = c.activeDecision
     val activeDecisionText = c.activeDecisionText
@@ -177,7 +179,7 @@ private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
             }
             if (c.journal.isNotEmpty()) {
                 item { SectionLabel("JOURNAL · TASK ${c.item.taskSlugs.firstOrNull() ?: "UNKNOWN"}") }
-                items(c.journal.takeLast(5)) { entry -> JournalEntryRow(entry) }
+                items(c.journal.takeLast(5)) { entry -> JournalEntryRow(entry, journalNow) }
             }
             focusedTask?.testResults?.entries?.toList()?.takeIf { it.isNotEmpty() }?.let { results ->
                 item { SectionLabel("TESTS · TASK ${focusedTask.slug}") }

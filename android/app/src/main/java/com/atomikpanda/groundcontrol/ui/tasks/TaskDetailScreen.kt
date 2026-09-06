@@ -39,6 +39,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.PlanAssumptionFlag
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.ui.components.JournalEntryRow
+import com.atomikpanda.groundcontrol.ui.components.rememberJournalNow
 import com.atomikpanda.groundcontrol.ui.specdetail.ErrorKind
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -94,6 +95,7 @@ private fun ErrorView(s: TaskDetailUiState.Error, vm: TaskDetailViewModel, onBac
 @Composable
 private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
     val task = s.task
+    val journalNow by rememberJournalNow()
     val pull = rememberPullToRefreshState()
     if (pull.isRefreshing) LaunchedEffect(true) { vm.load().join(); pull.endRefresh() }
 
@@ -261,7 +263,7 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
             // Journal timeline
             if (s.journal.isNotEmpty()) {
                 item { SectionLabel("JOURNAL") }
-                items(s.journal) { entry -> JournalEntryRow(entry) }
+                items(s.journal) { entry -> JournalEntryRow(entry, journalNow) }
             }
         }
         PullToRefreshContainer(state = pull, modifier = Modifier.align(Alignment.TopCenter))

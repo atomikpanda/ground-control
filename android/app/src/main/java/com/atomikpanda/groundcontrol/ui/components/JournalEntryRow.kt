@@ -1,5 +1,8 @@
 package com.atomikpanda.groundcontrol.ui.components
 
+import android.icu.text.DisplayContext
+import android.icu.text.RelativeDateTimeFormatter
+import android.icu.util.ULocale
 import android.text.format.DateFormat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,6 +15,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -21,12 +26,18 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZonedDateTime
 import java.util.Date
 import java.util.TimeZone
+import kotlinx.coroutines.delay
 
 internal enum class JournalTone { ROUTINE, SUCCESS, WARNING, ERROR, QUESTION }
 
@@ -56,7 +67,7 @@ private fun journalAccent(tone: JournalTone): Color {
 /** Shared by the full task timeline and the Console's recent journal entries. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun JournalEntryRow(entry: JournalEntry, modifier: Modifier = Modifier) {
+internal fun JournalEntryRow(entry: JournalEntry, now: ZonedDateTime, modifier: Modifier = Modifier) {
     val accent = journalAccent(journalTone(entry))
     val testState = entry.testState?.takeIf { it.isNotBlank() }
     val category = entry.category?.takeIf { it.isNotBlank() }
@@ -73,7 +84,7 @@ internal fun JournalEntryRow(entry: JournalEntry, modifier: Modifier = Modifier)
                 .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            JournalTimestamp(entry.timestamp)
+            JournalTimestamp(entry.timestamp, now)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -113,26 +124,58 @@ internal fun JournalEntryRow(entry: JournalEntry, modifier: Modifier = Modifier)
     }
 }
 
+/** One lifecycle-aware clock per journal screen, not one timer per row. */
 @Composable
-private fun JournalTimestamp(timestamp: String) {
-    val configuration = LocalConfiguration.current
-    val locale = configuration.locales[0]
-    val use24Hour = DateFormat.is24HourFormat(LocalContext.current)
-    val zone = remember(configuration) { TimeZone.getDefault() }
-    val dateFormat = remember(locale, zone) {
-        SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, "yMMMd"), locale).apply { timeZone = zone }
+internal fun rememberJournalNow(): State<ZonedDateTime> {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val initial = remember { ZonedDateTime.now() }
+    return produceState(initial, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                value = ZonedDateTime.now()
+                delay(60_000)
+            }
+        }
     }
-    val timeFormat = remember(locale, zone, use24Hour) {
-        val skeleton = if (use24Hour) "Hmsz" else "hmsz"
+}
+
+@Composable
+private fun JournalTimestamp(timestamp: String, now: ZonedDateTime) {
+    val locale = LocalConfiguration.current.locales[0]
+    val use24Hour = DateFormat.is24HourFormat(LocalContext.current)
+    val zone = remember(now.zone) { TimeZone.getTimeZone(now.zone) }
+    val event = remember(timestamp, now.zone) {
+        parseTimestampMillis(timestamp)?.let { Instant.ofEpochMilli(it).atZone(now.zone) }
+    }
+    val today = now.toLocalDate()
+    val showYear = event?.year != today.year
+    val dateFormat = remember(locale, zone, showYear) {
+        val skeleton = if (showYear) "yMMMd" else "MMMd"
         SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, skeleton), locale).apply { timeZone = zone }
     }
-    val label = remember(timestamp, dateFormat, timeFormat) {
-        parseTimestampMillis(timestamp)?.let { millis ->
-            val date = Date(millis)
-            "${dateFormat.format(date)}\n${timeFormat.format(date)}"
+    val timeFormat = remember(locale, zone, use24Hour) {
+        val skeleton = if (use24Hour) "Hm" else "hm"
+        SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, skeleton), locale).apply { timeZone = zone }
+    }
+    val relativeFormat = remember(locale) {
+        RelativeDateTimeFormatter.getInstance(
+            ULocale.forLocale(locale), null, RelativeDateTimeFormatter.Style.LONG,
+            DisplayContext.CAPITALIZATION_FOR_BEGINNING_OF_SENTENCE,
+        )
+    }
+    val label = remember(timestamp, event, today, dateFormat, timeFormat, relativeFormat) {
+        event?.let {
+            val date = Date(it.toInstant().toEpochMilli())
+            // Compare local calendar days, not 24-hour durations (DST and midnight matter).
+            val day = when (it.toLocalDate()) {
+                today -> relativeFormat.format(RelativeDateTimeFormatter.Direction.THIS, RelativeDateTimeFormatter.AbsoluteUnit.DAY)
+                today.minusDays(1) -> relativeFormat.format(RelativeDateTimeFormatter.Direction.LAST, RelativeDateTimeFormatter.AbsoluteUnit.DAY)
+                else -> dateFormat.format(date)
+            }
+            "$day\n${timeFormat.format(date)}"
         } ?: timestamp
     }
-    // One semantic label keeps the date and its local time together for screen readers.
+    // One semantic label keeps the contextual date and time together for screen readers.
     Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
