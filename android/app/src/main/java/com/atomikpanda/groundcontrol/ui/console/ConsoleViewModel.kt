@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.OffsetDateTime
 import kotlin.coroutines.cancellation.CancellationException
 
 data class ConsoleContent(
@@ -35,6 +37,21 @@ data class ConsoleContent(
     val activeDecision: Decision?,       // last unanswered decision on the work-item thread
     val activeDecisionText: String?,     // the active decision message's question text
     val threadId: String?,
+    val summary: ConsoleStatusSummary,
+)
+
+data class ConsoleStatusSummary(
+    val phase: String,
+    val latestActivityAt: String?,
+    val activityUnknownTaskSlugs: List<String>,
+    val blockers: List<ConsoleTaskBlocker>,
+    val blockerReasonUnavailable: Boolean,
+    val userInputPending: Boolean,
+)
+
+data class ConsoleTaskBlocker(
+    val taskSlug: String,
+    val reason: String,
 )
 
 sealed interface ConsoleUiState {
@@ -64,6 +81,7 @@ class ConsoleViewModel(
     private var loadJob: Job? = null
     private val routeConnection = ReactiveRouteConnection(connectionId, connectionState, viewModelScope) { source, snapshot ->
         loadJob?.cancel()
+        releaseSending()
         _sending.value = false
         if (snapshot == null) {
             _state.value = ConsoleUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
@@ -76,6 +94,30 @@ class ConsoleViewModel(
      *  control on this to prevent a double-submit. */
     private val _sending = MutableStateFlow(false)
     val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
+    /**
+     * Claims the single item-message POST before it is launched. The StateFlow drives the
+     * UI, while ownership makes two taps in the same main-loop turn mutually exclusive.
+     * A replacement connection clears ownership; an old request then cannot release a
+     * newer connection's claim.
+     */
+    private val sendOwnershipLock = Any()
+    private var sendingSnapshot: RouteConnectionSnapshot? = null
+
+    private fun claimSending(snapshot: RouteConnectionSnapshot): Boolean = synchronized(sendOwnershipLock) {
+        if (sendingSnapshot != null) {
+            false
+        } else {
+            sendingSnapshot = snapshot
+            true
+        }
+    }
+
+    private fun releaseSending(snapshot: RouteConnectionSnapshot? = null) {
+        synchronized(sendOwnershipLock) {
+            if (snapshot == null || sendingSnapshot == snapshot) sendingSnapshot = null
+        }
+    }
 
     /** Non-null when the last `sendDraft`/`answerOption` send failed; the UI surfaces it and the
      *  user (or the next attempt) clears it via [clearSendError]. */
@@ -113,21 +155,23 @@ class ConsoleViewModel(
         val conn = snapshot.connection
         val item = api.getItem(conn, itemId)
         coroutineScope {
-            val tasks = item.taskSlugs.map { async { runCatching { api.getTask(conn, it) }.getOrNull() } }
+            val taskRequests = item.taskSlugs.map { async { runCatching { api.getTask(conn, it) }.getOrNull() } }
             val threadId = item.threadIds.firstOrNull()
             val thread = threadId?.let { runCatching { api.getThread(conn, it) }.getOrNull() }
             val journal = item.taskSlugs.firstOrNull()
                 ?.let { runCatching { api.getJournal(conn, it) }.getOrNull() } ?: emptyList()
             val review = item.specId?.let { runCatching { api.getReview(conn, it).summary }.getOrNull() }
             val activeDecisionMessage = thread?.let { activeDecisionMessage(it) }
+            val tasks = taskRequests.awaitAll().filterNotNull()
             ConsoleUiState.Content(ConsoleContent(
                 item = item,
-                tasks = tasks.awaitAll().filterNotNull(),
+                tasks = tasks,
                 journal = journal,
                 review = review,
                 activeDecision = activeDecisionMessage?.decision,
                 activeDecisionText = activeDecisionMessage?.text,
                 threadId = threadId,
+                summary = statusSummary(item, tasks, activeDecisionMessage != null),
             ))
         }
     } catch (e: CancellationException) {
@@ -135,6 +179,55 @@ class ConsoleViewModel(
     } catch (e: Exception) {
         ConsoleUiState.Failed(e.message ?: "failed to load")
     }
+
+    private fun statusSummary(
+        item: WorkItemSummary,
+        tasks: List<TaskSummary>,
+        hasActiveDecision: Boolean,
+    ): ConsoleStatusSummary {
+        val tasksBySlug = tasks.associateBy(TaskSummary::slug)
+        val activityByTask = item.taskSlugs.associateWith { slug ->
+            tasksBySlug[slug]?.lastActivityAt?.let { rawTimestamp ->
+                parseActivityTimestamp(rawTimestamp)?.let { it to rawTimestamp }
+            }
+        }
+        val itemActivity = item.activeLastActivityAt?.let { rawTimestamp ->
+            parseActivityTimestamp(rawTimestamp)?.let { it to rawTimestamp }
+        }
+        val blockers = tasks.mapNotNull { task ->
+            task.blockedReason?.trim()?.takeIf(String::isNotEmpty)?.let { reason ->
+                ConsoleTaskBlocker(task.slug, reason)
+            }
+        }
+        val knownBlockerCount = blockers.size
+        val reportedBlockerCount = item.attention.blockedTasks.coerceAtLeast(
+            if (item.attention.blocked) 1 else 0,
+        )
+        return ConsoleStatusSummary(
+            phase = item.activePhase?.takeIf(String::isNotBlank)
+                ?: item.phase.takeIf(String::isNotBlank)
+                ?: "Unknown",
+            latestActivityAt = activityByTask.values
+                .filterNotNull()
+                .fold(itemActivity) { latest, candidate ->
+                    if (latest == null || candidate.first > latest.first) candidate else latest
+                }
+                ?.second,
+            activityUnknownTaskSlugs = activityByTask
+                .filterValues { it == null }
+                .keys
+                .toList(),
+            blockers = blockers,
+            blockerReasonUnavailable = reportedBlockerCount > knownBlockerCount,
+            userInputPending = hasActiveDecision ||
+                item.attention.needsDecision ||
+                item.attention.needsApproval,
+        )
+    }
+
+    private fun parseActivityTimestamp(value: String): Instant? =
+        runCatching { Instant.parse(value) }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(value).toInstant() }.getOrNull()
 
     /** Last decision message after the human-reply or explicit Done boundary (same rule as
      *  ConversationScreen) — carries both the `Decision` payload and its question `text`,
@@ -154,12 +247,17 @@ class ConsoleViewModel(
 
     private fun postAndRefresh(text: String, onSuccess: () -> Unit = {}): Job {
         val snapshot = routeConnection.current() ?: return scope.launch { }
-        return scope.launch {
-            if (!routeConnection.publishIfCurrent(snapshot) {
+        if (!claimSending(snapshot)) return scope.launch { }
+        if (!routeConnection.publishIfCurrent(snapshot) {
                 _sending.value = true
                 _sendError.value = null
-            }) return@launch
+            }) {
+            releaseSending(snapshot)
+            return scope.launch { }
+        }
+        return scope.launch {
             try {
+                if (!routeConnection.isCurrent(snapshot)) return@launch
                 val ok = runCatching { api.postItemMessage(snapshot.connection, itemId, text) }.isSuccess
                 if (!routeConnection.publishIfCurrent(snapshot) {
                     if (ok) onSuccess() else _sendError.value = "Couldn't send — check your connection and try again."
@@ -167,6 +265,7 @@ class ConsoleViewModel(
                 val next = runCatching { fetch(snapshot) }.getOrNull()
                 if (next is ConsoleUiState.Content) routeConnection.publishIfCurrent(snapshot) { _state.value = next }
             } finally {
+                releaseSending(snapshot)
                 routeConnection.publishIfCurrent(snapshot) { _sending.value = false }
             }
         }

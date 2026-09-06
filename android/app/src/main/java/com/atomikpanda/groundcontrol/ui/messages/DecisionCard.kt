@@ -183,7 +183,19 @@ private fun DecisionOptionRow(
                     selected = isSelected,
                     onClick = onTap,
                     enabled = enabled,
-                    label = { Text(label) },
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isRecommended) {
+                                Icon(
+                                    Icons.Filled.Star,
+                                    contentDescription = "Recommended",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text(label)
+                        }
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }

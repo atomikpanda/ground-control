@@ -69,7 +69,7 @@ fun HomeScreen(
     onQuestion: (connectionId: String, threadId: String) -> Unit,
     onBlocker: (connectionId: String, slug: String) -> Unit,
     onBrowseWorkspace: (connectionId: String) -> Unit,
-    onCapture: () -> Unit,
+    onCapture: (connectionId: String?) -> Unit,
     onOpenThreads: () -> Unit,
     onReviewInQueue: () -> Unit,
     onRePair: () -> Unit,
@@ -90,14 +90,15 @@ fun HomeScreen(
         onPauseOrDispose { }
     }
 
+    val captureConnectionId = (state as? HomeUiState.Content)?.selectedConnectionId
     Scaffold(
         floatingActionButton = {
             // Only offer Capture once a workspace exists; on Loading/EmptyConfig
             // it would dead-end at the "add a workspace" empty state.
             if (state is HomeUiState.Content) {
                 ExtendedFloatingActionButton(
-                    onClick = onCapture,
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    onClick = { onCapture(captureConnectionId) },
+                    icon = { Icon(Icons.Filled.Add, contentDescription = "Capture") },
                     text = { Text("Capture") },
                 )
             }

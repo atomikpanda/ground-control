@@ -38,6 +38,7 @@ import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.ConnectionStateSource
 import com.atomikpanda.groundcontrol.data.ConnectionsRepository
 import com.atomikpanda.groundcontrol.data.appHttpClient
+import com.atomikpanda.groundcontrol.data.DataStoreCaptureDraftStore
 import com.atomikpanda.groundcontrol.data.DataStoreCoachMarkStore
 import com.atomikpanda.groundcontrol.data.DataStoreNotificationsSetting
 import com.atomikpanda.groundcontrol.data.HostsRepository
@@ -57,6 +58,8 @@ import com.atomikpanda.groundcontrol.ui.home.HomeScreen
 import com.atomikpanda.groundcontrol.ui.home.HomeViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ConversationScreen
 import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
+import com.atomikpanda.groundcontrol.ui.messages.DecisionScreen
+import com.atomikpanda.groundcontrol.ui.messages.DecisionViewModel
 import com.atomikpanda.groundcontrol.ui.messages.MessagesScreen
 import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
@@ -94,6 +97,9 @@ import com.atomikpanda.groundcontrol.ui.workspace.WorkspaceViewModel
 
 internal fun newThreadRoute(connectionId: String?): String =
     if (connectionId != null) "newThread?connectionId=$connectionId" else "newThread"
+
+internal fun captureRoute(connectionId: String?): String =
+    connectionId?.let { "capture?connectionId=${Uri.encode(it)}" } ?: "capture"
 
 internal fun connectionRoute(
     conn: WorkspaceConnection,
@@ -203,6 +209,9 @@ internal fun GroundControlContent(
     val appScope = rememberCoroutineScope()
     val notificationsSetting = remember { DataStoreNotificationsSetting(context.applicationContext, appScope) }
     val coachMark = remember { DataStoreCoachMarkStore(context.applicationContext, appScope) }
+    val captureDraftStore = remember(context.applicationContext) {
+        DataStoreCaptureDraftStore(context.applicationContext)
+    }
     // Home owns an Active-only messages snapshot, separate from the threads tab's selected
     // inbox/search state. Sharing one owner would let tab search reclassify Home's server feed.
     val homeMessagesVm: MessagesViewModel = viewModel(key = "homeMessages") {
@@ -252,7 +261,9 @@ internal fun GroundControlContent(
                     vm,
                     homeMessagesVm,
                     onApproval = { connId, specId -> nav.navigate("specDetail/$connId/$specId") },
-                    onQuestion = { connId, threadId -> nav.navigate("thread/$connId/$threadId") },
+                    onQuestion = { connId, threadId ->
+                        nav.navigate("decision/${Uri.encode(connId)}/${Uri.encode(threadId)}")
+                    },
                     onBlocker = { connId, slug -> nav.navigate("taskDetail/$connId/$slug") },
                     onBrowseWorkspace = { connId -> nav.navigate("farm/$connId") },
                     onOpenThreads = {
@@ -262,7 +273,7 @@ internal fun GroundControlContent(
                         }
                         nav.navigate("threads")
                     },
-                    onCapture = { nav.navigate("capture") },
+                    onCapture = { connectionId -> nav.navigate(captureRoute(connectionId)) },
                     onReviewInQueue = { nav.navigate(Section.QUEUE.route) { launchSingleTop = true } },
                     onRePair = { nav.navigate(Section.SETTINGS.route) { launchSingleTop = true } },
                 )
@@ -338,7 +349,13 @@ internal fun GroundControlContent(
                     val vm = viewModel {
                         SpecDetailViewModel(detailRepo, connectionId, specId, connectionStateSource.state)
                     }
-                    SpecDetailScreen(vm, title = title, identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }), onBack = { nav.popBackStack() })
+                    SpecDetailScreen(
+                        vm,
+                        title = title,
+                        identity = LocalWorkspaceIdentityResolver.current(conn.id, conn.workspaceName.ifBlank { conn.baseUrl }),
+                        workspaceName = conn.workspaceName.ifBlank { conn.baseUrl },
+                        onBack = { nav.popBackStack() },
+                    )
                 }
             }
             composable(
@@ -511,12 +528,24 @@ internal fun GroundControlContent(
                 }
                 Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
             }
-            composable("capture") {
+            composable(
+                route = "capture?connectionId={connectionId}",
+                arguments = listOf(navArgument("connectionId") {
+                    type = NavType.StringType; nullable = true; defaultValue = null
+                }),
+            ) { entry ->
+                val captureContextId = entry.arguments?.getString("connectionId")
                 val vm = viewModel {
-                    NewThreadViewModel(threadsRepo, connectionStateSource.state)
+                    NewThreadViewModel(
+                        threadsRepo,
+                        connectionStateSource.state,
+                        captureDraftStore = captureDraftStore,
+                        captureContextId = captureContextId,
+                    )
                 }
                 NewThreadScreen(
                     vm,
+                    initialConnectionId = captureContextId,
                     title = "Capture",
                     showSubject = false,
                     bodyLabel = "What's up?",
@@ -524,7 +553,7 @@ internal fun GroundControlContent(
                     showKindPicker = true,
                     onCreated = { connId, id ->
                         nav.navigate("thread/$connId/$id") {
-                            popUpTo("capture") { inclusive = true }
+                            popUpTo("capture?connectionId={connectionId}") { inclusive = true }
                         }
                     },
                     onBack = { nav.popBackStack() },
@@ -550,6 +579,45 @@ internal fun GroundControlContent(
                     },
                     onBack = { nav.popBackStack() },
                 )
+            }
+            composable(
+                route = "decision/{connectionId}/{threadId}",
+                arguments = listOf(
+                    navArgument("connectionId") { type = NavType.StringType },
+                    navArgument("threadId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val connectionId = entry.arguments?.getString("connectionId").orEmpty()
+                val threadId = entry.arguments?.getString("threadId").orEmpty()
+                val conn = readyConnections.findByConnectionId(connectionId)
+                if (conn == null) {
+                    Box(Modifier.fillMaxSize()) { Text("Connection removed. Go back to Home.") }
+                } else {
+                    val vm = viewModel {
+                        DecisionViewModel(
+                            threadsRepo,
+                            conn.id,
+                            threadId,
+                            connectionStateSource.state,
+                        )
+                    }
+                    DecisionScreen(
+                        vm = vm,
+                        onBack = { nav.popBackStack() },
+                        onOpenConversation = {
+                            nav.navigate(connectionRoute(conn, "thread", Uri.encode(threadId)))
+                        },
+                        onOpenItem = { itemId ->
+                            nav.navigate(connectionRoute(conn, "item", Uri.encode(itemId)))
+                        },
+                        onOpenSpec = { specId ->
+                            nav.navigate(connectionRoute(conn, "specDetail", Uri.encode(specId)))
+                        },
+                        onOpenTask = { taskId ->
+                            nav.navigate(connectionRoute(conn, "taskDetail", Uri.encode(taskId)))
+                        },
+                    )
+                }
             }
             composable(
                 route = "thread/{connectionId}/{threadId}",
