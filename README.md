@@ -24,6 +24,21 @@ Ground Control owns the human touchpoints — reviewing and approving specs, ans
 questions, and triaging the decision queue — all backed by the structured `mship spec`
 model exposed over `mship serve`.
 
+### Daily review
+
+- Queue reconciles decisions against later human replies, even when a stale summary
+  still marks them as needing a decision. Merely viewing a prompt does not answer it.
+  Spec questions are reconciled per prompt and acknowledged server revision; later
+  revisions and changed prompts remain actionable. An identical reopened prompt
+  without a newer server revision is indistinguishable from a stale response.
+- Expected offline workspaces use neutral availability text. Re-pairing and
+  other actionable failures stay visible without blocking healthy workspaces.
+- Projects preserves each workspace's identity and opens that workspace directly.
+- Done shows available repository and pull-request metadata. Mothership retains
+  this metadata before task cleanup; previously deleted metadata is not reconstructed.
+- Commit evidence opens the repository's canonical commit page when its repository
+  is unambiguous. Compact in-flight indicators show the current phase label.
+
 ## Status
 
 Early scaffold. **Android first** (Kotlin + Jetpack Compose); iOS (Swift + SwiftUI) follows.

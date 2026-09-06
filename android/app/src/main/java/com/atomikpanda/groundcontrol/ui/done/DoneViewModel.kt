@@ -29,6 +29,7 @@ data class DoneContent(
     val review: ReviewSummary?,    // null when the item has no spec
     val criteria: List<ReviewCriterion> = emptyList(),
     val prUrls: List<String> = emptyList(),
+    val summaryPrUrls: List<String> = emptyList(),
 )
 
 sealed interface DoneUiState {
@@ -39,9 +40,9 @@ sealed interface DoneUiState {
 }
 
 /** Completion summary cockpit for a finished work item: fans out GET /items/{id} into its
- *  tasks, aggregates `affected_repos` into `reposTouched`, derives `completedAt` from the
- *  max task `finished_at` (falling back to the item's `updated_at`), and optionally fetches
- *  the spec review summary (same fan-out pattern as ReviewViewModel). */
+ *  tasks, combines their metadata with the item's summary projection so unavailable task detail
+ *  cannot erase repos or PRs, derives `completedAt` from the max task `finished_at` (falling
+ *  back to the item's `updated_at`), and optionally fetches the spec review summary. */
 class DoneViewModel(
     private val api: SpecApi,
     connectionId: String,
@@ -83,16 +84,21 @@ class DoneViewModel(
             val tasks = item.taskSlugs
                 .map { async { runCatching { api.getTask(conn, it) }.getOrNull() } }
                 .awaitAll().filterNotNull()
-            val reposTouched = tasks.flatMap { it.affectedRepos }.distinct()
+            val reposTouched = (item.affectedRepos + tasks.flatMap { it.affectedRepos }).distinct()
             val completedAt = tasks.mapNotNull { it.finishedAt }.maxOrNull() ?: item.updatedAt
             val reviewRecord = reviewDeferred?.await()
-            val prUrls = tasks.flatMap { it.prUrls.values }.distinct()
+            val taskPrUrls = tasks.flatMap { it.prUrls.values }.distinct()
+            val prUrls = (item.prUrls + taskPrUrls).distinct()
+            // Task rows already render their recorded PRs. Retain only summary links that have
+            // no loaded task row, so an archived or unavailable task cannot hide its PR.
+            val summaryPrUrls = item.prUrls.filterNot { it in taskPrUrls }.distinct()
             DoneUiState.Content(
                 DoneContent(
                     item, tasks, reposTouched, completedAt,
                     review = reviewRecord?.summary,
                     criteria = reviewRecord?.acceptanceCriteria ?: emptyList(),
                     prUrls = prUrls,
+                    summaryPrUrls = summaryPrUrls,
                 )
             )
         }

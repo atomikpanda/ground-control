@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItem
@@ -29,6 +28,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.atomikpanda.groundcontrol.data.WorkspaceAvailabilityTone
+import com.atomikpanda.groundcontrol.data.legacyRequestLabel
+import com.atomikpanda.groundcontrol.data.legacyRequestTone
 import com.atomikpanda.groundcontrol.data.dto.InboxAction
 import com.atomikpanda.groundcontrol.data.dto.SpecSummary
 import com.atomikpanda.groundcontrol.ui.inbox.InboxTab
@@ -117,11 +119,16 @@ fun SpecInboxScreen(vm: SpecInboxViewModel, onSpecClick: (connectionId: String, 
                                     }
                                 }
                             },
-                            onFailure = {
+                            onFailure = { failure ->
                                 item {
-                                    AssistChip(
-                                        onClick = {},
-                                        label = { Text("unreachable") },
+                                    Text(
+                                        legacyRequestLabel(failure),
+                                        color = if (legacyRequestTone(failure) == WorkspaceAvailabilityTone.ACTIONABLE) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
                                         modifier = Modifier.padding(16.dp, 4.dp),
                                     )
                                 }

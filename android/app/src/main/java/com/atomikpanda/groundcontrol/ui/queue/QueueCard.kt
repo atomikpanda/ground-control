@@ -92,7 +92,31 @@ data class QuestionItem(
     val answer: String? = null,
 )
 
-/** The still-unanswered open questions of a spec under review, as one multi-item card. */
+/** The identity/version of one unanswered prompt. Resolution is tracked at this boundary rather
+ * than for an entire card, so a stale response that also contains a different prompt cannot
+ * resurrect an acknowledged one. If both the accepted response and a later payload lack a usable
+ * revision, an otherwise identical reopened payload is indistinguishable from stale data. */
+data class QuestionPromptSnapshot(
+    val connectionId: String,
+    val specId: String,
+    val revision: String,
+    val questionId: String,
+    val text: String,
+)
+
+/** The version of a server response that populated a [QuestionsCard]. This is deliberately
+ * separate from the card's semantic identity: a completed response must not return from an
+ * in-flight poll, but an edited or reopened prompt for the same spec must remain actionable. */
+data class QuestionsCardSnapshot(
+    val connectionId: String,
+    val specId: String,
+    val revision: String,
+    val items: List<QuestionItem>,
+)
+
+/** The still-unanswered open questions of a spec under review, as one multi-item card. [key]
+ * identifies that card's stable `(connectionId, specId)` slot in the queue. [snapshot] identifies
+ * the specific server response so stale-answer suppression does not hide newer prompt content. */
 data class QuestionsCard(
     override val connectionId: String,
     override val workspaceName: String,
@@ -103,20 +127,26 @@ data class QuestionsCard(
 ) : QueueV2Card {
     override val tier: QueueTier get() = QueueTier.APPROVAL
     override val key: String get() = "questions:$connectionId:$specId"
+    val snapshot = QuestionsCardSnapshot(connectionId, specId, waitingSince, items)
+
+    fun promptSnapshot(item: QuestionItem): QuestionPromptSnapshot =
+        QuestionPromptSnapshot(connectionId, specId, waitingSince, item.id, item.text)
 }
 
 /** An open decision on a thread — the prompt [text] plus its [decision] options,
- *  rendered inline (reuses the `Decision` shape from the messages surface). */
+ *  rendered inline (reuses the `Decision` shape from the messages surface). A decision message,
+ *  rather than its thread, identifies the card: a later decision on the same thread is new work. */
 data class DecisionCard(
     override val connectionId: String,
     override val workspaceName: String,
     val threadId: String,
+    val decisionMessageId: String,
     val text: String,
     val decision: Decision,
     override val waitingSince: String = "",
 ) : QueueV2Card {
     override val tier: QueueTier get() = QueueTier.URGENT
-    override val key: String get() = "decision:$connectionId:$threadId"
+    override val key: String get() = "decision:$connectionId:$threadId:$decisionMessageId"
 }
 
 /** A fleet-wide plan-assumption flag summary for [task] with [pending] unresolved flags — sourced
@@ -210,16 +240,22 @@ fun cardsFromSpec(conn: WorkspaceConnection, spec: SpecRecord): List<QueueV2Card
     }
 }
 
-/** A [DecisionCard] for a thread whose latest decision message is still open, or null
- *  when the thread carries no pending decision (mirrors the MOS-225 `pendingDecision`:
- *  the last message with a structured `decision` is the current prompt). */
+/** A [DecisionCard] for a thread whose latest unanswered structured decision is still open, or null.
+ *  A human reply answers every earlier decision; only a later agent decision becomes a new prompt.
+ *  This mirrors the server's `needs_decision` semantics and deliberately does not treat read state
+ *  as an answer. */
 fun decisionCardFrom(conn: WorkspaceConnection, thread: Thread): DecisionCard? {
-    val msg = thread.messages.lastOrNull { it.decision != null } ?: return null
+    val lastHuman = thread.messages.indexOfLast { it.role == "human" }
+    val msg = thread.messages
+        .subList(lastHuman + 1, thread.messages.size)
+        .lastOrNull { it.kind == "decision" && it.decision != null }
+        ?: return null
     val decision = msg.decision ?: return null
     return DecisionCard(
         connectionId = conn.id,
         workspaceName = conn.displayName(),
         threadId = thread.id,
+        decisionMessageId = msg.id,
         text = msg.text,
         decision = decision,
         waitingSince = thread.updatedAt ?: thread.createdAt ?: "",

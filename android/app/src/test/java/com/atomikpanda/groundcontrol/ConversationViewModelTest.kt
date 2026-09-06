@@ -282,15 +282,17 @@ class ConversationViewModelTest {
         val old = conn.copy(baseUrl = "http://old:47100", token = "old-token")
         val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
         val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
-        var replacementPolls = 0
+        val liveReplyAvailable = CompletableDeferred<Unit>()
         val v = ConversationViewModel(
             ThreadsRepository(SpecApi(HttpClient(MockEngine { request ->
                 when {
                     request.url.parameters["wait"] == "1" && request.url.host == "new" -> {
-                        replacementPolls += 1
-                        respond(waitMissJson, HttpStatusCode.OK, jsonHdr)
+                        liveReplyAvailable.complete(Unit)
+                        respond(waitHitJson, HttpStatusCode.OK, jsonHdr)
                     }
                     request.url.parameters["wait"] == "1" -> respond(waitMissJson, HttpStatusCode.OK, jsonHdr)
+                    request.url.host == "new" && liveReplyAvailable.isCompleted ->
+                        respond(refreshedThreadJson, HttpStatusCode.OK, jsonHdr)
                     else -> respond(threadJson, HttpStatusCode.OK, jsonHdr)
                 }
             }) { mshipDefaults() })),
@@ -303,9 +305,10 @@ class ConversationViewModelTest {
         v.startPolling()
 
         connections.value = ConnectionState.Ready(listOf(replacement))
-        runCurrent()
-
-        assertTrue(replacementPolls > 0)
+        val content = v.state.first { state ->
+            state is ConversationUiState.Content && state.thread.messages.lastOrNull()?.id == "m3"
+        } as ConversationUiState.Content
+        assertEquals("LIVE REPLY", content.thread.messages.last().text)
     }
 
     @Test fun load_without_poll_request_does_not_start_polling() = runTest {

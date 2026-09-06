@@ -1,13 +1,17 @@
 package com.atomikpanda.groundcontrol
 
+import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.HostConnection
 import com.atomikpanda.groundcontrol.data.HostLadderState
+import com.atomikpanda.groundcontrol.data.RePairNeededException
+import com.atomikpanda.groundcontrol.data.WorkspaceAvailabilityTone
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.WorkspaceError
 import com.atomikpanda.groundcontrol.data.WorkspaceErrorAction
 import com.atomikpanda.groundcontrol.data.applyHostLadder
 import com.atomikpanda.groundcontrol.data.dedupeHostErrors
-import com.atomikpanda.groundcontrol.data.workspaceErrorLabel
+import com.atomikpanda.groundcontrol.data.legacyRequestTone
+import com.atomikpanda.groundcontrol.data.workspaceErrorTone
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -24,7 +28,6 @@ class HomeFeedHostErrorTest {
         assertEquals(1, out.size)
         assertEquals("h-1", out[0].hostId)
         assertEquals(3, out[0].workspaceCount)
-        assertEquals("Host offline — 3 workspaces", workspaceErrorLabel(out[0]))
     }
 
     @Test fun two_dead_hosts_stay_two_rows() {
@@ -39,13 +42,13 @@ class HomeFeedHostErrorTest {
         // invent a shared cause that isn't there.
         val out = dedupeHostErrors(listOf(err("a", null), err("b", null)))
         assertEquals(2, out.size)
-        assertEquals("ws-a unreachable", workspaceErrorLabel(out[0]))
+        assertEquals(listOf("a", "b"), out.map { it.connectionId })
     }
 
-    @Test fun a_single_failure_on_a_known_host_keeps_the_workspace_wording() {
+    @Test fun a_known_host_failure_stays_independent_from_manual_connections() {
         val out = dedupeHostErrors(listOf(err("a", "h-1"), err("b", null)))
-        assertEquals(2, out.size)
-        assertEquals("ws-a unreachable", workspaceErrorLabel(out.first { it.hostId == "h-1" }))
+        assertEquals(listOf("h-1", null), out.map { it.hostId })
+        assertEquals(listOf(1, 1), out.map { it.workspaceCount })
     }
 
     @Test fun home_and_queue_errors_use_the_shared_host_ladder() {
@@ -70,7 +73,6 @@ class HomeFeedHostErrorTest {
             nowMillis = 2_000,
         ).single()
         assertEquals(HostLadderState.HOST_OFFLINE, error.ladderState)
-        assertEquals("Host offline", workspaceErrorLabel(error))
     }
 
     @Test fun a_directly_reached_host_projects_phone_contact_when_the_directory_is_down() {
@@ -97,7 +99,6 @@ class HomeFeedHostErrorTest {
             nowMillis = 2_000,
         ).single()
         assertEquals(HostLadderState.WORKSPACE_DEGRADED, error.ladderState)
-        assertEquals("Workspace degraded", workspaceErrorLabel(error))
     }
 
     @Test fun re_pair_errors_are_an_explicit_settings_action() {
@@ -107,9 +108,56 @@ class HomeFeedHostErrorTest {
             hostId = "h-1",
             action = WorkspaceErrorAction.RE_PAIR,
         )
-        assertEquals("Re-pair needed — open Settings", workspaceErrorLabel(error))
         val deduped = dedupeHostErrors(listOf(err("a", "h-1"), error))
         assertEquals(WorkspaceErrorAction.RE_PAIR, deduped.single().action)
+    }
+
+    @Test fun availability_tone_keeps_unknown_contact_neutral_and_recovery_states_actionable() {
+        val error = err("a", "h-1")
+        assertEquals(
+            WorkspaceAvailabilityTone.NEUTRAL,
+            workspaceErrorTone(error.copy(ladderState = HostLadderState.HOST_OFFLINE)),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.NEUTRAL,
+            workspaceErrorTone(error.copy(ladderState = HostLadderState.STALE)),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.NEUTRAL,
+            workspaceErrorTone(error.copy(ladderState = HostLadderState.DIRECTORY_UNREACHABLE)),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            workspaceErrorTone(error.copy(ladderState = HostLadderState.PENDING_APPROVAL)),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            workspaceErrorTone(error.copy(ladderState = HostLadderState.CONTENDED)),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            workspaceErrorTone(error.copy(ladderState = HostLadderState.WORKSPACE_DEGRADED)),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            workspaceErrorTone(error.copy(ladderState = HostLadderState.RUNNER_DEGRADED)),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            workspaceErrorTone(error.copy(action = WorkspaceErrorAction.RE_PAIR)),
+        )
+    }
+
+    @Test fun legacy_auth_failures_remain_actionable() {
+        assertEquals(WorkspaceAvailabilityTone.NEUTRAL, legacyRequestTone(IllegalStateException()))
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            legacyRequestTone(AuthException("unauthorized")),
+        )
+        assertEquals(
+            WorkspaceAvailabilityTone.ACTIONABLE,
+            legacyRequestTone(RePairNeededException("https://host")),
+        )
     }
 
     @Test fun dedupe_is_stable_and_empty_safe() {

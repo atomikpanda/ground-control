@@ -37,4 +37,11 @@ class ThemeContrastTest {
         val ratio = contrast(Palette.darkMuted, Palette.darkElevated)
         assertTrue("darkMuted on darkElevated is $ratio, below WCAG AA 4.5:1", ratio >= 4.5)
     }
+
+    @Test fun actionable_controls_meet_wcag_aa_on_elevated_surfaces() {
+        val darkRatio = contrast(Palette.darkText, Palette.darkElevated)
+        val lightRatio = contrast(Palette.lightText, Palette.lightElevated)
+        assertTrue("dark onSurface on elevated surface is $darkRatio, below WCAG AA 4.5:1", darkRatio >= 4.5)
+        assertTrue("light onSurface on elevated surface is $lightRatio, below WCAG AA 4.5:1", lightRatio >= 4.5)
+    }
 }

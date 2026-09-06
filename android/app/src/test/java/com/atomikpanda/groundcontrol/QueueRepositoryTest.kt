@@ -97,6 +97,28 @@ class QueueRepositoryTest {
         assertEquals(setOf("a", "b"), feed.cards.map { it.connectionId }.toSet())
     }
 
+    @Test fun answered_thread_detail_overrides_a_stale_needs_decision_summary() = runTest {
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            val body = when {
+                request.url.encodedPath.endsWith("/specs") ||
+                    request.url.encodedPath.endsWith("/plan-assumptions") -> "[]"
+                request.url.encodedPath.endsWith("/threads") ->
+                    """[{"id":"t1","needs_decision":true}]"""
+                request.url.encodedPath.endsWith("/threads/t1") ->
+                    """{"id":"t1","messages":[
+                        {"id":"m1","role":"agent","kind":"decision","text":"Pick one","decision":{"options":["X","Y"]}},
+                        {"id":"m2","role":"human","text":"X"}]}"""
+                else -> "{}"
+            }
+            respond(body, HttpStatusCode.OK, jsonHdr)
+        }) { mshipDefaults() })
+
+        val feed = QueueRepository(api).load(listOf(WorkspaceConnection("a", "http://a:47100", null, "ws-a")))
+
+        assertTrue(feed.errors.isEmpty())
+        assertTrue(feed.cards.none { it is DecisionCard })
+    }
+
     @Test fun plan_assumptions_404_degrades_to_no_card_not_empty_queue() = runTest {
         val api = SpecApi(HttpClient(MockEngine { req ->
             val path = req.url.encodedPath
@@ -154,6 +176,18 @@ class QueueRepositoryTest {
         )
 
         val feed = QueueRepository(SpecApi(client.client)).load(listOf(connection))
+
+        assertEquals(WorkspaceErrorAction.RE_PAIR, feed.errors.single().action)
+    }
+
+    @Test fun direct_401_is_surfaced_as_a_re_pair_action() = runTest {
+        val unauthorizedApi = SpecApi(HttpClient(MockEngine {
+            respond("""{"detail":"unauthorized"}""", HttpStatusCode.Unauthorized, jsonHdr)
+        }) { mshipDefaults() })
+
+        val feed = QueueRepository(unauthorizedApi).load(
+            listOf(WorkspaceConnection("c1", "http://host:47100", null, "ws")),
+        )
 
         assertEquals(WorkspaceErrorAction.RE_PAIR, feed.errors.single().action)
     }

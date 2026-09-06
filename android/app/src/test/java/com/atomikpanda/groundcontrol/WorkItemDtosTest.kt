@@ -40,6 +40,7 @@ class WorkItemDtosTest {
         assertEquals(0, w.attention.totalTasks)
         assertTrue(w.externalLinks.isEmpty())
         assertEquals(false, w.unattended)
+        assertTrue(w.affectedRepos.isEmpty() && w.prUrls.isEmpty())
     }
 
     @Test
@@ -95,4 +96,23 @@ class WorkItemDtosTest {
         assertNull(w.activePhase)
         assertNull(w.activeLastActivityAt)
     }
+    @Test fun parses_done_metadata_from_work_item_summary() {
+        val raw = """
+            {"id":"wi-done","kind":"feature","title":"Done","phase":"done",
+             "affected_repos":["mothership","ground-control"],
+             "pr_urls":["https://github.example/mship/pull/1","https://github.example/mship/pull/2"]}
+        """.trimIndent()
+
+        val w = json.decodeFromString(WorkItemSummary.serializer(), raw)
+
+        assertEquals(listOf("mothership", "ground-control"), w.affectedRepos)
+        assertEquals(
+            listOf(
+                "https://github.example/mship/pull/1",
+                "https://github.example/mship/pull/2",
+            ),
+            w.prUrls,
+        )
+    }
 }
+

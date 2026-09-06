@@ -20,6 +20,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -32,6 +33,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -123,6 +125,7 @@ private fun FarmCard(
     // legally have no spec/task/thread yet; making such a card non-clickable avoids a silent
     // dead-tap (until the per-phase cockpits give every item its own destination).
     val routable = item.specId != null || item.taskSlugs.isNotEmpty() || item.threadIds.isNotEmpty()
+    val uriHandler = LocalUriHandler.current
     ListItem(
         leadingContent = { Icon(kindIcon(item.kind), contentDescription = item.kind) },
         headlineContent = { Text(item.title) },
@@ -134,6 +137,23 @@ private fun FarmCard(
             // (Compose gives the inner Switch's own gesture detector priority for taps on it).
             Column {
                 Text(subLine(item), style = MonoStyle)
+                if (item.effectivePhase() == "done") {
+                    if (item.affectedRepos.isNotEmpty()) {
+                        Text(
+                            "repos: ${item.affectedRepos.joinToString(", ")}",
+                            style = MonoStyle,
+                            color = LocalSemanticColors.current.muted,
+                        )
+                    }
+                    item.prUrls.forEachIndexed { index, url ->
+                        Text(
+                            "PR ${index + 1} ↗",
+                            modifier = Modifier.clickable { uriHandler.openUri(url) },
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MonoStyle,
+                        )
+                    }
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(top = 4.dp),

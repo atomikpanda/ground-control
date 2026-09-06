@@ -77,6 +77,7 @@ data class SpecReview(
     @SerialName("open_questions") val openQuestions: List<ReviewQuestion> = emptyList(),
     @SerialName("prose_verdicts") val proseVerdicts: Map<String, ProseVerdictDto> = emptyMap(),
     val summary: ReviewSummary = ReviewSummary(),
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 @Serializable

@@ -45,8 +45,11 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
-import com.atomikpanda.groundcontrol.data.workspaceErrorLabel
+import com.atomikpanda.groundcontrol.data.WorkspaceAvailabilityTone
+import com.atomikpanda.groundcontrol.data.WorkspaceError
 import com.atomikpanda.groundcontrol.data.WorkspaceErrorAction
+import com.atomikpanda.groundcontrol.data.workspaceErrorLabel
+import com.atomikpanda.groundcontrol.data.workspaceErrorTone
 import com.atomikpanda.groundcontrol.ui.messages.MessagesUiState
 import com.atomikpanda.groundcontrol.ui.messages.MessagesViewModel
 import com.atomikpanda.groundcontrol.ui.messages.ThreadStateChipRow
@@ -137,14 +140,10 @@ fun HomeScreen(
                         }
                     }
                 }
-                // Per-connection error indicators
-                items(s.errors, key = { "err:${it.connectionId}" }) { err ->
-                    val colors = LocalSemanticColors.current
-                    AssistChip(
-                        onClick = if (err.action == WorkspaceErrorAction.RE_PAIR) onRePair else ({}),
-                        label = { Text(workspaceErrorLabel(err), color = colors.error) },
-                        modifier = Modifier.padding(12.dp, 4.dp),
-                    )
+                // Offline and stale host state is availability context, not an alarm
+                // per workspace. Genuine recovery work stays individually actionable.
+                if (s.errors.isNotEmpty()) {
+                    item { WorkspaceAvailabilitySummary(s.errors, onRePair) }
                 }
                 // "Browse this workspace" when scoped to one
                 val sel = s.selectedConnectionId
@@ -202,6 +201,38 @@ fun HomeScreen(
                         NewMessageRow(note, onQuestion)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceAvailabilitySummary(errors: List<WorkspaceError>, onRePair: () -> Unit) {
+    val (neutral, actionable) = errors.partition {
+        workspaceErrorTone(it) == WorkspaceAvailabilityTone.NEUTRAL
+    }
+    Column(Modifier.padding(12.dp, 4.dp)) {
+        if (neutral.isNotEmpty()) {
+            Text(
+                "Availability: ${neutral.joinToString(" · ", transform = ::workspaceErrorLabel)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        actionable.forEach { error ->
+            if (error.action == WorkspaceErrorAction.RE_PAIR) {
+                AssistChip(
+                    onClick = onRePair,
+                    label = { Text(workspaceErrorLabel(error), color = MaterialTheme.colorScheme.error) },
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            } else {
+                Text(
+                    workspaceErrorLabel(error),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
         }
     }

@@ -15,8 +15,42 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
+/**
+ * Whether an availability problem requires operator attention rather than a
+ * quiet "we do not know" presentation. The source data remains [WorkspaceError];
+ * this only prevents each surface inventing its own urgency rules.
+ */
+enum class WorkspaceAvailabilityTone { NEUTRAL, ACTIONABLE }
+
+private val ACTIONABLE_LADDER_STATES = setOf(
+    HostLadderState.PENDING_APPROVAL,
+    HostLadderState.CONTENDED,
+    HostLadderState.WORKSPACE_DEGRADED,
+    HostLadderState.RUNNER_DEGRADED,
+)
+
+fun workspaceErrorTone(error: WorkspaceError): WorkspaceAvailabilityTone = when {
+    error.action != null -> WorkspaceAvailabilityTone.ACTIONABLE
+    error.ladderState in ACTIONABLE_LADDER_STATES -> WorkspaceAvailabilityTone.ACTIONABLE
+    else -> WorkspaceAvailabilityTone.NEUTRAL
+}
+
 /** Operator recovery offered for a non-retryable workspace failure. */
 enum class WorkspaceErrorAction { RE_PAIR }
+
+/** Maps every authentication rejection to the one operator recovery action. */
+fun rePairActionFor(error: Throwable): WorkspaceErrorAction? =
+    WorkspaceErrorAction.RE_PAIR.takeIf { error is AuthException }
+
+/** Legacy list endpoints do not carry host ladder context, but must not hide a
+ * recoverable credential failure behind a generic availability message. */
+fun legacyRequestTone(error: Throwable): WorkspaceAvailabilityTone =
+    if (rePairActionFor(error) != null) WorkspaceAvailabilityTone.ACTIONABLE
+    else WorkspaceAvailabilityTone.NEUTRAL
+
+fun legacyRequestLabel(error: Throwable): String =
+    if (rePairActionFor(error) != null) "Re-pair needed — open Settings"
+    else "Unavailable"
 
 /** A workspace whose fetch failed (one or more sources errored). [hostId] is the
  * host it lives on (#471) — null for a manually paired connection. */
@@ -76,15 +110,15 @@ fun applyHostLadder(
     }
 }
 
-/** The one wording for an error row, wherever it renders. */
+/** The one concise availability label for Home and Queue. */
 fun workspaceErrorLabel(error: WorkspaceError): String {
     val cause = error.ladderState?.let(::ladderLabel)
     return when {
         error.action == WorkspaceErrorAction.RE_PAIR -> "Re-pair needed — open Settings"
         error.workspaceCount > 1 && cause != null -> "$cause — ${error.workspaceCount} workspaces"
-        error.workspaceCount > 1 -> "Host offline — ${error.workspaceCount} workspaces"
+        error.workspaceCount > 1 -> "Availability unavailable — ${error.workspaceCount} workspaces"
         cause != null -> cause
-        else -> "${error.workspaceName} unreachable"
+        else -> "${error.workspaceName} unavailable"
     }
 }
 
@@ -122,8 +156,8 @@ class HomeFeedRepository(private val api: SpecApi) {
         runCatching(block).onFailure { if (it is CancellationException) throw it }
 
     private fun actionFor(results: List<Result<*>>): WorkspaceErrorAction? =
-        WorkspaceErrorAction.RE_PAIR.takeIf {
-            results.any { it.exceptionOrNull() is RePairNeededException }
+        results.firstNotNullOfOrNull { result ->
+            result.exceptionOrNull()?.let(::rePairActionFor)
         }
 
     private suspend fun loadOne(conn: WorkspaceConnection): ConnResult = coroutineScope {
