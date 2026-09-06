@@ -2,6 +2,7 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.EvidenceLockedException
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.done.DoneUiState
@@ -67,6 +68,14 @@ class DoneViewModelTest {
                 respond(taskJson, HttpStatusCode.OK, jsonHdr)
             else -> respondError(HttpStatusCode.NotFound)
         }
+    }
+
+    @Test fun locked_evidence_remains_a_distinct_failure_state() = runTest {
+        val vm = vm(backgroundScope) {
+            respond("""{"detail":"artifact locked"}""", HttpStatusCode.Conflict, jsonHdr)
+        }
+        val failure = runCatching { vm.loadEvidence("spec-1", "image.png") }.exceptionOrNull()
+        assertTrue(failure is EvidenceLockedException)
     }
 
     @Test fun evidence_from_a_replaced_connection_is_not_published() = runTest {

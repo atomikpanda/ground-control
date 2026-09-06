@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
@@ -95,6 +96,8 @@ fun evidenceOpenUrl(kind: String, ref: String, prUrls: List<String>): String? = 
 fun LazyListScope.acceptanceCriteriaSection(
     criteria: List<ReviewCriterion>,
     prUrls: List<String>,
+    specId: String?,
+    connectionGeneration: Long,
     loadEvidence: suspend (String) -> ByteArray,
 ) {
     if (criteria.isEmpty()) return
@@ -105,7 +108,11 @@ fun LazyListScope.acceptanceCriteriaSection(
             modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
         )
     }
-    items(criteria, key = { it.id }) { crit -> CriterionEvidenceRow(crit, prUrls, loadEvidence) }
+    items(criteria, key = { it.id }) { crit ->
+        key(specId, connectionGeneration) {
+            CriterionEvidenceRow(crit, prUrls, loadEvidence)
+        }
+    }
 }
 
 @Composable

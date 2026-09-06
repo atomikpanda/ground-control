@@ -99,7 +99,7 @@ private fun DoneContentView(c: DoneContent, vm: DoneViewModel) {
             item { SummaryPrLinksRow(c.summaryPrUrls) }
         }
         c.review?.let { review -> item { SpecLine(review) } }
-        acceptanceCriteriaSection(c.criteria, c.prUrls) { ref ->
+        acceptanceCriteriaSection(c.criteria, c.prUrls, c.item.specId, c.connectionGeneration) { ref ->
             vm.loadEvidence(requireNotNull(c.item.specId), ref)
         }
     }

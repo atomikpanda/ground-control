@@ -109,7 +109,7 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
                 items(c.prs, key = { "${it.taskSlug}:${it.repo}" }) { pr -> PrRowView(pr, colors) }
             }
 
-            acceptanceCriteriaSection(c.criteria, c.prUrls) { ref ->
+            acceptanceCriteriaSection(c.criteria, c.prUrls, c.item.specId, c.connectionGeneration) { ref ->
                 vm.loadEvidence(requireNotNull(c.item.specId), ref)
             }
         }

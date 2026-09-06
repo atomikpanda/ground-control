@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
 import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
@@ -30,6 +31,7 @@ data class DoneContent(
     val criteria: List<ReviewCriterion> = emptyList(),
     val prUrls: List<String> = emptyList(),
     val summaryPrUrls: List<String> = emptyList(),
+    val connectionGeneration: Long,
 )
 
 sealed interface DoneUiState {
@@ -51,6 +53,7 @@ class DoneViewModel(
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
+    private val evidenceRepository = SpecDetailRepository(api)
     private val _state = MutableStateFlow<DoneUiState>(DoneUiState.Loading)
     val state: StateFlow<DoneUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
@@ -68,7 +71,7 @@ class DoneViewModel(
 
     suspend fun loadEvidence(specId: String, ref: String): ByteArray {
         val snapshot = routeConnection.current() ?: error("Connection unavailable")
-        val bytes = api.getEvidenceBlob(snapshot.connection, specId, ref)
+        val bytes = evidenceRepository.loadEvidence(snapshot.connection, specId, ref)
         if (!routeConnection.isCurrent(snapshot)) throw CancellationException("Connection changed")
         return bytes
     }
@@ -106,6 +109,7 @@ class DoneViewModel(
                     criteria = reviewRecord?.acceptanceCriteria ?: emptyList(),
                     prUrls = prUrls,
                     summaryPrUrls = summaryPrUrls,
+                    connectionGeneration = snapshot.generation,
                 )
             )
         }

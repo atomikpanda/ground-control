@@ -2,10 +2,12 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.EvidenceLockedException
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.review.ReviewUiState
 import com.atomikpanda.groundcontrol.ui.review.ReviewViewModel
+import com.atomikpanda.groundcontrol.ui.review.evidenceOpenUrl
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -93,6 +95,41 @@ class ReviewViewModelTest {
             }
             else -> respondError(HttpStatusCode.NotFound)
         }
+    }
+
+    @Test fun locked_evidence_remains_a_distinct_failure_state() = runTest {
+        val vm = vm(backgroundScope) {
+            respond("""{"detail":"artifact locked"}""", HttpStatusCode.Conflict, jsonHdr)
+        }
+        val failure = runCatching { vm.loadEvidence("spec-1", "image.png") }.exceptionOrNull()
+        assertTrue(failure is EvidenceLockedException)
+    }
+
+    @Test fun item_level_pr_resolves_commit_evidence_when_task_is_unavailable() = runTest {
+        val vm = vm(backgroundScope) { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1") -> respond(
+                    """{"id":"wi-1","title":"T","kind":"chore","phase":"review",
+                       "task_slugs":["missing"],"spec_id":"spec-1",
+                       "pr_urls":["https://github.com/owner/repo/pull/7"]}""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+                request.url.encodedPath.endsWith("/specs/spec-1") -> respond(
+                    """{"id":"spec-1","title":"T","status":"dispatched",
+                       "acceptance_criteria":[{"id":"ac1","text":"Implemented","verdict":"approved",
+                       "evidence":[{"kind":"commit","ref":"abcdef1"}]}]}""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        val evidence = content.criteria.single().evidence.single()
+        assertEquals(
+            "https://github.com/owner/repo/commit/abcdef1",
+            evidenceOpenUrl(evidence.kind, evidence.ref, content.prUrls),
+        )
     }
 
     @Test fun evidence_from_a_replaced_connection_is_not_published() = runTest {
