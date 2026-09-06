@@ -56,6 +56,10 @@ model exposed over `mship serve`.
   The work console puts blockers and pending input before tasks, journal, and chat.
   Latest activity considers every linked task; tasks with unknown timestamps remain
   explicit, and pending decisions link to the available response controls.
+- Task and Console journals use colored event markers and labeled metadata badges:
+  green for passing tests, red for failures, amber for mixed results or warnings,
+  and cyan for open questions. Question blocks stay distinct, and badges wrap with
+  larger text. Journal prose is never interpreted as a status.
 - Spec readiness chips and review actions wrap on narrow screens and at larger
   text sizes instead of squeezing labels or hiding the spec content.
 

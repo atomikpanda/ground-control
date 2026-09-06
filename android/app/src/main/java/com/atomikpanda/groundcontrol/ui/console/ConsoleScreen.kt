@@ -42,13 +42,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.ReviewSummary
 import com.atomikpanda.groundcontrol.data.dto.TaskSummary
 import com.atomikpanda.groundcontrol.data.dto.WorkItemSummary
 import com.atomikpanda.groundcontrol.ui.activity.PhaseStepper
 import com.atomikpanda.groundcontrol.ui.activity.phaseStepFor
 import com.atomikpanda.groundcontrol.ui.components.ExternalLinksRow
+import com.atomikpanda.groundcontrol.ui.components.JournalEntryRow
 import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
 import com.atomikpanda.groundcontrol.ui.components.WorkspaceBadge
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard
@@ -177,7 +177,7 @@ private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
             }
             if (c.journal.isNotEmpty()) {
                 item { SectionLabel("JOURNAL · TASK ${c.item.taskSlugs.firstOrNull() ?: "UNKNOWN"}") }
-                items(c.journal.takeLast(5)) { entry -> JournalRow(entry) }
+                items(c.journal.takeLast(5)) { entry -> JournalEntryRow(entry) }
             }
             focusedTask?.testResults?.entries?.toList()?.takeIf { it.isNotEmpty() }?.let { results ->
                 item { SectionLabel("TESTS · TASK ${focusedTask.slug}") }
@@ -333,13 +333,6 @@ private fun AcProgress(review: ReviewSummary, colors: SemanticColors) {
     }
 }
 
-@Composable
-private fun JournalRow(entry: JournalEntry) {
-    Column(Modifier.fillMaxWidth().padding(16.dp, 2.dp)) {
-        Text(entry.timestamp, style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(entry.message, style = MonoStyle)
-    }
-}
 
 @Composable
 private fun TestResultRow(repo: String, status: String, colors: SemanticColors) {
