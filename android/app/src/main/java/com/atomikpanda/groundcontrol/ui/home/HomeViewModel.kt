@@ -110,7 +110,9 @@ class HomeViewModel(
             _state.value = HomeUiState.EmptyConfig
             return null
         }
-        _state.value = HomeUiState.Loading
+        if (_state.value !is HomeUiState.Content || lastConnections != connections) {
+            _state.value = HomeUiState.Loading
+        }
         return scope().launch {
             val loaded = repo.load(connections)
             val currentHosts = hosts?.first() ?: emptyList()
@@ -159,6 +161,12 @@ class HomeViewModel(
             lastHosts,
             nowMillis(),
         )
-        _state.value = HomeUiState.Content(chips, selected, visible, visibleNotes, dedupeHostErrors(errors))
+        _state.value = HomeUiState.Content(
+            rail = chips,
+            selectedConnectionId = selected,
+            items = visible,
+            notes = visibleNotes,
+            errors = dedupeHostErrors(errors),
+        )
     }
 }

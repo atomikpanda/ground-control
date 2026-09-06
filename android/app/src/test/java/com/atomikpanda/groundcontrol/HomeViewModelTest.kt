@@ -221,17 +221,21 @@ class HomeViewModelTest {
         )
     }
 
-    @Test fun same_id_route_and_token_replacement_starts_one_new_authoritative_home_load() = runTest {
+    @Test fun same_id_route_and_token_replacement_hides_old_content_until_authoritative_home_load() = runTest {
         val old = WorkspaceConnection("workspace", "http://old:47100", "old-token", "Old")
         val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token", workspaceName = "New")
         val newRequestStarted = CompletableDeferred<Unit>()
+        val allowNewResponse = CompletableDeferred<Unit>()
         val requests = mutableListOf<Pair<String, String?>>()
         val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
         val vm = HomeViewModel(
             HomeFeedRepository(SpecApi(HttpClient(MockEngine { request ->
                 if (request.url.encodedPath.endsWith("/specs")) {
                     requests += request.url.host to request.headers[HttpHeaders.Authorization]
-                    if (request.url.host == "new") newRequestStarted.complete(Unit)
+                    if (request.url.host == "new") {
+                        newRequestStarted.complete(Unit)
+                        allowNewResponse.await()
+                    }
                 }
                 respond("[]", HttpStatusCode.OK, jsonHdr)
             }) { mshipDefaults() })),
@@ -242,6 +246,8 @@ class HomeViewModelTest {
         vm.state.first { it is HomeUiState.Content }
         source.value = ConnectionState.Ready(listOf(replacement))
         newRequestStarted.await()
+        assertTrue(vm.state.value is HomeUiState.Loading)
+        allowNewResponse.complete(Unit)
 
         val content = vm.state.first {
             (it as? HomeUiState.Content)
@@ -256,32 +262,66 @@ class HomeViewModelTest {
         assertEquals(listOf(null, replacement.id), content.rail.map { it.connectionId })
     }
 
-    @Test fun two_repeated_manual_home_refreshes_publish_only_newest_after_delayed_old_completion() = runTest {
-        val firstManualStarted = CompletableDeferred<Unit>()
-        val firstManualCancelled = CompletableDeferred<Unit>()
+    @Test fun same_snapshot_refresh_keeps_content_visible_until_an_error_loads() = runTest {
+        val refreshStarted = CompletableDeferred<Unit>()
+        val allowRefreshFailure = CompletableDeferred<Unit>()
+        var specLoads = 0
+        val vm = HomeViewModel(
+            HomeFeedRepository(SpecApi(HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("/specs")) {
+                    specLoads += 1
+                    if (specLoads == 2) {
+                        refreshStarted.complete(Unit)
+                        allowRefreshFailure.await()
+                        return@MockEngine respond("boom", HttpStatusCode.InternalServerError, jsonHdr)
+                    }
+                    return@MockEngine respond(
+                        """[{"id":"visible","title":"Visible","status":"needs_review"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
+                }
+                respond("[]", HttpStatusCode.OK, jsonHdr)
+            }) { mshipDefaults() })),
+            connectionState(listOf(conns[0])),
+            backgroundScope,
+        )
+
+        vm.state.first { it is HomeUiState.Content }
+        val firstRefresh = vm.refresh()!!
+        refreshStarted.await()
+        val refreshing = vm.state.value as HomeUiState.Content
+        assertEquals(listOf("approval:a:visible"), refreshing.items.map { it.key })
+        vm.select(conns[0].id)
+        assertEquals(conns[0].id, (vm.state.value as HomeUiState.Content).selectedConnectionId)
+
+
+        allowRefreshFailure.complete(Unit)
+        firstRefresh.join()
+        val finished = vm.state.value as HomeUiState.Content
+        assertEquals(listOf("a"), finished.errors.map { it.connectionId })
+    }
+
+    @Test fun removing_connections_while_a_refresh_is_pending_cannot_restore_old_content() = runTest {
+        val refreshStarted = CompletableDeferred<Unit>()
+        val allowRefresh = CompletableDeferred<Unit>()
         var specLoads = 0
         val source = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conns[0])))
         val vm = HomeViewModel(
             HomeFeedRepository(SpecApi(HttpClient(MockEngine { request ->
-                when {
-                    request.url.encodedPath.endsWith("/specs") -> {
-                        specLoads += 1
-                        when (specLoads) {
-                            2 -> {
-                                firstManualStarted.complete(Unit)
-                                try {
-                                    CompletableDeferred<Unit>().await()
-                                    respond("""[{"id":"old","title":"Old","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
-                                } finally {
-                                    firstManualCancelled.complete(Unit)
-                                }
-                            }
-                            3 -> respond("""[{"id":"new","title":"New","status":"needs_review"}]""", HttpStatusCode.OK, jsonHdr)
-                            else -> respond("[]", HttpStatusCode.OK, jsonHdr)
-                        }
+                if (request.url.encodedPath.endsWith("/specs")) {
+                    specLoads += 1
+                    if (specLoads == 2) {
+                        refreshStarted.complete(Unit)
+                        allowRefresh.await()
                     }
-                    else -> respond("[]", HttpStatusCode.OK, jsonHdr)
+                    return@MockEngine respond(
+                        """[{"id":"old","title":"Old","status":"needs_review"}]""",
+                        HttpStatusCode.OK,
+                        jsonHdr,
+                    )
                 }
+                respond("[]", HttpStatusCode.OK, jsonHdr)
             }) { mshipDefaults() })),
             source,
             backgroundScope,
@@ -289,11 +329,12 @@ class HomeViewModelTest {
 
         vm.state.first { it is HomeUiState.Content }
         vm.refresh()
-        firstManualStarted.await()
-        val secondManual = vm.refresh()
-        firstManualCancelled.await()
-        secondManual?.join()
-        assertEquals(listOf("approval:a:new"), (vm.state.value as HomeUiState.Content).items.map { it.key })
+        refreshStarted.await()
+        source.value = ConnectionState.Ready(emptyList())
+        assertEquals(HomeUiState.EmptyConfig, vm.state.first { it is HomeUiState.EmptyConfig })
+        allowRefresh.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(HomeUiState.EmptyConfig, vm.state.value)
     }
     @Test fun selected_legacy_workspace_adopts_to_canonical_or_clears_when_ambiguous() = runTest {
         val legacy = WorkspaceConnection("legacy", "http://legacy:47100", null, "Legacy")
