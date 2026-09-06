@@ -33,10 +33,16 @@ sealed interface ConversationUiState {
     data class Error(val kind: ErrorKind, val message: String) : ConversationUiState
     data class Content(
         val thread: Thread,
+        /** True while a human reply is being posted. */
         val inFlight: Boolean = false,
+        /** True while an explicit acknowledgement is being persisted. */
+        val doneInFlight: Boolean = false,
         /** Non-null when the last send failed; the compose bar surfaces it and
          *  restores the user's typed text so it isn't silently lost. */
         val sendError: String? = null,
+        /** Non-null when an explicit acknowledgement failed. Kept separate from a reply
+         *  failure so retrying Done cannot imply that a draft was sent. */
+        val resolveError: String? = null,
         /** Last [ACTIVITY_STRIP_ENTRY_COUNT] task-journal entries (oldest-first) for the
          *  in-thread activity strip -- empty when the thread has no `task_slug` or the
          *  journal fetch failed. Never surfaced as an [Error]: a missing/unavailable
@@ -68,6 +74,8 @@ class ConversationViewModel(
     private var pollJob: Job? = null
     private var pollingRequested = false
     private var loadJob: Job? = null
+    /** Invalidates a poll response that began before an acknowledgement or send. */
+    private var mutationGeneration = 0L
     private val routeConnection = ReactiveRouteConnection(routeConnectionId, connectionState, viewModelScope) { source, snapshot ->
         pollJob?.cancel()
         loadJob?.cancel()
@@ -126,7 +134,7 @@ class ConversationViewModel(
     }
 
     /** One long-poll iteration: wait for a change since `cursor`; if THIS thread
-     *  changed (and no send is in flight), re-fetch it. Returns the next cursor
+     *  changed and no reply or explicit acknowledgement is in flight, re-fetch it. Returns the next cursor
      *  (unchanged on a network error so the caller can back off). Terminating —
      *  unit-tested directly; the loop below is a thin wrapper.
      *
@@ -147,17 +155,23 @@ class ConversationViewModel(
         val snapshot = routeConnection.current() ?: return cursor
         val resp = runCatching { repo.waitForChange(snapshot.connection, cursor, 25) }.getOrNull() ?: return cursor
         val cur = _state.value
-        if (cur is ConversationUiState.Content && !cur.inFlight) {
+        if (cur is ConversationUiState.Content && !cur.inFlight && !cur.doneInFlight) {
             if (resp.threads.any { it.id == threadId }) {
+                val pollGeneration = mutationGeneration
+                var applied = false
                 runCatching { repo.getThread(snapshot.connection, threadId) }
                     .onSuccess { thread ->
                         routeConnection.publishIfCurrent(snapshot) {
                             val latest = _state.value as? ConversationUiState.Content
                                 ?: return@publishIfCurrent
-                            _state.value = latest.copy(thread = thread)
-                            refreshJournalAsync(thread.taskSlug)
+                            if (!latest.inFlight && !latest.doneInFlight && mutationGeneration == pollGeneration) {
+                                _state.value = latest.copy(thread = thread)
+                                refreshJournalAsync(thread.taskSlug)
+                                applied = true
+                            }
                         }
                     }
+                if (!applied) return cursor
             } else {
                 val journal = fetchJournal(cur.thread.taskSlug, snapshot.connection)
                 routeConnection.publishIfCurrent(snapshot) {
@@ -165,6 +179,10 @@ class ConversationViewModel(
                     if (journal != latest.journal) _state.value = latest.copy(journal = journal)
                 }
             }
+        } else {
+            // A mutation may return an older snapshot than this poll. Retry the delta
+            // rather than acknowledging messages that were never applied to the UI.
+            return cursor
         }
         return resp.cursor
     }
@@ -207,13 +225,15 @@ class ConversationViewModel(
         }
     }
 
-    /** Post a message; no-op if blank or a send is already in flight. Returns null if skipped. */
+    /** Post a message; no-op if blank or another reply/acknowledgement is in flight. Returns null if skipped. */
     fun send(text: String): Job? {
         val snapshot = routeConnection.current() ?: return null
         if (text.isBlank()) return null
         val current = _state.value as? ConversationUiState.Content ?: return null
-        if (current.inFlight) return null
+        if (current.inFlight || current.doneInFlight) return null
+        val operationGeneration = mutationGeneration + 1
         if (!routeConnection.publishIfCurrent(snapshot) {
+            mutationGeneration = operationGeneration
             _state.value = current.copy(inFlight = true, sendError = null)
         }) return null
         return scope().launch {
@@ -232,6 +252,46 @@ class ConversationViewModel(
         }
     }
 
+    /** Explicitly acknowledge all messages loaded through the current high-water message.
+     *  This deliberately does not post a human message or alter the draft. */
+    fun resolve(): Job? {
+        val snapshot = routeConnection.current() ?: return null
+        val current = _state.value as? ConversationUiState.Content ?: return null
+        val throughMessageId = current.thread.messages.lastOrNull()?.id ?: return null
+        if ((!current.thread.needsYou && !current.thread.needsDecision) ||
+            current.inFlight || current.doneInFlight
+        ) return null
+        val operationGeneration = mutationGeneration + 1
+        if (!routeConnection.publishIfCurrent(snapshot) {
+            mutationGeneration = operationGeneration
+            _state.value = current.copy(doneInFlight = true, resolveError = null)
+        }) return null
+        return scope().launch {
+            runCatching { repo.resolveThread(snapshot.connection, threadId, throughMessageId) }
+                .onSuccess { updatedThread ->
+                    routeConnection.publishIfCurrent(snapshot) {
+                        if (operationGeneration != mutationGeneration) return@publishIfCurrent
+                        val latest = _state.value as? ConversationUiState.Content ?: return@publishIfCurrent
+                        _state.value = latest.copy(
+                            thread = updatedThread,
+                            doneInFlight = false,
+                            resolveError = null,
+                        )
+                        if (!updatedThread.needsYou && !updatedThread.needsDecision) {
+                            canceller.cancel(snapshot.connection.id, threadId)
+                        }
+                    }
+                }
+                .onFailure { t ->
+                    routeConnection.publishIfCurrent(snapshot) {
+                        if (operationGeneration != mutationGeneration) return@publishIfCurrent
+                        val latest = _state.value as? ConversationUiState.Content ?: return@publishIfCurrent
+                        _state.value = latest.copy(doneInFlight = false, resolveError = t.toResolveError())
+                    }
+                }
+        }
+    }
+
     private fun Throwable.toKind(): ErrorKind = when (this) {
         is AuthException -> ErrorKind.AUTH
         is NotFoundException -> ErrorKind.NOT_FOUND
@@ -242,5 +302,11 @@ class ConversationViewModel(
         is AuthException -> "Token rejected — fix this connection in Settings."
         is NotFoundException -> "This conversation is no longer available."
         else -> "Couldn't send. Check your connection and try again."
+    }
+
+    private fun Throwable.toResolveError(): String = when (this) {
+        is AuthException -> "Couldn't mark done — fix this connection in Settings."
+        is NotFoundException -> "This conversation is no longer available."
+        else -> "Couldn't mark done. Check your connection and try again."
     }
 }

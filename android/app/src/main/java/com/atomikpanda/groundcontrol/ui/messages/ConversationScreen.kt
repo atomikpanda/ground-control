@@ -38,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
@@ -64,6 +65,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.data.dto.Message
 import com.atomikpanda.groundcontrol.data.dto.Thread
+import com.atomikpanda.groundcontrol.data.dto.lastResolvedMessageIndex
 import com.atomikpanda.groundcontrol.notify.OpenThreadRegistry
 import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
 import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
@@ -111,6 +113,17 @@ fun ConversationScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                },
+                actions = {
+                    val content = state as? ConversationUiState.Content
+                    if (content != null && (content.thread.needsYou || content.thread.needsDecision)) {
+                        TextButton(
+                            onClick = vm::resolve,
+                            enabled = !content.inFlight && !content.doneInFlight,
+                        ) {
+                            Text(if (content.doneInFlight) "Done…" else "Done")
+                        }
+                    }
                 },
             )
         },
@@ -221,14 +234,13 @@ private fun ConversationContentView(
         }
     }
 
-    // The "active" decision is the most recent decision message that has no
-    // human reply after it — i.e. it's still awaiting an answer. Scanning
-    // back to the last human message and checking the tail after it (rather
-    // than just `lastOrNull()`) means a trailing agent note posted after an
-    // unanswered decision doesn't accidentally clear the free-text gate.
+    // The active decision is the most recent decision message after the human-reply or explicit
+    // acknowledgement cursor. A trailing agent note does not clear a decision; only a reply or
+    // an explicit Done action does.
     val lastHumanIndex = thread.messages.indexOfLast { it.role == "human" }
+    val lastResolvedIndex = thread.lastResolvedMessageIndex()
     val activeDecisionIndex = thread.messages.indices
-        .drop(lastHumanIndex + 1)
+        .drop(lastResolvedIndex + 1)
         .lastOrNull { thread.messages[it].kind == "decision" }
     val activeDecision = if (activeDecisionIndex == null) null else thread.messages[activeDecisionIndex].decision
     val allowFreeText = activeDecision?.allowFreeText ?: true
@@ -280,16 +292,13 @@ private fun ConversationContentView(
         Box(Modifier.weight(1f).nestedScroll(pull.nestedScrollConnection)) {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
                 itemsIndexed(thread.messages, key = { _, message -> message.id }) { index, message ->
-                    // A decision is "answered" once a human message exists after it —
-                    // resolved decisions must not offer live buttons (prevents silent
-                    // double-answering when scrolling back through history). A human
-                    // message exists after `index` iff `lastHumanIndex` (the last human
-                    // message in the whole thread) is past it — avoids allocating a
-                    // fresh sublist per item per recompose.
-                    val answered = index < lastHumanIndex
+                    // A decision is historical once a human reply or the explicit resolution
+                    // cursor reaches it. This prevents dismissed choices from remaining live when
+                    // the operator scrolls back through the conversation.
+                    val answered = index <= lastResolvedIndex
                     MessageRow(
                         message,
-                        inFlight = s.inFlight,
+                        inFlight = s.inFlight || s.doneInFlight,
                         answered = answered,
                         // Only the operator's LATEST outbound message carries the Sent/Read/Replied
                         // indicator (standard messaging convention — avoids a label on every bubble).
@@ -560,6 +569,14 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                 )
             }
+            state.resolveError?.let { err ->
+                Text(
+                    err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
             if (!allowFreeText) {
                 // The pending decision opted out of free text — the compose bar's
                 // job here is just to point back at the decision card's options.
@@ -577,8 +594,8 @@ private fun ComposeBar(state: ConversationUiState.Content, vm: ConversationViewM
                 value = draft,
                 onValueChange = vm::onDraftChange,
                 onSend = { if (draft.isNotBlank()) vm.send(draft) },
-                enabled = !state.inFlight,
-                inFlight = state.inFlight,
+                enabled = !state.inFlight && !state.doneInFlight,
+                inFlight = state.inFlight || state.doneInFlight,
             )
         }
     }

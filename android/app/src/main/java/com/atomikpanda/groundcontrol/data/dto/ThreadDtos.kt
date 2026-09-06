@@ -56,6 +56,9 @@ data class Thread(
     @SerialName("spec_id") val specId: String? = null,
     val messages: List<Message> = emptyList(),
     @SerialName("awaiting_reply") val awaitingReply: Boolean = false,
+    @SerialName("needs_you") val needsYou: Boolean = false,
+    @SerialName("needs_decision") val needsDecision: Boolean = false,
+    @SerialName("resolved_through_message_id") val resolvedThroughMessageId: String? = null,
     // Agent read cursor (#345): drives the per-message "Read" indicator — a human message reads
     // as Read once this is at/after its created_at. Null when the agent hasn't consumed anything.
     @SerialName("agent_seen_at") val agentSeenAt: String? = null,
@@ -65,6 +68,16 @@ data class Thread(
     @SerialName("archive_reason") val archiveReason: String? = null,
     val pinned: Boolean = false,
 )
+
+/** The last message whose decision is no longer actionable: either answered by a human reply
+ * or explicitly acknowledged through [Thread.resolvedThroughMessageId]. */
+fun Thread.lastResolvedMessageIndex(): Int {
+    val lastHuman = messages.indexOfLast { it.role == "human" }
+    val explicitlyResolved = resolvedThroughMessageId
+        ?.let { id -> messages.indexOfLast { it.id == id } }
+        ?: -1
+    return maxOf(lastHuman, explicitlyResolved)
+}
 
 /** Compact work-item reference embedded on a Thread, so a thread that belongs to a
  *  WorkItem can show/link its cockpit context without a second round trip. */
@@ -88,3 +101,4 @@ data class ThreadsWaitResponse(
 @Serializable data class CaptureBody(val idea: String, val title: String? = null, @SerialName("idempotency_key") val idempotencyKey: String? = null)
 @Serializable data class NewMessageBody(val text: String)
 @Serializable data class SeenBody(@SerialName("seen_at") val seenAt: String? = null)
+@Serializable data class ResolveThreadBody(@SerialName("through_message_id") val throughMessageId: String)

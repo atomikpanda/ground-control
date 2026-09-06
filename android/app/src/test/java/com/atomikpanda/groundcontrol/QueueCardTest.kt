@@ -223,10 +223,15 @@ class QueueCardTest {
         assertEquals(QueueTier.URGENT, card.tier)
     }
 
-    @Test fun marking_a_thread_seen_does_not_answer_its_decision() {
-        val seen = threadWithDecision().copy(agentSeenAt = "2026-06-02T00:05:00Z")
+    @Test fun resolved_thread_detail_cannot_recreate_a_stale_queue_decision() {
+        val resolved = threadWithDecision().copy(resolvedThroughMessageId = "m2")
+        assertNull(decisionCardFrom(conn, resolved))
 
-        assertTrue(decisionCardFrom(conn, seen) != null)
+        val reopened = resolved.copy(messages = resolved.messages + Message(
+            id = "new", role = "agent", text = "New question", kind = "decision",
+            decision = Decision(options = listOf("Deploy", "Wait")),
+        ))
+        assertEquals("new", decisionCardFrom(conn, reopened)?.decisionMessageId)
     }
 
     @Test fun human_reply_resolves_an_earlier_decision() {

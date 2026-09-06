@@ -89,6 +89,48 @@ class ConversationViewModelTest {
         }
     """.trimIndent()
 
+    private val attentionThreadJson = """
+        {
+          "id": "t1",
+          "subject": "Close this out",
+          "needs_you": true,
+          "needs_decision": true,
+          "messages": [
+            {"id":"m1","thread_id":"t1","role":"agent","text":"Status update"},
+            {"id":"m2","thread_id":"t1","role":"agent","text":"Anything else?"}
+          ]
+        }
+    """.trimIndent()
+
+    private val resolvedThreadJson = """
+        {
+          "id": "t1",
+          "subject": "Close this out",
+          "needs_you": false,
+          "needs_decision": false,
+          "resolved_through_message_id": "m2",
+          "messages": [
+            {"id":"m1","thread_id":"t1","role":"agent","text":"Status update"},
+            {"id":"m2","thread_id":"t1","role":"agent","text":"Anything else?"}
+          ]
+        }
+    """.trimIndent()
+
+    private val promptAfterResolveJson = """
+        {
+          "id": "t1",
+          "subject": "Close this out",
+          "needs_you": true,
+          "needs_decision": false,
+          "resolved_through_message_id": "m2",
+          "messages": [
+            {"id":"m1","thread_id":"t1","role":"agent","text":"Status update"},
+            {"id":"m2","thread_id":"t1","role":"agent","text":"Anything else?"},
+            {"id":"m3","thread_id":"t1","role":"agent","text":"One new question"}
+          ]
+        }
+    """.trimIndent()
+
     @Test fun load_success_yields_content_with_messages() = runTest {
         val vm = vm(this) { req ->
             if (req.url.encodedPath.endsWith("/threads/t1") && req.method == HttpMethod.Get)
@@ -252,6 +294,179 @@ class ConversationViewModelTest {
         v.onDraftChange("don't lose me")
         v.send("don't lose me")?.join()
         assertEquals("don't lose me", v.draft.value)     // kept on failure
+    }
+
+    @Test fun resolve_posts_loaded_cursor_and_applies_authoritative_thread_without_sending_draft() = runTest {
+        val resolveBodies = mutableListOf<String>()
+        val v = vm(this) { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads/t1/resolve") -> {
+                    resolveBodies += (request.body as io.ktor.http.content.TextContent).text
+                    respond(resolvedThreadJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/threads/t1") -> respond(attentionThreadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        v.load()?.join()
+        v.onDraftChange("Keep this draft")
+        v.resolve()?.join()
+
+        val content = v.state.value as ConversationUiState.Content
+        assertEquals("""{"through_message_id":"m2"}""", resolveBodies.single())
+        assertEquals(listOf("m1", "m2"), content.thread.messages.map { it.id })
+        assertFalse(content.thread.needsYou)
+        assertFalse(content.thread.needsDecision)
+        assertEquals("m2", content.thread.resolvedThroughMessageId)
+        assertEquals("Keep this draft", v.draft.value)
+    }
+
+    @Test fun resolve_failure_keeps_attention_and_draft_for_a_retry() = runTest {
+        var attempts = 0
+        val v = vm(this) { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads/t1/resolve") -> {
+                    attempts++
+                    respondError(HttpStatusCode.InternalServerError)
+                }
+                request.url.encodedPath.endsWith("/threads/t1") -> respond(attentionThreadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        v.load()?.join()
+        v.onDraftChange("Do not lose this")
+        v.resolve()?.join()
+
+        val afterFailure = v.state.value as ConversationUiState.Content
+        assertTrue(afterFailure.thread.needsYou)
+        assertNotNull(afterFailure.resolveError)
+        assertFalse(afterFailure.doneInFlight)
+        assertEquals("Do not lose this", v.draft.value)
+        v.resolve()?.join()
+        assertEquals(2, attempts)
+    }
+
+    @Test fun resolve_is_noop_while_an_acknowledgement_is_in_flight() = runTest {
+        var calls = 0
+        val v = vm(this) { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads/t1/resolve") -> {
+                    calls++
+                    respond(resolvedThreadJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/threads/t1") -> respond(attentionThreadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        v.load()?.join()
+        val first = v.resolve()
+        assertNotNull(first)
+        assertNull(v.resolve())
+        first?.join()
+        assertEquals(1, calls)
+    }
+
+    @Test fun resolve_keeps_a_newer_prompt_actionable() = runTest {
+        val v = vm(this) { request ->
+            when {
+                request.url.encodedPath.endsWith("/threads/t1/resolve") ->
+                    respond(promptAfterResolveJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/threads/t1") -> respond(attentionThreadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        v.load()?.join()
+        v.resolve()?.join()
+
+        val content = v.state.value as ConversationUiState.Content
+        assertEquals("m2", content.thread.resolvedThroughMessageId)
+        assertEquals("m3", content.thread.messages.last().id)
+        assertTrue(content.thread.needsYou)
+    }
+
+    @Test fun poll_keeps_new_requests_arriving_while_done_is_in_flight() = runTest {
+        val resolveStarted = CompletableDeferred<Unit>()
+        val releaseResolve = CompletableDeferred<Unit>()
+        val before = "2026-06-22T10:00:00Z"
+        val after = "2026-06-22T10:01:00Z"
+        var newerPrompt = false
+        val v = vm(this) { request ->
+            when {
+                request.url.encodedPath.endsWith("/resolve") -> {
+                    resolveStarted.complete(Unit)
+                    releaseResolve.await()
+                    respond(resolvedThreadJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.parameters["wait"] == "1" -> {
+                    val changed = request.url.parameters["since"] == before
+                    respond(
+                        """{"threads":${if (changed) """[{"id":"t1","needs_you":true}]""" else "[]"},"cursor":"$after","timed_out":${!changed}}""",
+                        HttpStatusCode.OK, jsonHdr,
+                    )
+                }
+                request.url.encodedPath.endsWith("/threads/t1") ->
+                    respond(if (newerPrompt) promptAfterResolveJson else attentionThreadJson, HttpStatusCode.OK, jsonHdr)
+                else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+            }
+        }
+        v.load().join()
+        val pending = v.resolve()
+        resolveStarted.await()
+        newerPrompt = true
+        val cursorWhilePending = try {
+            v.pollOnce(before)
+        } finally {
+            releaseResolve.complete(Unit)
+        }
+        pending?.join()
+        v.pollOnce(cursorWhilePending)
+
+        val content = v.state.value as ConversationUiState.Content
+        assertEquals("m3", content.thread.messages.last().id)
+        assertTrue(content.thread.needsYou)
+    }
+
+    @Test fun resolve_response_from_a_replaced_connection_is_ignored() = runTest {
+        val old = conn.copy(baseUrl = "http://old:47100", token = "old-token")
+        val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val resolveStarted = CompletableDeferred<Unit>()
+        val releaseResolve = CompletableDeferred<Unit>()
+        val replacementThread = promptAfterResolveJson.replace("Close this out", "Replacement prompt")
+        val vm = ConversationViewModel(
+            ThreadsRepository(SpecApi(HttpClient(MockEngine { request ->
+                when {
+                    request.url.host == "old" && request.url.encodedPath.endsWith("/threads/t1/resolve") -> {
+                        resolveStarted.complete(Unit)
+                        releaseResolve.await()
+                        respond(resolvedThreadJson, HttpStatusCode.OK, jsonHdr)
+                    }
+                    request.url.host == "new" && request.url.encodedPath.endsWith("/threads/t1") ->
+                        respond(replacementThread, HttpStatusCode.OK, jsonHdr)
+                    request.url.encodedPath.endsWith("/threads/t1") ->
+                        respond(attentionThreadJson, HttpStatusCode.OK, jsonHdr)
+                    else -> respond("{}", HttpStatusCode.OK, jsonHdr)
+                }
+            }) { mshipDefaults() })),
+            old.id,
+            "t1",
+            connections,
+            testScope = backgroundScope,
+        )
+        vm.load().join()
+        val pending = vm.resolve()
+        assertNotNull(pending)
+        resolveStarted.await()
+
+        connections.value = ConnectionState.Ready(listOf(replacement))
+        val replacementContent = vm.state.first {
+            it is ConversationUiState.Content && it.thread.subject == "Replacement prompt"
+        } as ConversationUiState.Content
+        releaseResolve.complete(Unit)
+        pending?.join()
+
+        assertEquals("Replacement prompt", (vm.state.value as ConversationUiState.Content).thread.subject)
+        assertTrue(replacementContent.thread.needsYou)
     }
 
     private val waitHitJson = """{"threads":[{"id":"t1","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}"""

@@ -43,6 +43,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.atomikpanda.groundcontrol.data.dto.ThreadSummary
 import com.atomikpanda.groundcontrol.data.WorkspaceAvailabilityTone
@@ -80,6 +81,11 @@ fun HomeScreen(
         // even if the user never opens the Threads drill-in list (startLivePolling is idempotent
         // per connection, so MessagesScreen calling it again later is safe).
         messagesVm.startLivePolling()
+    }
+    LifecycleResumeEffect(vm) {
+        // Returning from a conversation must reflect read and Done acknowledgements.
+        vm.refresh()
+        onPauseOrDispose { }
     }
 
     Scaffold(

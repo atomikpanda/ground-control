@@ -96,6 +96,28 @@ class ConsoleViewModelTest {
         assertNull(c.c.activeDecision)
     }
 
+    @Test fun explicit_done_removes_the_decision_from_the_work_item_console() = runTest {
+        val fallback = defaultHandler()
+        val vm = vm(this) { request ->
+            if (request.url.encodedPath.endsWith("/threads/t1")) {
+                respond(
+                    """{"id":"t1","resolved_through_message_id":"choice","messages":[
+                      {"id":"choice","role":"agent","text":"Deploy now?","kind":"decision",
+                       "decision":{"options":["Deploy","Wait"]}}
+                    ]}""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+            } else {
+                fallback.invoke(this, request)
+            }
+        }
+        vm.load().join()
+
+        val content = (vm.state.value as ConsoleUiState.Content).c
+        assertNull(content.activeDecision)
+        assertNull(content.activeDecisionText)
+    }
+
     @Test fun sendDraft_posts_message_to_work_item_thread() = runTest {
         val postedTexts = mutableListOf<String>()
         val vm = vm(this, defaultHandler(postedTexts))
