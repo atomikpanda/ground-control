@@ -85,9 +85,10 @@ class NewThreadViewModelTest {
         assertFalse(canCreate(s.copy(text = "hello")))
     }
 
-    @Test fun single_connection_auto_selected() = runTest {
+    @Test fun ordinary_new_thread_single_connection_auto_selected() = runTest {
         val vm = vm(backgroundScope, listOf(conn("1"))); runCurrent(); vm.load()
         assertEquals("1", vm.state.value.selectedConnectionId)
+        assertTrue(canCreate(vm.state.value.copy(text = "hello")))
     }
 
     @Test fun multi_connection_requires_explicit_pick() = runTest {
@@ -427,6 +428,38 @@ class NewThreadViewModelTest {
         vm.create()?.join()
         assertTrue(path!!.endsWith("/capture"))
     }
+    @Test fun fresh_all_context_capture_requires_an_explicit_workspace_before_create() = runTest {
+        var requests = 0
+        val vm = NewThreadViewModel(
+            repo = ThreadsRepository(SpecApi(HttpClient(MockEngine {
+                requests += 1
+                respond(
+                    """{"id":"thread-1","subject":"Subject","awaiting_reply":false,"messages":[]}""",
+                    HttpStatusCode.OK,
+                    jsonHdr,
+                )
+            }) { mshipDefaults() })),
+            connectionState = connectionState(listOf(conn("workspace"))),
+            testScope = backgroundScope,
+            captureDraftStore = InMemoryCaptureDraftStore(),
+        )
+
+        runCurrent()
+        vm.onTextChange("Capture this idea")
+
+        assertNull(vm.state.value.selectedConnectionId)
+        assertFalse(canCreate(vm.state.value))
+        assertNull(vm.create())
+        assertEquals(0, requests)
+
+        vm.onSelectConnection("workspace")
+
+        assertTrue(canCreate(vm.state.value))
+        vm.create()?.join()
+        assertEquals(1, requests)
+        assertTrue(vm.state.value.message is NewThreadMessage.Created)
+    }
+
     @Test fun fresh_scoped_capture_initializes_its_route_workspace() = runTest {
         val vm = NewThreadViewModel(
             repo = ThreadsRepository(SpecApi(HttpClient(MockEngine {

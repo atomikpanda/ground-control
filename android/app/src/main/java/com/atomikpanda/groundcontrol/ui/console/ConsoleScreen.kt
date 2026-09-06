@@ -125,6 +125,7 @@ private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
     val activeDecision = c.activeDecision
     val activeDecisionText = c.activeDecisionText
     val hasAnswerableDecision = activeDecision != null && activeDecisionText != null
+    val sending by vm.sending.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val decisionFocusRequester = remember { FocusRequester() }
@@ -163,7 +164,7 @@ private fun ConsoleContentView(c: ConsoleContent, vm: ConsoleViewModel) {
                         DecisionCard(
                             text = activeDecisionText.orEmpty(),
                             decision = activeDecision!!,
-                            enabled = true,
+                            enabled = !sending,
                             onOption = { vm.answerOption(it) },
                         )
                     }
@@ -211,7 +212,10 @@ private fun StatusSummary(
             )
             PhaseStepper(
                 current = phaseStepFor(
-                    taskPhase = normalizedPhase.takeUnless { it == "unknown" },
+                    taskPhase = when (normalizedPhase) {
+                        "unknown", "in_flight", "dispatched" -> null
+                        else -> normalizedPhase
+                    },
                     done = normalizedPhase in setOf("done", "completed", "merged"),
                     dispatched = normalizedPhase in setOf("in_flight", "dispatched"),
                 ),

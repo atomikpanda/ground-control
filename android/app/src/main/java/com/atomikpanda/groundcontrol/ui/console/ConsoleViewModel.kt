@@ -81,6 +81,7 @@ class ConsoleViewModel(
     private var loadJob: Job? = null
     private val routeConnection = ReactiveRouteConnection(connectionId, connectionState, viewModelScope) { source, snapshot ->
         loadJob?.cancel()
+        releaseSending()
         _sending.value = false
         if (snapshot == null) {
             _state.value = ConsoleUiState.Unavailable(if (source is ConnectionState.Error) "Connections unavailable." else "Connection removed.")
@@ -93,6 +94,30 @@ class ConsoleViewModel(
      *  control on this to prevent a double-submit. */
     private val _sending = MutableStateFlow(false)
     val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
+    /**
+     * Claims the single item-message POST before it is launched. The StateFlow drives the
+     * UI, while ownership makes two taps in the same main-loop turn mutually exclusive.
+     * A replacement connection clears ownership; an old request then cannot release a
+     * newer connection's claim.
+     */
+    private val sendOwnershipLock = Any()
+    private var sendingSnapshot: RouteConnectionSnapshot? = null
+
+    private fun claimSending(snapshot: RouteConnectionSnapshot): Boolean = synchronized(sendOwnershipLock) {
+        if (sendingSnapshot != null) {
+            false
+        } else {
+            sendingSnapshot = snapshot
+            true
+        }
+    }
+
+    private fun releaseSending(snapshot: RouteConnectionSnapshot? = null) {
+        synchronized(sendOwnershipLock) {
+            if (snapshot == null || sendingSnapshot == snapshot) sendingSnapshot = null
+        }
+    }
 
     /** Non-null when the last `sendDraft`/`answerOption` send failed; the UI surfaces it and the
      *  user (or the next attempt) clears it via [clearSendError]. */
@@ -166,6 +191,9 @@ class ConsoleViewModel(
                 parseActivityTimestamp(rawTimestamp)?.let { it to rawTimestamp }
             }
         }
+        val itemActivity = item.activeLastActivityAt?.let { rawTimestamp ->
+            parseActivityTimestamp(rawTimestamp)?.let { it to rawTimestamp }
+        }
         val blockers = tasks.mapNotNull { task ->
             task.blockedReason?.trim()?.takeIf(String::isNotEmpty)?.let { reason ->
                 ConsoleTaskBlocker(task.slug, reason)
@@ -181,7 +209,9 @@ class ConsoleViewModel(
                 ?: "Unknown",
             latestActivityAt = activityByTask.values
                 .filterNotNull()
-                .maxByOrNull { it.first }
+                .fold(itemActivity) { latest, candidate ->
+                    if (latest == null || candidate.first > latest.first) candidate else latest
+                }
                 ?.second,
             activityUnknownTaskSlugs = activityByTask
                 .filterValues { it == null }
@@ -217,12 +247,17 @@ class ConsoleViewModel(
 
     private fun postAndRefresh(text: String, onSuccess: () -> Unit = {}): Job {
         val snapshot = routeConnection.current() ?: return scope.launch { }
-        return scope.launch {
-            if (!routeConnection.publishIfCurrent(snapshot) {
+        if (!claimSending(snapshot)) return scope.launch { }
+        if (!routeConnection.publishIfCurrent(snapshot) {
                 _sending.value = true
                 _sendError.value = null
-            }) return@launch
+            }) {
+            releaseSending(snapshot)
+            return scope.launch { }
+        }
+        return scope.launch {
             try {
+                if (!routeConnection.isCurrent(snapshot)) return@launch
                 val ok = runCatching { api.postItemMessage(snapshot.connection, itemId, text) }.isSuccess
                 if (!routeConnection.publishIfCurrent(snapshot) {
                     if (ok) onSuccess() else _sendError.value = "Couldn't send — check your connection and try again."
@@ -230,6 +265,7 @@ class ConsoleViewModel(
                 val next = runCatching { fetch(snapshot) }.getOrNull()
                 if (next is ConsoleUiState.Content) routeConnection.publishIfCurrent(snapshot) { _state.value = next }
             } finally {
+                releaseSending(snapshot)
                 routeConnection.publishIfCurrent(snapshot) { _sending.value = false }
             }
         }

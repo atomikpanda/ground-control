@@ -143,7 +143,9 @@ class NewThreadViewModel(
                 ?: if (!hasAppliedReadyConnections) {
                     initialSelectionId
                         ?.let { conns.findByConnectionId(it)?.id }
-                        ?: if (initialSelectionId == null) defaultSelection(conns) else null
+                        // Ordinary new threads may use a sole workspace. Persistent capture
+                        // without a route scope must wait for the user to choose a destination.
+                        ?: if (initialSelectionId == null && captureDraftStore == null) defaultSelection(conns) else null
                 } else {
                     // A removed selection must be chosen again, even when only one connection remains.
                     null
