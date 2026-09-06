@@ -83,7 +83,7 @@ fun LiveChip(
         is LiveStatus.Idle -> "idle" to colors.muted
         is LiveStatus.Quiet -> "quiet ${status.minutes}m" to colors.muted
         is LiveStatus.Done -> "done" to MaterialTheme.colorScheme.primary
-        is LiveStatus.Unknown -> "—" to colors.muted
+        is LiveStatus.Unknown -> "No activity reported" to colors.muted
     }
     Row(
         modifier

@@ -1,32 +1,24 @@
 package com.atomikpanda.groundcontrol.ui.activity
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
-import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
-import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
 
 /** The five shared progress stages an operator sees after dispatch. */
 enum class PhaseStep(val label: String) {
@@ -38,78 +30,70 @@ enum class PhaseStep(val label: String) {
 }
 
 /**
- * Map a mothership task phase (`plan`/`dev`/`review`/`run`) plus a `done` flag (task
- * finished/merged) onto the shared stepper. `done` wins. An unknown/absent phase degrades to
- * [PhaseStep.DISPATCHED] so a freshly dispatched task with no phase yet still renders sensibly.
+ * Map reported task progress without treating missing data as evidence of dispatch.
+ * Completion wins; a spec's explicit dispatched status can identify a task whose
+ * first phase has not arrived yet.
  */
-fun phaseStepFor(taskPhase: String?, done: Boolean): PhaseStep = when {
+fun phaseStepFor(taskPhase: String?, done: Boolean, dispatched: Boolean = false): PhaseStep? = when {
     done -> PhaseStep.DONE
     taskPhase == "plan" -> PhaseStep.PLANNING
     taskPhase == "dev" -> PhaseStep.BUILDING
     taskPhase == "review" -> PhaseStep.REVIEW
     taskPhase == "run" -> PhaseStep.DONE
-    else -> PhaseStep.DISPATCHED
+    taskPhase == null && dispatched -> PhaseStep.DISPATCHED
+    else -> null
 }
 
 /**
- * Horizontal 5-dot stepper. Completed stages read in the approval hue, the current stage pulses in
- * the primary color, future stages are muted. Compact steppers retain the current phase label so
- * activity is communicated without relying on dot color alone.
+ * One readable phase summary at every width. The stage count provides a non-color
+ * progress cue; the decorative segments never pulse or imply live agent activity.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun PhaseStepper(current: PhaseStep, modifier: Modifier = Modifier, compact: Boolean = false) {
-    val colors = LocalSemanticColors.current
-    val pulse by rememberInfiniteTransition(label = "phasePulse").animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "phaseAlpha",
-    )
-    val dot = if (compact) 8.dp else 12.dp
+fun PhaseStepper(current: PhaseStep?, modifier: Modifier = Modifier) {
+    val phaseLabel = current?.label ?: "Unavailable"
+    val position = current?.let { "Step ${it.ordinal + 1} of ${PhaseStep.entries.size}" }
     Column(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp)
-            .semantics { contentDescription = "Current phase: ${current.label}" },
-        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier.fillMaxWidth().clearAndSetSemantics {
+            contentDescription = "Task phase"
+            stateDescription = if (position == null) phaseLabel else "$phaseLabel, $position"
+        },
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
+        FlowRow(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            PhaseStep.entries.forEachIndexed { i, step ->
-                val isDone = i < current.ordinal
-                val isCurrent = i == current.ordinal
-                val tint = when {
-                    isDone -> colors.approval
-                    isCurrent -> MaterialTheme.colorScheme.primary
-                    else -> colors.muted
-                }
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Box(
-                        Modifier
-                            .size(dot)
-                            .clip(CircleShape)
-                            .alpha(if (isCurrent) pulse else 1f)
-                            .background(tint),
-                    )
-                    if (!compact) {
-                        Text(step.label, style = MonoStyle, color = tint)
-                    }
-                }
+            Text(
+                "Task phase: $phaseLabel",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (position != null) {
+                Text(
+                    position,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
-        if (compact) {
-            Text(
-                current.label,
-                style = MonoStyle,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+        if (current != null) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                PhaseStep.entries.forEach { step ->
+                    Box(
+                        Modifier.weight(1f).height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(
+                                if (step.ordinal <= current.ordinal) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                    )
+                }
+            }
         }
     }
 }

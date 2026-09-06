@@ -162,7 +162,7 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
                     ReadinessChipsRow(sum, Modifier.padding(top = 6.dp))
                     if (d.taskSlug != null) {
                         Spacer(Modifier.height(8.dp))
-                        PhaseStepper(phaseStepFor(d.taskPhase, d.taskFinished), compact = true)
+                        PhaseStepper(phaseStepFor(d.taskPhase, d.taskFinished, dispatched = d.status == "dispatched"))
                         LiveChip(
                             lastActivityIso = d.taskLastActivityAt,
                             merged = d.taskFinished,
