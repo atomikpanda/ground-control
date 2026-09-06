@@ -2,10 +2,12 @@ package com.atomikpanda.groundcontrol
 
 import com.atomikpanda.groundcontrol.data.SpecApi
 import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.EvidenceLockedException
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.review.ReviewUiState
 import com.atomikpanda.groundcontrol.ui.review.ReviewViewModel
+import com.atomikpanda.groundcontrol.ui.review.evidenceOpenUrl
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -20,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -92,6 +95,126 @@ class ReviewViewModelTest {
             }
             else -> respondError(HttpStatusCode.NotFound)
         }
+    }
+
+    @Test fun stale_evidence_failures_are_not_published() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conn)))
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1") -> respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/evidence/image.png/blob") -> {
+                    entered.complete(Unit)
+                    release.await()
+                    respond("""{"detail":"artifact locked"}""", HttpStatusCode.Conflict, jsonHdr)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }) { mshipDefaults() })
+        val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        val result = async { runCatching { vm.loadEvidence(content, "image.png") { error("Stale failure published") } } }
+        entered.await()
+        connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
+        runCurrent()
+        release.complete(Unit)
+        assertTrue(result.await().exceptionOrNull() is kotlinx.coroutines.CancellationException)
+    }
+
+    @Test fun locked_evidence_remains_a_distinct_failure_state() = runTest {
+        val vm = vm(backgroundScope) { request ->
+            if (request.url.encodedPath.endsWith("/items/wi-1")) {
+                respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond("""{"detail":"artifact locked"}""", HttpStatusCode.Conflict, jsonHdr)
+            }
+        }
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        var failure: Throwable? = null
+        vm.loadEvidence(content, "image.png") { failure = it.exceptionOrNull() }
+        assertTrue(failure is EvidenceLockedException)
+    }
+
+    @Test fun item_level_pr_resolves_commit_evidence_when_task_is_unavailable() = runTest {
+        val vm = vm(backgroundScope) { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1") -> respond(
+                    """{"id":"wi-1","title":"T","kind":"chore","phase":"review",
+                       "task_slugs":["missing"],"spec_id":"spec-1",
+                       "pr_urls":["https://github.com/owner/repo/pull/7"]}""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+                request.url.encodedPath.endsWith("/specs/spec-1") -> respond(
+                    """{"id":"spec-1","title":"T","status":"dispatched",
+                       "acceptance_criteria":[{"id":"ac1","text":"Implemented","verdict":"approved",
+                       "evidence":[{"kind":"commit","ref":"abcdef1"}]}]}""",
+                    HttpStatusCode.OK, jsonHdr,
+                )
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        val evidence = content.criteria.single().evidence.single()
+        assertEquals(
+            "https://github.com/owner/repo/commit/abcdef1",
+            evidenceOpenUrl(evidence.kind, evidence.ref, content.prUrls),
+        )
+    }
+
+    @Test fun old_content_cannot_start_evidence_reads_through_a_replacement_connection() = runTest {
+        val replacementLoading = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conn)))
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1") -> {
+                    if (request.headers[HttpHeaders.Authorization] == "Bearer replacement") {
+                        replacementLoading.complete(Unit)
+                        kotlinx.coroutines.awaitCancellation()
+                    }
+                    respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/evidence/image.png/blob") ->
+                    respond(byteArrayOf(9), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/png"))
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }) { mshipDefaults() })
+        val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
+        vm.load().join()
+        val oldContent = (vm.state.value as ReviewUiState.Content).c
+        val loadFromOldRow = suspend { vm.loadEvidence(oldContent, "image.png") { error("Stale content published") } }
+        connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
+        replacementLoading.await()
+        assertTrue(runCatching { loadFromOldRow() }.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+    }
+
+    @Test fun evidence_from_a_replaced_connection_is_not_published() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conn)))
+        val api = SpecApi(HttpClient(MockEngine { req ->
+            if (req.url.encodedPath.endsWith("/evidence/image.png/blob")) {
+                entered.complete(Unit)
+                release.await()
+                respond(byteArrayOf(1, 2, 3), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/png"))
+            } else if (req.url.encodedPath.endsWith("/items/wi-1")) {
+                respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+            } else {
+                respondError(HttpStatusCode.NotFound)
+            }
+        }) { mshipDefaults() })
+        val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        val result = async { runCatching { vm.loadEvidence(content, "image.png") { error("Stale response published") } } }
+        entered.await()
+        connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
+        runCurrent()
+        release.complete(Unit)
+        assertTrue(result.await().exceptionOrNull() is kotlinx.coroutines.CancellationException)
     }
 
     @Test fun load_fans_out_and_aggregates_pr_rows() = runTest {

@@ -229,7 +229,7 @@ private fun ContentView(s: TaskDetailUiState.Content, vm: TaskDetailViewModel) {
                             style = MaterialTheme.typography.bodySmall,
                             color = when (status) {
                                 "pass" -> MaterialTheme.colorScheme.primary
-                                "skip" -> MaterialTheme.colorScheme.outline
+                                "skip" -> MaterialTheme.colorScheme.onSurfaceVariant
                                 else -> MaterialTheme.colorScheme.error
                             },
                         )
@@ -311,7 +311,7 @@ private fun JournalEntryRow(entry: JournalEntry) {
             Text(
                 entry.timestamp,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.outline,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
             // Labels: action, testState, repo

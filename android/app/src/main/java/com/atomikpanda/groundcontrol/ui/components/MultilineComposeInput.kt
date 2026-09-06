@@ -64,7 +64,7 @@ fun MultilineComposeInput(
                 onValueChange = onValueChange,
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text(placeholder) },
-                enabled = enabled,
+                enabled = enabled && !inFlight,
                 // Not singleLine: multiline, so Return inserts a newline. Grows to maxLines, then scrolls.
                 maxLines = maxLines,
                 shape = ComposeFieldShape,
@@ -81,7 +81,7 @@ fun MultilineComposeInput(
         if (inFlight) {
             CircularProgressIndicator(Modifier.padding(8.dp))
         } else {
-            FilledIconButton(onClick = onSend, enabled = sendEnabled) {
+            FilledIconButton(onClick = onSend, enabled = enabled && sendEnabled) {
                 Icon(sendIcon, contentDescription = sendDescription)
             }
         }

@@ -9,11 +9,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
 import com.atomikpanda.groundcontrol.ui.specdetail.evidenceLabels
+import com.atomikpanda.groundcontrol.ui.specdetail.EvidenceImage
+import com.atomikpanda.groundcontrol.ui.specdetail.EvidenceImageRef
+import com.atomikpanda.groundcontrol.ui.specdetail.imageArtifactRefOrNull
 import com.atomikpanda.groundcontrol.ui.specdetail.isUnverified
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
@@ -89,7 +93,13 @@ fun evidenceOpenUrl(kind: String, ref: String, prUrls: List<String>): String? = 
  * LazyColumn. Shared by the review page and the done/completion view so they can't drift. No-op when
  * [criteria] is empty (e.g. a no-spec item).
  */
-fun LazyListScope.acceptanceCriteriaSection(criteria: List<ReviewCriterion>, prUrls: List<String>) {
+fun LazyListScope.acceptanceCriteriaSection(
+    criteria: List<ReviewCriterion>,
+    prUrls: List<String>,
+    specId: String?,
+    connectionGeneration: Long,
+    loadEvidence: suspend (String, (Result<ByteArray>) -> Unit) -> Unit,
+) {
     if (criteria.isEmpty()) return
     item {
         Text(
@@ -98,11 +108,19 @@ fun LazyListScope.acceptanceCriteriaSection(criteria: List<ReviewCriterion>, prU
             modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
         )
     }
-    items(criteria, key = { it.id }) { crit -> CriterionEvidenceRow(crit, prUrls) }
+    items(criteria, key = { it.id }) { crit ->
+        key(specId, connectionGeneration) {
+            CriterionEvidenceRow(crit, prUrls, loadEvidence)
+        }
+    }
 }
 
 @Composable
-private fun CriterionEvidenceRow(crit: ReviewCriterion, prUrls: List<String>) {
+private fun CriterionEvidenceRow(
+    crit: ReviewCriterion,
+    prUrls: List<String>,
+    loadEvidence: suspend (String, (Result<ByteArray>) -> Unit) -> Unit,
+) {
     val colors = LocalSemanticColors.current
     val uriHandler = LocalUriHandler.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -114,17 +132,20 @@ private fun CriterionEvidenceRow(crit: ReviewCriterion, prUrls: List<String>) {
             color = when (crit.verdict) {
                 "approved" -> colors.approval
                 "flagged" -> colors.error
-                else -> colors.muted
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
             },
         )
         if (isUnverified(crit.evidence)) {
-            Text("unverified", style = MonoStyle, color = colors.muted)
+            Text("unverified", style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             val labels = evidenceLabels(crit.evidence)
             crit.evidence.forEachIndexed { i, e ->
                 val url = evidenceOpenUrl(e.kind, e.ref, prUrls)
                 val base = Modifier.fillMaxWidth().padding(top = 2.dp)
-                if (url != null) {
+                val imageRef = imageArtifactRefOrNull(e)
+                if (imageRef != null && url == null) {
+                    EvidenceImage(EvidenceImageRef(imageRef, e.note, labels[i]), loadEvidence)
+                } else if (url != null) {
                     Text(
                         labels[i],
                         style = MonoStyle,
@@ -132,7 +153,7 @@ private fun CriterionEvidenceRow(crit: ReviewCriterion, prUrls: List<String>) {
                         modifier = base.clickable { runCatching { uriHandler.openUri(url) } },
                     )
                 } else {
-                    Text(labels[i], style = MonoStyle, color = colors.muted, modifier = base)
+                    Text(labels[i], style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = base)
                 }
             }
         }

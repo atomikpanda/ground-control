@@ -12,13 +12,11 @@ import com.atomikpanda.groundcontrol.ui.theme.WorkspaceIdentity
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -26,7 +24,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -49,6 +46,7 @@ import com.atomikpanda.groundcontrol.ui.activity.LiveChip
 import com.atomikpanda.groundcontrol.ui.activity.PhaseStepper
 import com.atomikpanda.groundcontrol.ui.activity.phaseStepFor
 import com.atomikpanda.groundcontrol.ui.components.ExternalLinksRow
+import com.atomikpanda.groundcontrol.ui.components.MultilineComposeInput
 import com.atomikpanda.groundcontrol.ui.messages.DecisionCard
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
 import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
@@ -176,7 +174,7 @@ private fun HeaderSection(item: WorkItemSummary) {
         Text(
             "${item.kind} · ${item.phase}",
             style = MonoStyle,
-            color = MaterialTheme.colorScheme.outline,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         ExternalLinksRow(item.externalLinks, Modifier.padding(top = 4.dp))
     }
@@ -235,7 +233,7 @@ private fun AcProgress(review: ReviewSummary, colors: SemanticColors) {
 @Composable
 private fun JournalRow(entry: JournalEntry) {
     Column(Modifier.fillMaxWidth().padding(16.dp, 2.dp)) {
-        Text(entry.timestamp, style = MonoStyle, color = MaterialTheme.colorScheme.outline)
+        Text(entry.timestamp, style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(entry.message, style = MonoStyle)
     }
 }
@@ -300,35 +298,20 @@ private fun SteerBar(vm: ConsoleViewModel) {
                         .clickable { vm.clearSendError() },
                 )
             }
-            Row(
-                Modifier.fillMaxWidth().padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = vm::onDraftChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Steer…") },
-                    singleLine = true,
-                    enabled = !sending,
-                )
-                if (sending) {
-                    CircularProgressIndicator(Modifier.padding(8.dp).size(24.dp), strokeWidth = 2.dp)
-                } else {
-                    IconButton(
-                        onClick = {
-                            if (draft.isNotBlank()) {
-                                vm.clearSendError()
-                                vm.sendDraft()
-                            }
-                        },
-                        enabled = draft.isNotBlank(),
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+            MultilineComposeInput(
+                value = draft,
+                onValueChange = vm::onDraftChange,
+                onSend = {
+                    if (draft.isNotBlank()) {
+                        vm.clearSendError()
+                        vm.sendDraft()
                     }
-                }
-            }
+                },
+                placeholder = "Steer…",
+                enabled = !sending,
+                inFlight = sending,
+                sendDescription = "Send",
+            )
         }
     }
 }

@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -112,7 +114,7 @@ fun FarmScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun FarmCard(
     item: WorkItemSummary,
@@ -130,13 +132,11 @@ private fun FarmCard(
         leadingContent = { Icon(kindIcon(item.kind), contentDescription = item.kind) },
         headlineContent = { Text(item.title) },
         supportingContent = {
-            // The unattended toggle lives here (not trailingContent) so it gets a full row's
-            // width for its label rather than squeezing next to the attention badges — this is
-            // a per-card control with its own tap target, so it needs to sit inside the row's
-            // touch-transparent area without fighting the whole-card click for routable items
-            // (Compose gives the inner Switch's own gesture detector priority for taps on it).
+            // Keep metadata and actions in the full-width content column; trailing badges
+            // otherwise squeeze long titles and make action labels wrap inside their buttons.
             Column {
                 Text(subLine(item), style = MonoStyle)
+                AttentionBadges(item.attention)
                 if (item.effectivePhase() == "done") {
                     if (item.affectedRepos.isNotEmpty()) {
                         Text(
@@ -169,24 +169,27 @@ private fun FarmCard(
                 // sets an override to done; "Reopen" clears it so the item falls back to its
                 // server-derived phase. Both are always offered — the item's own phase already
                 // tells the operator which one is a no-op.
-                Row(
+                FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(top = 4.dp),
                 ) {
-                    TextButton(onClick = onMarkDone) { Text("Mark done") }
-                    TextButton(onClick = onReopen) { Text("Reopen") }
+                    TextButton(onClick = onMarkDone) { Text("Mark done", maxLines = 1) }
+                    TextButton(onClick = onReopen) { Text("Reopen", maxLines = 1) }
                 }
             }
         },
-        trailingContent = { AttentionBadges(item.attention) },
         modifier = if (routable) Modifier.clickable { onClick() } else Modifier,
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AttentionBadges(a: Attention) {
     val c = LocalSemanticColors.current
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         if (a.needsApproval) Badge("approve", c.approval)
         if (a.needsDecision) Badge("decide", c.question)
         if (a.blocked) Badge("blocked ${a.blockedTasks}/${a.totalTasks}", c.blocker)

@@ -109,7 +109,9 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
                 items(c.prs, key = { "${it.taskSlug}:${it.repo}" }) { pr -> PrRowView(pr, colors) }
             }
 
-            acceptanceCriteriaSection(c.criteria, c.prUrls)
+            acceptanceCriteriaSection(c.criteria, c.prUrls, c.item.specId, c.connectionGeneration) { ref, publish ->
+                vm.loadEvidence(c, ref, publish)
+            }
         }
         val sending by vm.sending.collectAsStateWithLifecycle()
         val sendError by vm.sendError.collectAsStateWithLifecycle()
@@ -127,7 +129,7 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
 private fun HeaderSection(item: WorkItemSummary) {
     Column(Modifier.fillMaxWidth().padding(16.dp, 12.dp)) {
         Text(item.title, style = MaterialTheme.typography.titleLarge)
-        Text("Review", style = MonoStyle, color = MaterialTheme.colorScheme.outline)
+        Text("Review", style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
         ExternalLinksRow(item.externalLinks, Modifier.padding(top = 4.dp))
     }
 }

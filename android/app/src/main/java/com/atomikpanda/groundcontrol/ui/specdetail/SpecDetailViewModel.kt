@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 enum class ErrorKind { NETWORK, AUTH, NOT_FOUND }
 
@@ -77,6 +78,7 @@ sealed interface SpecDetailUiState {
         val banner: String? = null,            // transient note (e.g. "spec changed")
         val blockers: List<String>? = null,    // approve-gate 409 → blocker sheet
         val dispatchResult: DispatchInfo? = null,
+        val connectionGeneration: Long,
     ) : SpecDetailUiState
 }
 
@@ -107,9 +109,18 @@ class SpecDetailViewModel(
             loadJob = load(snapshot)
         }
     }
-    suspend fun loadEvidence(ref: String): ByteArray {
-        val snapshot = routeConnection.current() ?: error("Connection unavailable")
-        return repo.loadEvidence(snapshot.connection, specId, ref)
+    suspend fun loadEvidence(
+        content: SpecDetailUiState.Content,
+        ref: String,
+        publish: (Result<ByteArray>) -> Unit,
+    ) {
+        val snapshot = routeConnection.current() ?: throw CancellationException("Connection unavailable")
+        if (snapshot.generation != content.connectionGeneration) throw CancellationException("Content connection changed")
+        val result = runCatching { repo.loadEvidence(snapshot.connection, specId, ref) }
+        result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        if (!routeConnection.publishIfCurrent(snapshot) { publish(result) }) {
+            throw CancellationException("Connection changed")
+        }
     }
     private fun content() = _state.value as? SpecDetailUiState.Content
 
@@ -144,7 +155,7 @@ class SpecDetailViewModel(
         val result = runCatching { repo.load(snapshot.connection, specId) }
         routeConnection.publishIfCurrent(snapshot) {
             _state.value = result.fold(
-                onSuccess = { SpecDetailUiState.Content(it.toDetail()) },
+                onSuccess = { SpecDetailUiState.Content(it.toDetail(), connectionGeneration = snapshot.generation) },
                 onFailure = { SpecDetailUiState.Error(it.toKind(), it.message ?: "error") },
             )
         }

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.ui.ReactiveRouteConnection
 import com.atomikpanda.groundcontrol.ui.RouteConnectionSnapshot
 import com.atomikpanda.groundcontrol.data.dto.ReviewCriterion
@@ -30,6 +31,7 @@ data class DoneContent(
     val criteria: List<ReviewCriterion> = emptyList(),
     val prUrls: List<String> = emptyList(),
     val summaryPrUrls: List<String> = emptyList(),
+    val connectionGeneration: Long,
 )
 
 sealed interface DoneUiState {
@@ -51,6 +53,7 @@ class DoneViewModel(
     private val testScope: CoroutineScope? = null,
 ) : ViewModel() {
 
+    private val evidenceRepository = SpecDetailRepository(api)
     private val _state = MutableStateFlow<DoneUiState>(DoneUiState.Loading)
     val state: StateFlow<DoneUiState> = _state.asStateFlow()
     private val scope get() = testScope ?: viewModelScope
@@ -65,6 +68,22 @@ class DoneViewModel(
     }
 
     fun load(): Job = routeConnection.current()?.let(::load) ?: scope.launch { }
+
+    suspend fun loadEvidence(
+        content: DoneContent,
+        ref: String,
+        publish: (Result<ByteArray>) -> Unit,
+    ) {
+        val snapshot = routeConnection.current() ?: throw CancellationException("Connection unavailable")
+        if (snapshot.generation != content.connectionGeneration) throw CancellationException("Content connection changed")
+        val result = runCatching {
+            evidenceRepository.loadEvidence(snapshot.connection, requireNotNull(content.item.specId), ref)
+        }
+        result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        if (!routeConnection.publishIfCurrent(snapshot) { publish(result) }) {
+            throw CancellationException("Connection changed")
+        }
+    }
 
     private fun load(snapshot: RouteConnectionSnapshot): Job = scope.launch {
         val next = fetch(snapshot)
@@ -99,6 +118,7 @@ class DoneViewModel(
                     criteria = reviewRecord?.acceptanceCriteria ?: emptyList(),
                     prUrls = prUrls,
                     summaryPrUrls = summaryPrUrls,
+                    connectionGeneration = snapshot.generation,
                 )
             )
         }
