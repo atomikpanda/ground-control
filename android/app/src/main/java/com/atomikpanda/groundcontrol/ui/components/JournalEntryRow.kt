@@ -1,5 +1,6 @@
 package com.atomikpanda.groundcontrol.ui.components
 
+import android.text.format.DateFormat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -11,15 +12,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.atomikpanda.groundcontrol.data.dto.JournalEntry
 import com.atomikpanda.groundcontrol.ui.theme.LocalSemanticColors
-import com.atomikpanda.groundcontrol.ui.theme.MonoStyle
+import com.atomikpanda.groundcontrol.notify.parseTimestampMillis
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.TimeZone
 
 internal enum class JournalTone { ROUTINE, SUCCESS, WARNING, ERROR, QUESTION }
 
@@ -66,7 +73,7 @@ internal fun JournalEntryRow(entry: JournalEntry, modifier: Modifier = Modifier)
                 .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(entry.timestamp, style = MonoStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            JournalTimestamp(entry.timestamp)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -104,6 +111,29 @@ internal fun JournalEntryRow(entry: JournalEntry, modifier: Modifier = Modifier)
             }
         }
     }
+}
+
+@Composable
+private fun JournalTimestamp(timestamp: String) {
+    val configuration = LocalConfiguration.current
+    val locale = configuration.locales[0]
+    val use24Hour = DateFormat.is24HourFormat(LocalContext.current)
+    val zone = remember(configuration) { TimeZone.getDefault() }
+    val dateFormat = remember(locale, zone) {
+        SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, "yMMMd"), locale).apply { timeZone = zone }
+    }
+    val timeFormat = remember(locale, zone, use24Hour) {
+        val skeleton = if (use24Hour) "Hmsz" else "hmsz"
+        SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, skeleton), locale).apply { timeZone = zone }
+    }
+    val label = remember(timestamp, dateFormat, timeFormat) {
+        parseTimestampMillis(timestamp)?.let { millis ->
+            val date = Date(millis)
+            "${dateFormat.format(date)}\n${timeFormat.format(date)}"
+        } ?: timestamp
+    }
+    // One semantic label keeps the date and its local time together for screen readers.
+    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

@@ -60,6 +60,8 @@ model exposed over `mship serve`.
   green for passing tests, red for failures, amber for mixed results or warnings,
   and cyan for open questions. Question blocks stay distinct, and badges wrap with
   larger text. Journal prose is never interpreted as a status.
+  Friendly dates are stacked above local times, including seconds and timezone,
+  using the device locale and 12/24-hour preference. Invalid timestamps stay visible.
 - Spec readiness chips and review actions wrap on narrow screens and at larger
   text sizes instead of squeezing labels or hiding the spec content.
 
