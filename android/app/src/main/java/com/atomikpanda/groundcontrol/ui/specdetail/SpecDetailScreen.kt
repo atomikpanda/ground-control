@@ -46,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import com.atomikpanda.groundcontrol.ui.activity.LiveChip
 import com.atomikpanda.groundcontrol.ui.activity.PhaseStepper
 import com.atomikpanda.groundcontrol.ui.activity.phaseStepFor
@@ -183,7 +184,9 @@ private fun ContentView(s: SpecDetailUiState.Content, vm: SpecDetailViewModel) {
             if (d.criteria.isNotEmpty()) {
                 item { SectionLabel("ACCEPTANCE CRITERIA") }
                 items(d.criteria, key = { it.id }) { criterion ->
-                    CriterionRow(criterion, interactive, s.inFlight, vm)
+                    key(s.detail.id, s.connectionGeneration) {
+                        CriterionRow(criterion, interactive, s, vm)
+                    }
                 }
             }
             item { SectionLabel("OPEN QUESTIONS") }
@@ -250,9 +253,10 @@ private fun BulletText(text: String) =
 private fun CriterionRow(
     c: ReviewCriterion,
     interactive: Boolean,
-    inFlight: ActionRef?,
+    content: SpecDetailUiState.Content,
     vm: SpecDetailViewModel,
 ) {
+    val inFlight = content.inFlight
     val busy = inFlight is ActionRef.Verdict && inFlight.criterionId == c.id
     Row(Modifier.fillMaxWidth().padding(12.dp, 4.dp), verticalAlignment = Alignment.Top) {
         if (busy) {
@@ -305,7 +309,7 @@ private fun CriterionRow(
                     )
                 }
                 display.images.forEach { img ->
-                    EvidenceImage(img, vm::loadEvidence)
+                    EvidenceImage(img, load = { ref, publish -> vm.loadEvidence(content, ref, publish) })
                 }
             }
         }

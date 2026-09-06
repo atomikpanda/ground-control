@@ -97,6 +97,32 @@ class ReviewViewModelTest {
         }
     }
 
+    @Test fun stale_evidence_failures_are_not_published() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conn)))
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1") -> respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                request.url.encodedPath.endsWith("/evidence/image.png/blob") -> {
+                    entered.complete(Unit)
+                    release.await()
+                    respond("""{"detail":"artifact locked"}""", HttpStatusCode.Conflict, jsonHdr)
+                }
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }) { mshipDefaults() })
+        val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        val result = async { runCatching { vm.loadEvidence(content, "image.png") { error("Stale failure published") } } }
+        entered.await()
+        connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
+        runCurrent()
+        release.complete(Unit)
+        assertTrue(result.await().exceptionOrNull() is kotlinx.coroutines.CancellationException)
+    }
+
     @Test fun locked_evidence_remains_a_distinct_failure_state() = runTest {
         val vm = vm(backgroundScope) { request ->
             if (request.url.encodedPath.endsWith("/items/wi-1")) {
@@ -107,7 +133,8 @@ class ReviewViewModelTest {
         }
         vm.load().join()
         val content = (vm.state.value as ReviewUiState.Content).c
-        val failure = runCatching { vm.loadEvidence(content, "image.png") }.exceptionOrNull()
+        var failure: Throwable? = null
+        vm.loadEvidence(content, "image.png") { failure = it.exceptionOrNull() }
         assertTrue(failure is EvidenceLockedException)
     }
 
@@ -158,7 +185,7 @@ class ReviewViewModelTest {
         val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
         vm.load().join()
         val oldContent = (vm.state.value as ReviewUiState.Content).c
-        val loadFromOldRow = suspend { vm.loadEvidence(oldContent, "image.png") }
+        val loadFromOldRow = suspend { vm.loadEvidence(oldContent, "image.png") { error("Stale content published") } }
         connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
         replacementLoading.await()
         assertTrue(runCatching { loadFromOldRow() }.exceptionOrNull() is kotlinx.coroutines.CancellationException)
@@ -182,7 +209,7 @@ class ReviewViewModelTest {
         val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
         vm.load().join()
         val content = (vm.state.value as ReviewUiState.Content).c
-        val result = async { runCatching { vm.loadEvidence(content, "image.png") } }
+        val result = async { runCatching { vm.loadEvidence(content, "image.png") { error("Stale response published") } } }
         entered.await()
         connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
         runCurrent()

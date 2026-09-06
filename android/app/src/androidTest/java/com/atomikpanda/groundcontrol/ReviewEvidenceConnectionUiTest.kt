@@ -13,12 +13,15 @@ import androidx.lifecycle.ViewModelStore
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.atomikpanda.groundcontrol.data.ConnectionState
 import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.SpecDetailRepository
 import com.atomikpanda.groundcontrol.data.WorkspaceConnection
 import com.atomikpanda.groundcontrol.data.mshipDefaults
 import com.atomikpanda.groundcontrol.ui.done.DoneScreen
 import com.atomikpanda.groundcontrol.ui.done.DoneViewModel
 import com.atomikpanda.groundcontrol.ui.review.ReviewScreen
 import com.atomikpanda.groundcontrol.ui.review.ReviewViewModel
+import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailScreen
+import com.atomikpanda.groundcontrol.ui.specdetail.SpecDetailViewModel
 import com.atomikpanda.groundcontrol.ui.theme.GroundControlTheme
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -38,10 +41,13 @@ import org.junit.runner.RunWith
 class ReviewEvidenceConnectionUiTest {
     @get:Rule val composeRule = createAndroidComposeRule<ComponentActivity>()
 
-    @Test fun review_reloads_same_ref_after_connection_replacement() = verifyReload(done = false)
-    @Test fun done_reloads_same_ref_after_connection_replacement() = verifyReload(done = true)
+    private enum class Surface { REVIEW, DONE, SPEC_DETAIL }
 
-    private fun verifyReload(done: Boolean) {
+    @Test fun review_reloads_same_ref_after_connection_replacement() = verifyReload(Surface.REVIEW)
+    @Test fun done_reloads_same_ref_after_connection_replacement() = verifyReload(Surface.DONE)
+    @Test fun spec_detail_reloads_same_ref_after_connection_replacement() = verifyReload(Surface.SPEC_DETAIL)
+
+    private fun verifyReload(surface: Surface) {
         val oldConnection = WorkspaceConnection("one", "http://evidence.invalid", "old", "Workspace")
         val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(oldConnection)))
         val oldRequested = CompletableDeferred<Unit>()
@@ -53,7 +59,7 @@ class ReviewEvidenceConnectionUiTest {
         val client = HttpClient(MockEngine { request ->
             when {
                 request.url.encodedPath.endsWith("/items/item") -> respond(
-                    """{"id":"item","kind":"chore","title":"Evidence recovery","phase":"${if (done) "done" else "review"}","spec_id":"spec"}""",
+                    """{"id":"item","kind":"chore","title":"Evidence recovery","phase":"${if (surface == Surface.DONE) "done" else "review"}","spec_id":"spec"}""",
                     HttpStatusCode.OK, jsonHeaders,
                 )
                 request.url.encodedPath.endsWith("/evidence/image.png/blob") -> {
@@ -77,8 +83,11 @@ class ReviewEvidenceConnectionUiTest {
         }) { mshipDefaults() }
         val api = SpecApi(client)
         val store = ViewModelStore()
-        val vm = if (done) DoneViewModel(api, "one", "item", connections)
-            else ReviewViewModel(api, "one", "item", connections)
+        val vm = when (surface) {
+            Surface.DONE -> DoneViewModel(api, "one", "item", connections)
+            Surface.REVIEW -> ReviewViewModel(api, "one", "item", connections)
+            Surface.SPEC_DETAIL -> SpecDetailViewModel(SpecDetailRepository(api), "one", "spec", connections)
+        }
         store.put("screen", vm)
         try {
             composeRule.setContent {
@@ -86,6 +95,7 @@ class ReviewEvidenceConnectionUiTest {
                     when (vm) {
                         is DoneViewModel -> DoneScreen(vm, "Done", {})
                         is ReviewViewModel -> ReviewScreen(vm, "Review", {})
+                        is SpecDetailViewModel -> SpecDetailScreen(vm, "Spec", onBack = {})
                     }
                 }
             }

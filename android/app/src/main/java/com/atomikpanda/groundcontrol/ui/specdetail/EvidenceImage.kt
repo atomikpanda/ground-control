@@ -31,16 +31,17 @@ import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.atomikpanda.groundcontrol.data.EvidenceLockedException
-import kotlinx.coroutines.CancellationException
 
 /**
  * An image artifact backing an acceptance criterion. Bytes come from the screen's SpecApi path,
  * so host routing, bearer minting, safe-GET failover, and contact tracking stay centralized.
+ * [load] publishes both bytes and errors under its connection ownership fence; the state writes
+ * below must stay inside that publication callback.
  */
 @Composable
 fun EvidenceImage(
     image: EvidenceImageRef,
-    load: suspend (String) -> ByteArray,
+    load: suspend (String, (Result<ByteArray>) -> Unit) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var bytes by remember(image.ref) { mutableStateOf<ByteArray?>(null) }
@@ -48,12 +49,9 @@ fun EvidenceImage(
     var zoomed by remember { mutableStateOf(false) }
 
     LaunchedEffect(image.ref) {
-        try {
-            bytes = load(image.ref)
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            loadError = error
+        load(image.ref) { result ->
+            bytes = result.getOrNull()
+            loadError = result.exceptionOrNull()
         }
     }
     val model = bytes

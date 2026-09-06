@@ -109,8 +109,8 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
                 items(c.prs, key = { "${it.taskSlug}:${it.repo}" }) { pr -> PrRowView(pr, colors) }
             }
 
-            acceptanceCriteriaSection(c.criteria, c.prUrls, c.item.specId, c.connectionGeneration) { ref ->
-                vm.loadEvidence(c, ref)
+            acceptanceCriteriaSection(c.criteria, c.prUrls, c.item.specId, c.connectionGeneration) { ref, publish ->
+                vm.loadEvidence(c, ref, publish)
             }
         }
         val sending by vm.sending.collectAsStateWithLifecycle()

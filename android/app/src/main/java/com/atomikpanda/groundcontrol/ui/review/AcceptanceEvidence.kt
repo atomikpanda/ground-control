@@ -98,7 +98,7 @@ fun LazyListScope.acceptanceCriteriaSection(
     prUrls: List<String>,
     specId: String?,
     connectionGeneration: Long,
-    loadEvidence: suspend (String) -> ByteArray,
+    loadEvidence: suspend (String, (Result<ByteArray>) -> Unit) -> Unit,
 ) {
     if (criteria.isEmpty()) return
     item {
@@ -119,7 +119,7 @@ fun LazyListScope.acceptanceCriteriaSection(
 private fun CriterionEvidenceRow(
     crit: ReviewCriterion,
     prUrls: List<String>,
-    loadEvidence: suspend (String) -> ByteArray,
+    loadEvidence: suspend (String, (Result<ByteArray>) -> Unit) -> Unit,
 ) {
     val colors = LocalSemanticColors.current
     val uriHandler = LocalUriHandler.current
