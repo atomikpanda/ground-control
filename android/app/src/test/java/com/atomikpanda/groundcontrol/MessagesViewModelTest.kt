@@ -555,6 +555,32 @@ class MessagesViewModelTest {
         assertEquals(4, all.filteredThreads.size)
     }
 
+    @Test fun removed_home_selection_falls_back_to_available_threads() = runTest {
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Loading)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connections, backgroundScope)
+        vm.selectWorkspace(connA.id)
+        vm.selectStateFilter(ThreadStateFilter.UNREAD)
+        connections.value = ConnectionState.Ready(listOf(connB))
+        vm.refresh().join()
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(null, content.selectedConnectionId)
+        assertEquals(listOf("b1"), content.filteredThreads.map { it.thread.id })
+        assertEquals(ThreadStateFilter.UNREAD, content.stateFilter)
+    }
+
+    @Test fun empty_authoritative_snapshot_clears_selection_before_connections_return() = runTest {
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Loading)
+        val vm = MessagesViewModel(repoWith(twoWorkspaceHandler()), connections, backgroundScope)
+        vm.selectWorkspace(connA.id)
+        connections.value = ConnectionState.Ready(emptyList())
+        vm.refresh().join()
+        connections.value = ConnectionState.Ready(listOf(connA, connB))
+        vm.refresh().join()
+        val content = vm.state.value as MessagesUiState.Content
+        assertEquals(null, content.selectedConnectionId)
+        assertEquals(setOf("a1", "a2", "a3", "b1"), content.filteredThreads.map { it.thread.id }.toSet())
+    }
+
     @Test fun home_selection_before_inbox_content_is_applied_to_first_content_and_survives_later_loads() = runTest {
         val retired = WorkspaceConnection("retired", "http://old:47100", null, "ws")
         val canonical = WorkspaceConnection(

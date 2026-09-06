@@ -110,7 +110,7 @@ private fun ReviewContentView(c: ReviewContent, vm: ReviewViewModel) {
             }
 
             acceptanceCriteriaSection(c.criteria, c.prUrls, c.item.specId, c.connectionGeneration) { ref ->
-                vm.loadEvidence(requireNotNull(c.item.specId), ref)
+                vm.loadEvidence(c, ref)
             }
         }
         val sending by vm.sending.collectAsStateWithLifecycle()

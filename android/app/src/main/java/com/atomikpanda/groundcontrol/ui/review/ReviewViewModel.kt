@@ -78,9 +78,10 @@ class ReviewViewModel(
 
     fun load(): Job = routeConnection.current()?.let(::load) ?: scope.launch { }
 
-    suspend fun loadEvidence(specId: String, ref: String): ByteArray {
+    suspend fun loadEvidence(content: ReviewContent, ref: String): ByteArray {
         val snapshot = routeConnection.current() ?: error("Connection unavailable")
-        val bytes = evidenceRepository.loadEvidence(snapshot.connection, specId, ref)
+        if (snapshot.generation != content.connectionGeneration) throw CancellationException("Content connection changed")
+        val bytes = evidenceRepository.loadEvidence(snapshot.connection, requireNotNull(content.item.specId), ref)
         if (!routeConnection.isCurrent(snapshot)) throw CancellationException("Connection changed")
         return bytes
     }

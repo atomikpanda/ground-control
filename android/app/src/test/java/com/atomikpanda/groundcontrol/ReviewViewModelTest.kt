@@ -98,10 +98,16 @@ class ReviewViewModelTest {
     }
 
     @Test fun locked_evidence_remains_a_distinct_failure_state() = runTest {
-        val vm = vm(backgroundScope) {
-            respond("""{"detail":"artifact locked"}""", HttpStatusCode.Conflict, jsonHdr)
+        val vm = vm(backgroundScope) { request ->
+            if (request.url.encodedPath.endsWith("/items/wi-1")) {
+                respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+            } else {
+                respond("""{"detail":"artifact locked"}""", HttpStatusCode.Conflict, jsonHdr)
+            }
         }
-        val failure = runCatching { vm.loadEvidence("spec-1", "image.png") }.exceptionOrNull()
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        val failure = runCatching { vm.loadEvidence(content, "image.png") }.exceptionOrNull()
         assertTrue(failure is EvidenceLockedException)
     }
 
@@ -132,6 +138,32 @@ class ReviewViewModelTest {
         )
     }
 
+    @Test fun old_content_cannot_start_evidence_reads_through_a_replacement_connection() = runTest {
+        val replacementLoading = CompletableDeferred<Unit>()
+        val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(conn)))
+        val api = SpecApi(HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/items/wi-1") -> {
+                    if (request.headers[HttpHeaders.Authorization] == "Bearer replacement") {
+                        replacementLoading.complete(Unit)
+                        kotlinx.coroutines.awaitCancellation()
+                    }
+                    respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
+                }
+                request.url.encodedPath.endsWith("/evidence/image.png/blob") ->
+                    respond(byteArrayOf(9), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/png"))
+                else -> respondError(HttpStatusCode.NotFound)
+            }
+        }) { mshipDefaults() })
+        val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
+        vm.load().join()
+        val oldContent = (vm.state.value as ReviewUiState.Content).c
+        val loadFromOldRow = suspend { vm.loadEvidence(oldContent, "image.png") }
+        connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
+        replacementLoading.await()
+        assertTrue(runCatching { loadFromOldRow() }.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+    }
+
     @Test fun evidence_from_a_replaced_connection_is_not_published() = runTest {
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
@@ -141,12 +173,16 @@ class ReviewViewModelTest {
                 entered.complete(Unit)
                 release.await()
                 respond(byteArrayOf(1, 2, 3), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/png"))
+            } else if (req.url.encodedPath.endsWith("/items/wi-1")) {
+                respond(itemWithSpecJson, HttpStatusCode.OK, jsonHdr)
             } else {
                 respondError(HttpStatusCode.NotFound)
             }
         }) { mshipDefaults() })
         val vm = ReviewViewModel(api, conn.id, "wi-1", connections, testScope = backgroundScope)
-        val result = async { runCatching { vm.loadEvidence("spec-1", "image.png") } }
+        vm.load().join()
+        val content = (vm.state.value as ReviewUiState.Content).c
+        val result = async { runCatching { vm.loadEvidence(content, "image.png") } }
         entered.await()
         connections.value = ConnectionState.Ready(listOf(conn.copy(token = "replacement")))
         runCurrent()

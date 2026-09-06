@@ -189,6 +189,7 @@ class MessagesViewModel(
         reconcileMutex.withLock {
             if (revision != reconcileRevision || latestConnections != current) return
             if (current.isEmpty()) {
+                selectedConnectionId = null
                 for (owner in owners.values.toSet()) {
                     removeAndCancelOwner(owner)
                 }
@@ -204,6 +205,9 @@ class MessagesViewModel(
                     canonical.id != candidate.id &&
                         candidate.id in canonical.legacyConnectionIds
                 }
+            }
+            selectedConnectionId = selectedConnectionId?.let {
+                activeConnections.findByConnectionId(it)?.id
             }
             activeConnections.forEach { connection ->
                 var owner = owners[connection.id]
@@ -272,9 +276,6 @@ class MessagesViewModel(
             ) {
                 removeAndCancelOwner(owner)
             }
-            selectedConnectionId = selectedConnectionId?.let {
-                activeConnections.findByConnectionId(it)?.id ?: it
-            }
             renderOwners()
         }
     }
@@ -294,7 +295,9 @@ class MessagesViewModel(
     }
 
     fun selectWorkspace(connectionId: String?) {
-        selectedConnectionId = latestConnections.findByConnectionId(connectionId ?: "")?.id ?: connectionId
+        val ready = connectionState.value as? ConnectionState.Ready
+        selectedConnectionId = if (ready == null) connectionId
+            else ready.connections.findByConnectionId(connectionId ?: "")?.id
         if (_state.value is MessagesUiState.Content) renderOwners()
     }
 

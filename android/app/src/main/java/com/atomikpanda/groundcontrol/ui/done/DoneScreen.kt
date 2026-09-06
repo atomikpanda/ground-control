@@ -100,7 +100,7 @@ private fun DoneContentView(c: DoneContent, vm: DoneViewModel) {
         }
         c.review?.let { review -> item { SpecLine(review) } }
         acceptanceCriteriaSection(c.criteria, c.prUrls, c.item.specId, c.connectionGeneration) { ref ->
-            vm.loadEvidence(requireNotNull(c.item.specId), ref)
+            vm.loadEvidence(c, ref)
         }
     }
 }
