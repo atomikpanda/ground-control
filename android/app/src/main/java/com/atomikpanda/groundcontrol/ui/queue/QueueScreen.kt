@@ -658,7 +658,6 @@ private fun QuestionAnswerRow(item: QuestionItem, enabled: Boolean, onAnswer: (S
             onSend = { if (draft.isNotBlank()) onAnswer(draft) },
             placeholder = if (item.answer.isNullOrBlank()) "answer" else "edit answer",
             enabled = enabled,
-            inFlight = !enabled,
             sendDescription = "Send answer",
         )
     }
