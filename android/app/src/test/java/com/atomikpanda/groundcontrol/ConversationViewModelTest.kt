@@ -321,6 +321,7 @@ class ConversationViewModelTest {
         assertEquals("Keep this draft", v.draft.value)
     }
 
+
     @Test fun resolve_failure_keeps_attention_and_draft_for_a_retry() = runTest {
         var attempts = 0
         val v = vm(this) { request ->
@@ -430,6 +431,7 @@ class ConversationViewModelTest {
         val old = conn.copy(baseUrl = "http://old:47100", token = "old-token")
         val replacement = old.copy(baseUrl = "http://new:47100", token = "new-token")
         val connections = MutableStateFlow<ConnectionState>(ConnectionState.Ready(listOf(old)))
+        val retired = mutableListOf<Triple<String, String, String>>()
         val resolveStarted = CompletableDeferred<Unit>()
         val releaseResolve = CompletableDeferred<Unit>()
         val replacementThread = promptAfterResolveJson.replace("Close this out", "Replacement prompt")
@@ -439,7 +441,14 @@ class ConversationViewModelTest {
                     request.url.host == "old" && request.url.encodedPath.endsWith("/threads/t1/resolve") -> {
                         resolveStarted.complete(Unit)
                         releaseResolve.await()
-                        respond(resolvedThreadJson, HttpStatusCode.OK, jsonHdr)
+                        respond(
+                            resolvedThreadJson.replace(
+                                "\"messages\"",
+                                "\"updated_at\":\"2026-06-22T10:02:00Z\", \"messages\"",
+                            ),
+                            HttpStatusCode.OK,
+                            jsonHdr,
+                        )
                     }
                     request.url.host == "new" && request.url.encodedPath.endsWith("/threads/t1") ->
                         respond(replacementThread, HttpStatusCode.OK, jsonHdr)
@@ -452,6 +461,10 @@ class ConversationViewModelTest {
             "t1",
             connections,
             testScope = backgroundScope,
+            retireReplyCapability = { connectionId, threadId, sourceVersion ->
+                retired += Triple(connectionId, threadId, sourceVersion)
+                true
+            },
         )
         vm.load().join()
         val pending = vm.resolve()
@@ -467,6 +480,7 @@ class ConversationViewModelTest {
 
         assertEquals("Replacement prompt", (vm.state.value as ConversationUiState.Content).thread.subject)
         assertTrue(replacementContent.thread.needsYou)
+        assertTrue(retired.isEmpty())
     }
 
     private val waitHitJson = """{"threads":[{"id":"t1","subject":"s","updated_at":"2026-06-22T10:10:00Z"}],"cursor":"2026-06-22T10:10:00Z","timed_out":false}"""

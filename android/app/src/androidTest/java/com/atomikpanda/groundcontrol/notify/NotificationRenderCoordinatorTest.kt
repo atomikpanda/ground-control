@@ -2,6 +2,23 @@ package com.atomikpanda.groundcontrol.notify
 
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.atomikpanda.groundcontrol.data.ConnectionState
+import com.atomikpanda.groundcontrol.data.SpecApi
+import com.atomikpanda.groundcontrol.data.ThreadsRepository
+import com.atomikpanda.groundcontrol.data.WorkspaceConnection
+import com.atomikpanda.groundcontrol.data.mshipDefaults
+import com.atomikpanda.groundcontrol.ui.messages.ConversationUiState
+import com.atomikpanda.groundcontrol.ui.messages.ConversationViewModel
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpHeaders
+import io.ktor.http.headersOf
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,6 +54,65 @@ class NotificationRenderCoordinatorTest {
         key, connectionId, threadId, version, state, null, null, null, null, "reply", ReplyInputKind.FREE_TEXT,
         "subject", "workspace", "https://example", null, 0, 1,
     )
+
+    @Test fun conversation_done_retires_the_loaded_reply_capability() {
+        assertConversationDoneRetirement(newerQuestion = false)
+    }
+
+    @Test fun conversation_done_preserves_a_newer_question_notification_and_capability() {
+        assertConversationDoneRetirement(newerQuestion = true)
+    }
+
+    private fun assertConversationDoneRetirement(newerQuestion: Boolean) = runBlocking {
+        val db = database()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val source = "2026-09-06T12:00:00Z"
+        val activeSource = if (newerQuestion) "2026-09-06T12:01:00Z" else source
+        val connection = WorkspaceConnection("c", "http://example", "secret", "workspace")
+        var notificationVisible = false
+        val canceller = object : NeedsYouCanceller {
+            override fun cancel(connId: String, threadId: String) {
+                notificationVisible = false
+            }
+        }
+        val client = HttpClient(MockEngine { request ->
+            val resolved = request.url.encodedPath.endsWith("/resolve")
+            respond(
+                """{
+                    "id":"t","updated_at":"$source","needs_you":${!resolved},
+                    "resolved_through_message_id":${if (resolved) "\"m\"" else "null"},
+                    "messages":[{"id":"m","role":"agent","text":"Review this","kind":"needs_you"}]
+                }""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }) { mshipDefaults() }
+        try {
+            val coordinator = NotificationRenderCoordinator(db, FakeReplyRenderer(), canceller::cancel)
+            val vm = ConversationViewModel(
+                ThreadsRepository(SpecApi(client)), connection.id, "t",
+                MutableStateFlow(ConnectionState.Ready(listOf(connection))),
+                testScope = scope,
+                canceller = canceller,
+                retireReplyCapability = coordinator::retire,
+            )
+            vm.load()?.join()
+            db.replyNotificationVersionDao().insert(
+                ReplyNotificationVersionRecord("c", "t", "$activeSource#1", 1, true, "cap"),
+            )
+            // A notification can arrive after opening the conversation, while Done is pending.
+            notificationVisible = true
+            vm.resolve()?.join()
+
+            assertFalse((vm.state.value as ConversationUiState.Content).thread.needsYou)
+            val capability = db.replyNotificationVersionDao().get("c", "t")!!
+            assertEquals(newerQuestion, capability.active)
+            assertEquals(newerQuestion, notificationVisible)
+        } finally {
+            scope.cancel()
+            client.close()
+            db.close()
+        }
+    }
 
     @Test fun delivered_ack_cancels_and_deactivates_only_matching_generation() = runBlocking {
         val db = database(); val cancelled = mutableListOf<String>(); val renderer = FakeReplyRenderer()
@@ -201,9 +277,9 @@ class NotificationRenderCoordinatorTest {
         val renderer = FakeReplyRenderer()
         val cancelled = mutableListOf<String>()
         val coordinator = NotificationRenderCoordinator(db, renderer) { c, t -> cancelled += "$c|$t" }
-        coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "new"))
+        coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "2026-08-22T00:00:00Z"))
 
-        coordinator.retire("c", "t", "old")
+        coordinator.retire("c", "t", "2026-08-21T00:00:00Z")
 
         assertTrue(db.replyNotificationVersionDao().get("c", "t")!!.active)
         assertTrue(cancelled.isEmpty())
@@ -227,10 +303,10 @@ class NotificationRenderCoordinatorTest {
         val db = database()
         val renderer = FakeReplyRenderer()
         val coordinator = NotificationRenderCoordinator(db, renderer) { _, _ -> }
-        coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "new"))
-        coordinator.retire("c", "t", "new")
+        coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "2026-08-22T00:00:00Z"))
+        coordinator.retire("c", "t", "2026-08-22T00:00:00Z")
 
-        assertFalse(coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "old")))
+        assertFalse(coordinator.publish(NeedsYouEvent("c", "https://example", "workspace", "t", "subject", "", "2026-08-21T00:00:00Z")))
 
         assertFalse(db.replyNotificationVersionDao().get("c", "t")!!.active)
         assertEquals(1, renderer.renders.size)

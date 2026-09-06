@@ -58,6 +58,8 @@ class ConversationViewModel(
     connectionState: StateFlow<ConnectionState>,
     private val testScope: CoroutineScope? = null,
     private val canceller: NeedsYouCanceller = NoopNeedsYouCanceller,
+    /** Retires the durable direct-reply capability after an authoritative Done response. */
+    private val retireReplyCapability: suspend (String, String, String) -> Boolean = { _, _, _ -> false },
 ) : ViewModel() {
 
 
@@ -269,6 +271,7 @@ class ConversationViewModel(
         return scope().launch {
             runCatching { repo.resolveThread(snapshot.connection, threadId, throughMessageId) }
                 .onSuccess { updatedThread ->
+                    var retirementVersion: String? = null
                     routeConnection.publishIfCurrent(snapshot) {
                         if (operationGeneration != mutationGeneration) return@publishIfCurrent
                         val latest = _state.value as? ConversationUiState.Content ?: return@publishIfCurrent
@@ -278,7 +281,22 @@ class ConversationViewModel(
                             resolveError = null,
                         )
                         if (!updatedThread.needsYou && !updatedThread.needsDecision) {
-                            canceller.cancel(snapshot.connection.id, threadId)
+                            // A blank version means we cannot distinguish a stale resolve from a
+                            // later question, so fall back to the loaded high-water version.
+                            retirementVersion = updatedThread.updatedAt
+                                ?.takeIf(String::isNotBlank)
+                                ?: current.thread.updatedAt
+                        }
+                    }
+                    retirementVersion?.takeIf(String::isNotBlank)?.let { sourceVersion ->
+                        if (routeConnection.isCurrent(snapshot)) {
+                            try {
+                                retireReplyCapability(snapshot.connection.id, threadId, sourceVersion)
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (_: Throwable) {
+                                // Done has already completed authoritatively; retirement is best effort.
+                            }
                         }
                     }
                 }

@@ -82,9 +82,11 @@ fun HomeScreen(
         // per connection, so MessagesScreen calling it again later is safe).
         messagesVm.startLivePolling()
     }
-    LifecycleResumeEffect(vm) {
-        // Returning from a conversation must reflect read and Done acknowledgements.
+    LifecycleResumeEffect(vm, messagesVm) {
+        // Home and its sticky threads card use independent state, so both must reflect a
+        // conversation's read or Done acknowledgement when the user returns.
         vm.refresh()
+        messagesVm.refresh()
         onPauseOrDispose { }
     }
 
