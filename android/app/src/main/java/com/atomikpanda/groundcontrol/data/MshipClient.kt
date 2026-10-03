@@ -307,6 +307,7 @@ fun hostAwareClient(
     engine: HttpClientEngine,
     onHostContact: suspend (hostId: String, hostBase: String) -> Unit = { _, _ -> },
     nowMillis: () -> Long = System::currentTimeMillis,
+    recoverRefresh: suspend (hostId: String, rejectedRefresh: String) -> Unit = { _, _ -> },
     hosts: suspend () -> List<HostConnection>,
 ): HostClient {
     var tokens: HostTokens? = null
@@ -407,6 +408,8 @@ fun hostAwareClient(
                 request.method == HttpMethod.Head
             var lastTransportFailure: IOException? = null
             var snapshotRefreshed = false
+            var refreshRecoveryAttempted = false
+            var refreshRecoveryFailure: IOException? = null
 
             while (true) {
                 val preferredBase = routedBase?.let { baseIdentity ->
@@ -440,6 +443,21 @@ fun hostAwareClient(
                         )
                     } catch (error: RePairNeededException) {
                         if (snapshotRefreshed || explicitHostBase) throw error
+                        // Hosts rotate the refresh credential and publish the
+                        // replacement only in the relay directory; adopt it
+                        // before concluding that the operator must re-pair.
+                        val rejected = routedHost.refresh
+                        if (rejected != null && !refreshRecoveryAttempted) {
+                            refreshRecoveryAttempted = true
+                            try {
+                                recoverRefresh(routedHost.hostId, rejected)
+                            } catch (failure: IOException) {
+                                refreshRecoveryFailure = failure
+                            }
+                        }
+                        // An unreadable directory proves nothing about the
+                        // pairing: report reachability, not re-pair.
+                        refreshRecoveryFailure?.let { throw it }
                         val currentHost = hosts().firstOrNull {
                             it.hostId == routedHost.hostId
                         } ?: throw error
