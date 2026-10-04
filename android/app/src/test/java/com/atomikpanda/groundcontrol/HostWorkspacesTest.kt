@@ -919,6 +919,41 @@ class HostWorkspacesTest {
         assertEquals(listOf("rotated-out"), exchanges)
     }
 
+    @Test fun an_explicit_host_probe_recovers_a_rotated_credential_on_the_same_route() = runTest {
+        var stored = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            recoverRefresh = { _, _ -> stored = stored.copy(refresh = "current") },
+            hosts = { listOf(stored) },
+        )
+
+        val workspaces = SpecApi(client.client)
+            .listWorkspaces(host.publicUrl, null, allowHostFallback = false)
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("rotated-out", "current"), exchanges)
+    }
+
+    @Test fun an_explicit_host_probe_never_follows_a_recovered_route_change() = runTest {
+        var stored = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            recoverRefresh = { _, _ ->
+                stored = stored.copy(refresh = "current", publicUrl = "https://moved.relay.example.com")
+            },
+            hosts = { listOf(stored) },
+        )
+
+        val error = runCatching {
+            SpecApi(client.client).listWorkspaces(host.publicUrl, null, allowHostFallback = false)
+        }.exceptionOrNull()
+
+        assertTrue("$error", error is RePairNeededException)
+        assertEquals(listOf("rotated-out"), exchanges)
+    }
+
     @Test fun an_unreadable_directory_is_a_reachability_failure_not_a_re_pair() = runTest {
         val stale = host.copy(refresh = "rotated-out")
         val exchanges = mutableListOf<String>()

@@ -442,7 +442,7 @@ fun hostAwareClient(
                             stale,
                         )
                     } catch (error: RePairNeededException) {
-                        if (snapshotRefreshed || explicitHostBase) throw error
+                        if (snapshotRefreshed) throw error
                         // Hosts rotate the refresh credential and publish the
                         // replacement only in the relay directory; adopt it
                         // before concluding that the operator must re-pair.
@@ -464,7 +464,10 @@ fun hostAwareClient(
                         val routeChanged = currentHost.hostBases() != routedHost.hostBases()
                         if (
                             currentHost.refresh == null ||
-                            (currentHost.refresh == routedHost.refresh && !routeChanged)
+                            (currentHost.refresh == routedHost.refresh && !routeChanged) ||
+                            // An explicit probe may adopt a new credential but
+                            // never move to a different route.
+                            (explicitHostBase && routeChanged)
                         ) {
                             throw error
                         }

@@ -41,11 +41,19 @@ internal class RelayRefreshRecovery(
             } catch (error: Exception) {
                 throw IOException("relay directory unavailable", error)
             }
-            hosts.replaceValidatedRelayDirectory(
-                expectedAccount = account,
-                directory = directory,
-                expectedGeneration = snapshot.generation,
-            )
+            // A concurrent route write stales the snapshot, not the directory:
+            // apply the same directory against a fresh one.
+            var expectedGeneration = snapshot.generation
+            repeat(MAX_DIRECTORY_APPLY_ATTEMPTS) {
+                if (hosts.replaceValidatedRelayDirectory(account, directory, expectedGeneration)) return
+                val current = hosts.routeOwnershipSnapshot()
+                if (current.account != account) return
+                if (current.hosts.firstOrNull { it.hostId == hostId }?.refresh != rejectedRefresh) return
+                expectedGeneration = current.generation
+            }
+            throw IOException("relay directory could not be applied")
         }
     }
 }
+
+private const val MAX_DIRECTORY_APPLY_ATTEMPTS = 3

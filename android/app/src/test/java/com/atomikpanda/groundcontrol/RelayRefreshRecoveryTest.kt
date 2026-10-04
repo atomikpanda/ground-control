@@ -136,6 +136,27 @@ class RelayRefreshRecoveryTest {
         assertEquals(contacted, stored.lastContactAtMillis)
     }
 
+    @Test fun a_route_write_during_the_read_does_not_discard_the_rotated_credential() = runTest {
+        val repository = pairedRepository(backgroundScope, refresh = "rotated-out")
+        val recovery = RelayRefreshRecovery(repository) {
+            // Another writer changes route ownership while the read is in flight.
+            val racing = repository.routeOwnershipSnapshot()
+            val withSecondHost = RelayDirectoryTransformer().transform(
+                HostsResponse(listOf(
+                    HostInfo(hostId = hostId, publicUrl = "https://h-1abc.relay.example.com", refresh = "rotated-out"),
+                    HostInfo(hostId = "h-2", publicUrl = "https://h-2abc.relay.example.com", refresh = "other"),
+                )),
+                account.relayDomain,
+            )
+            assertTrue(repository.replaceValidatedRelayDirectory(account, withSecondHost, racing.generation))
+            directory(refresh = "current")
+        }
+
+        recovery.recover(hostId, "rotated-out")
+
+        assertEquals("current", repository.storedRefresh())
+    }
+
     @Test fun concurrent_refusals_share_one_directory_read() = runBlocking {
         // Real dispatchers: every caller must find the first read in flight.
         val storeScope = CoroutineScope(Dispatchers.IO + Job())
