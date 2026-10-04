@@ -155,6 +155,8 @@ class RelayRefreshRecoveryTest {
         recovery.recover(hostId, "rotated-out")
 
         assertEquals("current", repository.storedRefresh())
+    }
+
     @Test fun a_still_refused_credential_rechecks_the_directory_on_a_capped_backoff() = runTest {
         val repository = pairedRepository(backgroundScope, refresh = "rotated-out")
         var now = 0L
