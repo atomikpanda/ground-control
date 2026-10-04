@@ -166,6 +166,8 @@ class HostClient(val client: HttpClient, val tokens: HostTokens)
 
 private const val MILLIS_PER_SECOND = 1_000L
 private const val BEARER_EXPIRY_SAFETY_MARGIN_MILLIS = 5_000L
+internal const val EXCHANGE_BACKOFF_INITIAL_MILLIS = 1_000L
+internal const val EXCHANGE_BACKOFF_MAX_MILLIS = 60_000L
 
 /**
  * Short-lived host bearers (AC9), keyed by host identity and candidate base.
@@ -190,7 +192,18 @@ class HostTokens(
         val expiresAtMillis: Long,
     )
 
+    private data class ExchangeBackoff(
+        val credential: String,
+        val failure: Exception,
+        val retryAtMillis: Long,
+        val delayMillis: Long,
+    )
+
     private val cache = ConcurrentHashMap<RouteKey, CachedBearer>()
+    // A refused credential is refused by the host on every route, so it is
+    // never re-sent: only a different stored credential clears it.
+    private val refused = ConcurrentHashMap<String, String>()
+    private val backoffs = ConcurrentHashMap<RouteKey, ExchangeBackoff>()
     private val guard = Mutex()
     private val locks = mutableMapOf<RouteKey, Mutex>()
 
@@ -226,8 +239,26 @@ class HostTokens(
                 return@withLock current.token
             }
             val capturedCredential = credential ?: return@withLock null
+            if (refused[hostId] == capturedCredential) throw RePairNeededException(hostBase)
+            backoffs[key]
+                ?.takeIf { it.credential == capturedCredential && nowMillis() < it.retryAtMillis }
+                ?.let { throw it.failure }
             val issuedAtMillis = nowMillis()
-            val response = exchange(hostBase, capturedCredential)
+            val response = try {
+                exchange(hostBase, capturedCredential)
+            } catch (error: RePairNeededException) {
+                refused[hostId] = capturedCredential
+                throw error
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                // Any other failure — transport, server error, malformed body —
+                // repeats on every request unless throttled.
+                backOff(key, capturedCredential, error)
+                throw error
+            }
+            backoffs.remove(key)
+            refused.remove(hostId)
             val lifetimeMillis =
                 response.expiresIn.coerceAtLeast(0).toLong() * MILLIS_PER_SECOND
             val safetyMarginMillis = minOf(
@@ -246,6 +277,16 @@ class HostTokens(
             )
             response.token
         }
+    }
+
+    /** Every request otherwise repeats a failing exchange; fail fast until the
+     *  delay elapses, doubling it up to [EXCHANGE_BACKOFF_MAX_MILLIS]. */
+    private fun backOff(key: RouteKey, credential: String, failure: Exception) {
+        val delayMillis = backoffs[key]
+            ?.takeIf { it.credential == credential }
+            ?.let { minOf(it.delayMillis * 2, EXCHANGE_BACKOFF_MAX_MILLIS) }
+            ?: EXCHANGE_BACKOFF_INITIAL_MILLIS
+        backoffs[key] = ExchangeBackoff(credential, failure, nowMillis() + delayMillis, delayMillis)
     }
 }
 

@@ -157,6 +157,45 @@ class RelayRefreshRecoveryTest {
         assertEquals("current", repository.storedRefresh())
     }
 
+    @Test fun a_still_refused_credential_rechecks_the_directory_on_a_capped_backoff() = runTest {
+        val repository = pairedRepository(backgroundScope, refresh = "rotated-out")
+        var now = 0L
+        val readTimes = mutableListOf<Long>()
+        val recovery = RelayRefreshRecovery(repository, nowMillis = { now }) {
+            readTimes += now
+            directory(refresh = "rotated-out")
+        }
+
+        // A refusal every simulated second for an hour.
+        while (now <= 60 * 60_000L) {
+            recovery.recover(hostId, "rotated-out")
+            now += 1_000L
+        }
+
+        val gaps = readTimes.zipWithNext { a, b -> b - a }
+        assertEquals(listOf(30_000L, 60_000L, 120_000L, 240_000L, 480_000L), gaps.take(5))
+        assertTrue("$gaps", gaps.drop(5).all { it == 15 * 60_000L })
+    }
+
+    @Test fun an_unreadable_directory_is_throttled_too() = runTest {
+        val repository = pairedRepository(backgroundScope, refresh = "rotated-out")
+        var now = 0L
+        val reads = AtomicInteger()
+        val recovery = RelayRefreshRecovery(repository, nowMillis = { now }) {
+            reads.incrementAndGet()
+            throw IOException("relay unreachable")
+        }
+
+        val errors = List(10) {
+            runCatching { recovery.recover(hostId, "rotated-out") }.exceptionOrNull()
+                .also { now += 1_000L }
+        }
+
+        assertEquals(1, reads.get())
+        // Throttled rechecks keep reporting reachability, never a silent re-pair.
+        assertTrue("$errors", errors.all { it is IOException })
+    }
+
     @Test fun concurrent_refusals_share_one_directory_read() = runBlocking {
         // Real dispatchers: every caller must find the first read in flight.
         val storeScope = CoroutineScope(Dispatchers.IO + Job())

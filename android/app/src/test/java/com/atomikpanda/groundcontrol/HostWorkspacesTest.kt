@@ -4,6 +4,7 @@ import com.atomikpanda.groundcontrol.data.AuthException
 import com.atomikpanda.groundcontrol.data.ConnectionsCodec
 import com.atomikpanda.groundcontrol.data.FLEET_TOKEN_HEADER
 import com.atomikpanda.groundcontrol.data.HostConnection
+import com.atomikpanda.groundcontrol.data.ApiResponseException
 import com.atomikpanda.groundcontrol.data.RePairNeededException
 import com.atomikpanda.groundcontrol.data.RelayAccount
 import com.atomikpanda.groundcontrol.data.SpecApi
@@ -974,6 +975,177 @@ class HostWorkspacesTest {
         assertTrue("$error", error is IOException)
         assertFalse("$error", error is RePairNeededException)
         assertEquals(1, recoveries)
+    }
+
+    @Test fun a_refused_credential_is_not_resent_until_the_stored_credential_changes() = runTest {
+        var stored = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            hosts = { listOf(stored) },
+        )
+        val api = SpecApi(client.client)
+
+        val errors = List(20) { runCatching { api.listWorkspaces(stored.publicUrl, null) }.exceptionOrNull() }
+
+        assertTrue("$errors", errors.all { it is RePairNeededException })
+        assertEquals(listOf("rotated-out"), exchanges)
+
+        stored = stored.copy(refresh = "current")
+        val workspaces = api.listWorkspaces(stored.publicUrl, null)
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("rotated-out", "current"), exchanges)
+    }
+
+    @Test fun concurrent_requests_send_a_refused_credential_once() = runBlocking {
+        val stale = host.copy(refresh = "rotated-out")
+        val exchanges = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            hosts = { listOf(stale) },
+        )
+        val api = SpecApi(client.client)
+
+        val errors = withContext(Dispatchers.Default) {
+            List(10) { async { runCatching { api.listWorkspaces(stale.publicUrl, null) }.exceptionOrNull() } }
+                .awaitAll()
+        }
+
+        assertTrue("$errors", errors.all { it is RePairNeededException })
+        assertEquals(listOf("rotated-out"), exchanges.toList())
+    }
+
+    @Test fun exchange_transport_failures_back_off_to_a_cap_and_reset_on_success() = runTest {
+        var now = 0L
+        var hostDown = true
+        var exchanges = 0
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += 1
+                        if (hostDown) throw IOException("connection refused")
+                        // A one-second bearer: every later request exchanges again.
+                        respond("""{"token":"bearer","expires_in":1}""", HttpStatusCode.OK, jsonHdr)
+                    }
+                    "/workspaces" -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                    else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+                }
+            },
+            nowMillis = { now },
+            hosts = { listOf(host) },
+        )
+        val api = SpecApi(client.client)
+        val attemptTimes = mutableListOf<Long>()
+
+        // One request per simulated second for ten minutes against a down host.
+        while (now <= 10 * 60_000L) {
+            val before = exchanges
+            val error = runCatching { api.listWorkspaces(host.publicUrl, null) }.exceptionOrNull()
+            assertTrue("$error", error is IOException)
+            if (exchanges > before) attemptTimes += now
+            now += 1_000L
+        }
+
+        val gaps = attemptTimes.zipWithNext { a, b -> b - a }
+        assertEquals(listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 32_000L), gaps.take(6))
+        assertTrue("$gaps", gaps.drop(6).all { it == 60_000L })
+
+        hostDown = false
+        now += 60_000L
+        api.listWorkspaces(host.publicUrl, null)
+        hostDown = true
+        val afterSuccess = exchanges
+        now += 1_000L
+        runCatching { api.listWorkspaces(host.publicUrl, null) }
+        now += 1_000L
+        runCatching { api.listWorkspaces(host.publicUrl, null) }
+        // Back to the initial one-second delay: both requests reached the host.
+        assertEquals(afterSuccess + 2, exchanges)
+    }
+
+    @Test fun a_changed_credential_is_not_held_back_by_the_old_ones_backoff() = runTest {
+        var stored = host.copy(refresh = "old")
+        val exchanges = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        val body = (req.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
+                        val credential = body.substringAfter("\"refresh\":\"").substringBefore('"')
+                        exchanges += credential
+                        if (credential == "old") throw IOException("connection reset")
+                        respond("""{"token":"bearer","expires_in":300}""", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                }
+            },
+            nowMillis = { 0L },
+            hosts = { listOf(stored) },
+        )
+        val api = SpecApi(client.client)
+
+        assertTrue(runCatching { api.listWorkspaces(stored.publicUrl, null) }.exceptionOrNull() is IOException)
+        stored = stored.copy(refresh = "new")
+        val workspaces = api.listWorkspaces(stored.publicUrl, null)
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("old", "new"), exchanges)
+    }
+
+    @Test fun a_malformed_exchange_response_backs_off() = runTest {
+        var now = 0L
+        var exchanges = 0
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += 1
+                        respond("""{"expires_in":300}""", HttpStatusCode.OK, jsonHdr)
+                    }
+                    else -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                }
+            },
+            nowMillis = { now },
+            hosts = { listOf(host) },
+        )
+        val api = SpecApi(client.client)
+
+        val first = runCatching { api.listWorkspaces(host.publicUrl, null) }.exceptionOrNull()
+        now += 500L
+        val second = runCatching { api.listWorkspaces(host.publicUrl, null) }.exceptionOrNull()
+
+        assertTrue("$first", first != null)
+        assertEquals(first!!::class, second!!::class)
+        assertEquals(1, exchanges)
+    }
+
+    @Test fun an_exchange_server_error_backs_off_but_keeps_its_error_type() = runTest {
+        var now = 0L
+        var exchanges = 0
+        val client = hostAwareClient(
+            engine = MockEngine { req ->
+                when (req.url.encodedPath) {
+                    "/host/token" -> {
+                        exchanges += 1
+                        respond("""{"detail":"boom"}""", HttpStatusCode.ServiceUnavailable, jsonHdr)
+                    }
+                    else -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                }
+            },
+            nowMillis = { now },
+            hosts = { listOf(host) },
+        )
+        val api = SpecApi(client.client)
+
+        val first = runCatching { api.listWorkspaces(host.publicUrl, null) }.exceptionOrNull()
+        now += 500L
+        val second = runCatching { api.listWorkspaces(host.publicUrl, null) }.exceptionOrNull()
+
+        assertTrue("$first", first is ApiResponseException)
+        assertTrue("$second", second is ApiResponseException)
+        assertEquals(1, exchanges)
     }
 
     @Test fun a_refused_snapshot_route_retries_the_current_host_route() = runTest {
