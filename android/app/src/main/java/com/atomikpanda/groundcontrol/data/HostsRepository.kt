@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -537,9 +538,21 @@ internal fun androidx.datastore.preferences.core.MutablePreferences.advanceRoute
  */
 fun appHttpClient(context: Context): HostClient {
     val repo = HostsRepository(context.applicationContext)
+    val engine = OkHttp.create()
+    // The directory is read with the fleet token at the relay, never through the
+    // host-aware routing that is waiting on this recovery.
+    val directoryApi = SpecApi(HttpClient(engine) { mshipDefaults() })
+    val transformer = RelayDirectoryTransformer()
+    val recovery = RelayRefreshRecovery(repo) { account ->
+        transformer.transform(
+            directoryApi.listHosts(account.relayDomain, account.fleetToken),
+            account.relayDomain,
+        )
+    }
     return hostAwareClient(
-        engine = OkHttp.create(),
+        engine = engine,
         hosts = { repo.snapshot() },
         onHostContact = { hostId, base -> repo.recordContact(hostId, base) },
+        recoverRefresh = recovery::recover,
     )
 }

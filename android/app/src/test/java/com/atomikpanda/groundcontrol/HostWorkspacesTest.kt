@@ -48,6 +48,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -858,6 +859,121 @@ class HostWorkspacesTest {
 
         assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
         assertEquals(listOf("rotated-out", "current"), exchanges)
+    }
+
+    /** A host that accepts only [accepted] at /host/token, recording every exchange. */
+    private fun rotatingHostEngine(accepted: String, exchanges: MutableList<String>) =
+        MockEngine { req ->
+            when (req.url.encodedPath) {
+                "/host/token" -> {
+                    val body = (req.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
+                    val credential = body.substringAfter("\"refresh\":\"").substringBefore('"')
+                    exchanges += credential
+                    if (credential == accepted) {
+                        respond("""{"token":"current-bearer","expires_in":300}""", HttpStatusCode.OK, jsonHdr)
+                    } else {
+                        respond("""{"detail":"unauthorized"}""", HttpStatusCode.Unauthorized, jsonHdr)
+                    }
+                }
+                "/workspaces" -> respond(listPayload, HttpStatusCode.OK, jsonHdr)
+                else -> respond("not found", HttpStatusCode.NotFound, jsonHdr)
+            }
+        }
+
+    @Test fun a_refused_credential_is_recovered_from_the_relay_directory() = runTest {
+        var stored = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        val recoveries = mutableListOf<Pair<String, String>>()
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            recoverRefresh = { hostId, rejected ->
+                recoveries += hostId to rejected
+                stored = stored.copy(refresh = "current")
+            },
+            hosts = { listOf(stored) },
+        )
+
+        val workspaces = SpecApi(client.client).listWorkspaces(host.publicUrl, null)
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf(host.hostId to "rotated-out"), recoveries)
+        assertEquals(listOf("rotated-out", "current"), exchanges)
+    }
+
+    @Test fun a_directory_with_the_same_refused_credential_asks_for_a_re_pair() = runTest {
+        val stale = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        var recoveries = 0
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            recoverRefresh = { _, _ -> recoveries += 1 },
+            hosts = { listOf(stale) },
+        )
+
+        val error = runCatching {
+            SpecApi(client.client).listWorkspaces(stale.publicUrl, null)
+        }.exceptionOrNull()
+
+        assertTrue("$error", error is RePairNeededException)
+        assertEquals(1, recoveries)
+        assertEquals(listOf("rotated-out"), exchanges)
+    }
+
+    @Test fun an_explicit_host_probe_recovers_a_rotated_credential_on_the_same_route() = runTest {
+        var stored = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            recoverRefresh = { _, _ -> stored = stored.copy(refresh = "current") },
+            hosts = { listOf(stored) },
+        )
+
+        val workspaces = SpecApi(client.client)
+            .listWorkspaces(host.publicUrl, null, allowHostFallback = false)
+
+        assertEquals(listOf("ws-1", "ws-2"), workspaces.map { it.id })
+        assertEquals(listOf("rotated-out", "current"), exchanges)
+    }
+
+    @Test fun an_explicit_host_probe_never_follows_a_recovered_route_change() = runTest {
+        var stored = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            recoverRefresh = { _, _ ->
+                stored = stored.copy(refresh = "current", publicUrl = "https://moved.relay.example.com")
+            },
+            hosts = { listOf(stored) },
+        )
+
+        val error = runCatching {
+            SpecApi(client.client).listWorkspaces(host.publicUrl, null, allowHostFallback = false)
+        }.exceptionOrNull()
+
+        assertTrue("$error", error is RePairNeededException)
+        assertEquals(listOf("rotated-out"), exchanges)
+    }
+
+    @Test fun an_unreadable_directory_is_a_reachability_failure_not_a_re_pair() = runTest {
+        val stale = host.copy(refresh = "rotated-out")
+        val exchanges = mutableListOf<String>()
+        var recoveries = 0
+        val client = hostAwareClient(
+            engine = rotatingHostEngine(accepted = "current", exchanges = exchanges),
+            recoverRefresh = { _, _ ->
+                recoveries += 1
+                throw IOException("relay unreachable")
+            },
+            hosts = { listOf(stale) },
+        )
+
+        val error = runCatching {
+            SpecApi(client.client).listWorkspaces(stale.publicUrl, null)
+        }.exceptionOrNull()
+
+        assertTrue("$error", error is IOException)
+        assertFalse("$error", error is RePairNeededException)
+        assertEquals(1, recoveries)
     }
 
     @Test fun a_refused_snapshot_route_retries_the_current_host_route() = runTest {
